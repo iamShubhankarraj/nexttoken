@@ -207,15 +207,16 @@ function registerIpc() {
   ipcMain.handle('nt.settings.provider.get', (): ProviderConfigPublic => publicProvider());
   ipcMain.handle('nt.settings.provider.set', (_e, input: ProviderConfigInput): ProviderConfigPublic => {
     const preset = PROVIDER_PRESETS.find((x) => x.id === input.presetId);
+    // Save the key FIRST so a keychain failure leaves prior settings untouched.
+    if (input.apiKey && !store.setApiKey(input.apiKey)) {
+      throw new Error('Could not access the OS keychain — the API key was not saved, and provider settings were left unchanged.');
+    }
     store.d.provider = {
       presetId: input.presetId,
       baseUrl: input.baseUrl.trim() || preset?.baseUrl || '',
       model: input.model.trim(),
       api: preset?.api ?? 'openai'
     };
-    if (input.apiKey && !store.setApiKey(input.apiKey)) {
-      throw new Error('Could not access the OS keychain — the API key was not saved. Provider settings were saved without a key.');
-    }
     store.saveSoon();
     return publicProvider();
   });
