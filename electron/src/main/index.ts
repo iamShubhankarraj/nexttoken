@@ -1,8 +1,10 @@
-import { app, BrowserWindow, dialog, ipcMain } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu } from 'electron';
+import type { WebContents } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs';
 import { Store } from './store';
 import { TabManager } from './tabs';
+import { AdBlocker } from './adblock';
 import { startAgentRun, cancelAgentRun } from './agent/loop';
 import { testConnection } from './agent/llm';
 import { APPLE_FM_REF, CLOUD_REF, type RouterDeps } from './agent/router';
@@ -20,7 +22,7 @@ import {
   PROVIDER_PRESETS, DEFAULT_DARK_TOKENS
 } from '../shared/ipc';
 import type {
-  AgentEvent, BrainEvent, BrowserSnapshot, ChatSession, JevConfigInput, JevConfigPublic, ModelAssignment,
+  AdBlockState, AdBlockStats, AgentEvent, BrainEvent, BrowserSnapshot, ChatSession, JevConfigInput, JevConfigPublic, ModelAssignment,
   ModelEntryPublic, ModelEvent, ProviderConfigInput, ProviderConfigPublic, SkillDef, SkillInput, SpaceState,
   TabDelta, ThemeTokens, VoiceEngineState
 } from '../shared/ipc';
@@ -29,6 +31,7 @@ let win: BrowserWindow | null = null;
 let settingsOpen = false;
 let store: Store;
 let tabs: TabManager;
+let adblocker: AdBlocker;
 
 // -- local-model tier ---------------------------------------------------------
 let modelsDir = '';
@@ -230,6 +233,45 @@ function emitAgent(e: AgentEvent) {
   win?.webContents.send('nt.agent-event', e);
 }
 
+// -- native ad blocker --------------------------------------------------------
+// Public ad-block config for the renderer (no internals leak).
+function publicAdBlock(): AdBlockState {
+  return {
+    enabled: store.d.adblock.enabled !== false,
+    allowedHosts: [...store.d.adblock.allowedHosts]
+  };
+}
+
+// -- floating picture-in-picture ---------------------------------------------
+// Toggle Chromium's native PiP for the video at srcUrl in the guest page.
+// Chromium's native PiP window is a system overlay and stays on top of
+// other windows by design. A context-menu click counts as a user gesture,
+// so requestPictureInPicture() is allowed here.
+function pipToggle(wc: WebContents, srcUrl: string): void {
+  const code = `(async () => {
+    var src = ${JSON.stringify(srcUrl)};
+    var vids = Array.prototype.slice.call(document.querySelectorAll('video'));
+    var v = null;
+    for (var i = 0; i < vids.length; i++) {
+      if (vids[i].currentSrc === src || vids[i].src === src) { v = vids[i]; break; }
+    }
+    if (!v) v = vids[0] || null;
+    if (!v) return 'no-video';
+    try {
+      if (document.pictureInPictureElement) {
+        await document.exitPictureInPicture();
+        return 'exited';
+      }
+      if (v.disablePictureInPicture || !document.pictureInPictureEnabled) return 'unavailable';
+      await v.requestPictureInPicture();
+      return 'entered';
+    } catch (e) {
+      return 'error:' + String((e && e.message) || e);
+    }
+  })()`;
+  void wc.executeJavaScript(code, true).catch(() => {});
+}
+
 /** Adapter from brain intents to the same state setters the nt.ui.* handlers use. */
 function brainControlEnv(): ControlEnv {
   return {
@@ -294,7 +336,10 @@ function registerIpc() {
     tabs.activate(t.id);
     return t.id;
   });
-  ipcMain.handle('nt.tabs.close', (_e, tabId: string) => tabs.close(tabId));
+  ipcMain.handle('nt.tabs.close', (_e, tabId: string) => {
+    adblocker.noteDetach(tabId);
+    tabs.close(tabId);
+  });
   ipcMain.handle('nt.tabs.activate', (_e, tabId: string) => tabs.activate(tabId));
   ipcMain.handle('nt.tabs.pin', (_e, tabId: string, pinned: boolean) => {
     const t = tabs.tabs.get(tabId);
@@ -305,9 +350,13 @@ function registerIpc() {
     if (t && store.d.spaces.some((s) => s.id === spaceId)) { t.spaceId = spaceId; sendSnapshot(); }
   });
   ipcMain.handle('nt.tabs.attach', (_e, tabId: string, wcId: number) => {
-    tabs.attach(tabId, wcId);
+    const tab = tabs.attach(tabId, wcId);
+    if (tab) adblocker.noteAttach(tabId, wcId, tab.url);
   });
-  ipcMain.handle('nt.tabs.archive', (_e, tabId: string) => tabs.archive(tabId, true));
+  ipcMain.handle('nt.tabs.archive', (_e, tabId: string) => {
+    adblocker.noteDetach(tabId);
+    tabs.archive(tabId, true);
+  });
   ipcMain.handle('nt.tabs.restore', (_e, archivedId: string) => tabs.restore(archivedId));
 
   // -- navigation ----------------------------------------------------------
@@ -435,6 +484,24 @@ function registerIpc() {
     store.saveSoon();
   });
   ipcMain.handle('nt.settings.search-engine.get', () => store.d.searchEngine);
+  // -- native ad blocker --------------------------------------------------
+  ipcMain.handle('nt.adblock.get', (): AdBlockState => publicAdBlock());
+  ipcMain.handle('nt.adblock.set-enabled', (_e, enabled: boolean): AdBlockState => {
+    store.d.adblock.enabled = !!enabled;
+    store.saveSoon();
+    return publicAdBlock();
+  });
+  ipcMain.handle('nt.adblock.set-site-allowed', (_e, host: string, allowed: boolean): AdBlockState => {
+    const h = String(host ?? '').trim().toLowerCase();
+    if (h) {
+      const list = store.d.adblock.allowedHosts;
+      const i = list.indexOf(h);
+      if (allowed && i === -1) list.push(h);
+      if (!allowed && i !== -1) list.splice(i, 1);
+      store.saveSoon();
+    }
+    return publicAdBlock();
+  });
   ipcMain.handle('nt.settings.search-engine.set', (_e, url: string) => {
     if (url.trim()) { store.d.searchEngine = url.trim(); store.saveSoon(); }
   });
@@ -588,10 +655,46 @@ function registerIpc() {
 
 app.whenReady().then(() => {
   store = new Store();
+  // Native ad blocker: filter guest traffic at the network layer. Stats are
+  // pushed to the renderer for the toolbar shield badge.
+  adblocker = new AdBlocker(store, (s: AdBlockStats) => {
+    win?.webContents.send('nt.adblock.stats', s);
+  });
+  adblocker.attach();
   tabs = new TabManager(
     store,
     () => sendSnapshot(),
-    (d: TabDelta) => win?.webContents.send('nt.tab-delta', d)
+    (d: TabDelta) => {
+      // Keep the ad blocker's page context + per-page counter in sync.
+      if (d.type === 'url') adblocker.noteNavigation(d.tabId, String(d.value));
+      win?.webContents.send('nt.tab-delta', d);
+    },
+    {
+      // Right-click on a video: offer floating picture-in-picture.
+      onContextMenu: (wc: WebContents, params) => {
+        if (params.mediaType !== 'video' || !params.srcURL) return;
+        const srcURL = params.srcURL;
+        const menu = Menu.buildFromTemplate([
+          {
+            label: 'Picture in picture',
+            click: () => pipToggle(wc, srcURL)
+          },
+          { type: 'separator' },
+          {
+            label: 'Copy video address',
+            click: () => clipboard.writeText(srcURL)
+          },
+          {
+            label: 'Open video in new tab',
+            click: () => {
+              const t = tabs.create(store.d.activeSpaceId, srcURL);
+              tabs.activate(t.id);
+            }
+          }
+        ]);
+        menu.popup({ window: win ?? undefined });
+      }
+    }
   );
   initModelTier();
   registerIpc();

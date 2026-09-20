@@ -21,6 +21,7 @@ import {
 import { useBrowser } from "../BrowserContext";
 import { nt } from "../nt";
 import { Omnibox } from "./Omnibox";
+import { ShieldButton } from "./ShieldButton";
 
 export function TopStrip() {
   const { snapshot, activeTab, split, setSplit, splitPick, setSplitPick } =
@@ -86,6 +87,9 @@ export function TopStrip() {
           <RotateCw size={14} strokeWidth={1.75} />
         </button>
       )}
+
+      {/* Ad-block shield: live blocked count + per-site toggle */}
+      <ShieldButton />
 
       {/* Omnibox: navigation + search + AI with visible intent routing */}
       <div className="flex flex-1 justify-center px-3">

@@ -17,6 +17,7 @@ import {
   Palette,
   Plug,
   Search,
+  Shield,
   Volume2,
   X,
   Zap,
@@ -24,6 +25,7 @@ import {
 import { useEffect, useState } from "react";
 import {
   PROVIDER_PRESETS,
+  type AdBlockState,
   type ProviderConfigPublic,
   type ProviderId,
 } from "../../shared/ipc";
@@ -33,13 +35,14 @@ import { ModelsPanel } from "./ModelsPanel";
 import { SkillsSection } from "./SettingsSkills";
 import { ThemeEditor } from "./ThemeEditor";
 
-type Section = "provider" | "models" | "skills" | "voice" | "theme";
+type Section = "provider" | "models" | "skills" | "voice" | "theme" | "privacy";
 
 const SECTIONS: Array<{ id: Section; label: string; icon: typeof Plug }> = [
   { id: "provider", label: "AI Provider", icon: Plug },
   { id: "models", label: "Models", icon: Database },
   { id: "skills", label: "Skills", icon: Zap },
   { id: "voice", label: "Voice & Search", icon: Mic },
+  { id: "privacy", label: "Privacy", icon: Shield },
   { id: "theme", label: "Theme", icon: Palette },
 ];
 
@@ -118,6 +121,7 @@ export function Settings({ onClose }: { onClose: () => void }) {
             {section === "models" && <ModelsPanel />}
             {section === "skills" && <SkillsSection />}
             {section === "voice" && <VoiceSearchSection />}
+            {section === "privacy" && <PrivacySection />}
             {section === "theme" &&
               (activeSpace ? (
                 <ThemeEditor spaceId={activeSpace.id} />
@@ -749,6 +753,119 @@ function FieldLabel({ text, hint }: { text: string; hint?: string }) {
         </span>
       )}
     </span>
+  );
+}
+
+/* ------------------------------ privacy -------------------------------- */
+
+function PrivacySection() {
+  const [state, setState] = useState<AdBlockState>({
+    enabled: true,
+    allowedHosts: [],
+  });
+  const [loaded, setLoaded] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    nt()
+      .adblockGet()
+      .then((s) => {
+        if (alive) {
+          setState(s);
+          setLoaded(true);
+        }
+      })
+      .catch(() => setLoaded(true));
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const setEnabled = (enabled: boolean) => {
+    setState((s) => ({ ...s, enabled }));
+    void nt().adblockSetEnabled(enabled).then(setState).catch(() => {});
+  };
+
+  const removeHost = (host: string) => {
+    void nt().adblockSetSiteAllowed(host, false).then(setState).catch(() => {});
+  };
+
+  if (!loaded) {
+    return (
+      <p className="text-[13px]" style={{ color: "var(--nt-text-3)" }}>
+        Loading…
+      </p>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h3
+          className="mb-2 flex items-center gap-2 text-[13px] font-semibold"
+          style={{ color: "var(--nt-text-1)" }}
+        >
+          <Shield size={14} strokeWidth={1.75} /> Ad blocker
+        </h3>
+        <div className="space-y-2">
+          <ToggleRow
+            label="Block ads and trackers"
+            hint="Built-in filter list, enforced at the network layer. No remote lists are ever fetched."
+            checked={state.enabled}
+            onChange={setEnabled}
+          />
+        </div>
+      </div>
+
+      <div>
+        <h3
+          className="mb-2 text-[13px] font-semibold"
+          style={{ color: "var(--nt-text-1)" }}
+        >
+          Allowed sites
+        </h3>
+        <p
+          className="mb-3 text-[12px]"
+          style={{ color: "var(--nt-text-3)" }}
+        >
+          Ads are allowed on these sites. Click the shield in the toolbar to
+          add or remove the current site.
+        </p>
+        {state.allowedHosts.length === 0 ? (
+          <p
+            className="text-[12px]"
+            style={{ color: "var(--nt-text-3)" }}
+          >
+            No exceptions — ads are blocked everywhere.
+          </p>
+        ) : (
+          <div className="space-y-1.5">
+            {state.allowedHosts.map((host) => (
+              <div
+                key={host}
+                className="nt-r-sm flex items-center justify-between border px-3 py-1.5"
+                style={{ borderColor: "var(--nt-border)" }}
+              >
+                <span
+                  className="nt-mono truncate text-[12px]"
+                  style={{ color: "var(--nt-text-2)" }}
+                >
+                  {host}
+                </span>
+                <button
+                  title={`Block ads on ${host}`}
+                  onClick={() => removeHost(host)}
+                  className="nt-r-sm p-1 transition-colors hover:bg-[var(--nt-bg-hover)]"
+                  style={{ color: "var(--nt-text-3)" }}
+                >
+                  <X size={13} strokeWidth={1.75} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
 

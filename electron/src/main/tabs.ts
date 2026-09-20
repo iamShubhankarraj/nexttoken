@@ -1,8 +1,14 @@
 import { webContents } from 'electron';
-import type { WebContents } from 'electron';
+import type { ContextMenuParams, WebContents } from 'electron';
 import { randomUUID } from 'node:crypto';
 import type { ArchivedTab, TabDelta, TabState } from '../shared/ipc';
 import type { Store } from './store';
+
+/** Optional hooks the app wires into tab guest webContents. */
+export interface TabHooks {
+  /** Fired when a guest page shows a context menu (e.g. right-click on video). */
+  onContextMenu?: (wc: WebContents, params: ContextMenuParams) => void;
+}
 
 export interface TabRec {
   id: string;
@@ -43,7 +49,8 @@ export class TabManager {
   constructor(
     private store: Store,
     private onChange: () => void,
-    private onDelta: (d: TabDelta) => void
+    private onDelta: (d: TabDelta) => void,
+    private hooks?: TabHooks
   ) {}
 
   // -- lifecycle -------------------------------------------------------------
@@ -115,6 +122,11 @@ export class TabManager {
     };
     wc.on('did-navigate', (_e, url) => onNav(url));
     wc.on('did-navigate-in-page', (_e, url) => onNav(url));
+    // Custom context menu for guest content — the app adds a
+    // "Picture in picture" item when right-clicking a video element.
+    wc.on('context-menu', (_e, params) => {
+      try { this.hooks?.onContextMenu?.(wc, params); } catch { /* noop */ }
+    });
     wc.once('destroyed', () => { tab.wc = null; });
   }
 

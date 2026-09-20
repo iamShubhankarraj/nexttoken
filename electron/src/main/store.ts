@@ -67,6 +67,8 @@ interface Persisted {
   skills: SkillPersist[];
   /** Ephemeral chats — only the most recent few are kept. */
   chatSessions: ChatSessionPersist[];
+  /** Native ad blocker: global switch + per-site allowlist (by hostname). */
+  adblock: { enabled: boolean; allowedHosts: string[] };
 }
 
 const ARCHIVE_AFTER_DEFAULT = 12 * 3600 * 1000;
@@ -138,7 +140,8 @@ function defaults(): Persisted {
     },
     brain: { jevBaseUrl: '' },
     skills: defaultSkills(),
-    chatSessions: []
+    chatSessions: [],
+    adblock: { enabled: true, allowedHosts: [] }
   };
 }
 
@@ -169,6 +172,8 @@ export class Store {
       // Backfill skills + sessions for installs that predate them.
       if (!parsed.skills) parsed.skills = defaultSkills();
       if (!parsed.chatSessions) parsed.chatSessions = [];
+      // Backfill ad-blocker config for installs that predate it.
+      if (!parsed.adblock) parsed.adblock = defaults().adblock;
       // Re-seed themes for spaces missing them (e.g. new spaces).
       for (const s of parsed.spaces) {
         if (!parsed.themes[s.id]) {

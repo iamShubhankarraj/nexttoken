@@ -394,6 +394,22 @@ export interface ChatSession {
 export const MAX_CHAT_SESSIONS = 5;
 
 // ---------------------------------------------------------------------------
+// Native ad blocker (main-process network filter, bundled filter list)
+// ---------------------------------------------------------------------------
+
+/** What the renderer may see — global switch + per-site allowlist. */
+export interface AdBlockState {
+  enabled: boolean;
+  allowedHosts: string[];
+}
+
+/** Live per-tab blocked-request counts pushed from main. */
+export interface AdBlockStats {
+  tabId: string;
+  count: number;
+}
+
+// ---------------------------------------------------------------------------
 // The window.nt API (implemented in preload via contextBridge)
 // ---------------------------------------------------------------------------
 
@@ -483,6 +499,12 @@ export interface NextTokenAPI {
   brainValidateJev(apiKey: string, baseUrl?: string): Promise<{ ok: boolean; error?: string }>;
   brainHandleUtterance(text: string, source: 'voice' | 'text'): Promise<void>;
   onBrainEvent(cb: (e: BrainEvent) => void): () => void;
+  // native ad blocker
+  adblockGet(): Promise<AdBlockState>;
+  adblockSetEnabled(enabled: boolean): Promise<AdBlockState>;
+  /** allowed=true adds the host to the allowlist (ads show on that site). */
+  adblockSetSiteAllowed(host: string, allowed: boolean): Promise<AdBlockState>;
+  onAdBlockStats(cb: (s: AdBlockStats) => void): () => void;
   // events
   onSnapshot(cb: (s: BrowserSnapshot) => void): () => void;
   snapshotGet(): Promise<BrowserSnapshot>;

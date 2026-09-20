@@ -105,6 +105,15 @@ const api: NextTokenAPI = {
     ipcRenderer.on('nt.brain.event', l);
     return () => ipcRenderer.removeListener('nt.brain.event', l);
   },
+  // native ad blocker
+  adblockGet: () => ipcRenderer.invoke('nt.adblock.get'),
+  adblockSetEnabled: (enabled) => ipcRenderer.invoke('nt.adblock.set-enabled', enabled),
+  adblockSetSiteAllowed: (host, allowed) => ipcRenderer.invoke('nt.adblock.set-site-allowed', host, allowed),
+  onAdBlockStats: (cb) => {
+    const l = (_e: unknown, s: Parameters<Parameters<NextTokenAPI['onAdBlockStats']>[0]>[0]) => cb(s);
+    ipcRenderer.on('nt.adblock.stats', l);
+    return () => ipcRenderer.removeListener('nt.adblock.stats', l);
+  },
   // events
   onSnapshot: (cb) => {
     const l = (_e: unknown, s: Parameters<Parameters<NextTokenAPI['onSnapshot']>[0]>[0]) => cb(s);
