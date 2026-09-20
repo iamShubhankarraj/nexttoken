@@ -15,8 +15,8 @@ import {
   PROVIDER_PRESETS, DEFAULT_DARK_TOKENS
 } from '../shared/ipc';
 import type {
-  AgentEvent, BrowserSnapshot, ModelAssignment, ModelEntryPublic, ModelEvent,
-  ProviderConfigInput, ProviderConfigPublic, SpaceState, TabDelta, ThemeTokens,
+  AgentEvent, BrowserSnapshot, ChatSession, ModelAssignment, ModelEntryPublic, ModelEvent,
+  ProviderConfigInput, ProviderConfigPublic, SkillDef, SkillInput, SpaceState, TabDelta, ThemeTokens,
   VoiceEngineState
 } from '../shared/ipc';
 
@@ -307,6 +307,28 @@ function registerIpc() {
   ipcMain.handle('nt.agent.clear-history', () => {
     store.d.agentHistory = [];
     store.saveSoon();
+  });
+  ipcMain.handle('nt.agent.new-chat', () => {
+    store.archiveChatSession();
+  });
+  ipcMain.handle('nt.agent.sessions', (): ChatSession[] => store.d.chatSessions);
+  ipcMain.handle('nt.agent.open-session', (_e, id: string) => {
+    store.openChatSession(id);
+  });
+
+  // -- skills ------------------------------------------------------------------
+  ipcMain.handle('nt.skills.list', (): SkillDef[] => store.listSkills());
+  ipcMain.handle('nt.skills.save', (_e, input: SkillInput): SkillDef[] => {
+    store.saveSkill(input);
+    return store.listSkills();
+  });
+  ipcMain.handle('nt.skills.remove', (_e, id: string): SkillDef[] => {
+    store.removeSkill(id);
+    return store.listSkills();
+  });
+  ipcMain.handle('nt.skills.reset', (): SkillDef[] => {
+    store.resetSkills();
+    return store.listSkills();
   });
 
   // -- settings / BYOK -----------------------------------------------------------

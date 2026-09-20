@@ -320,6 +320,45 @@ export interface AppleFmStatus {
 export type VoiceEngineState = 'idle' | 'listening' | 'transcribing' | 'speaking';
 
 // ---------------------------------------------------------------------------
+// Skills — saved reusable prompts (slash commands + one-click chips)
+// ---------------------------------------------------------------------------
+
+export interface SkillDef {
+  id: string;
+  /** Human name, e.g. "Summarize". */
+  name: string;
+  /** Slash trigger, e.g. "/summarize" — lowercase, no spaces. */
+  trigger: string;
+  /** The prompt template sent to the agent. */
+  prompt: string;
+  category: string;
+  builtIn: boolean;
+}
+
+export interface SkillInput {
+  /** Absent = create a new skill. */
+  id?: string;
+  name: string;
+  trigger: string;
+  prompt: string;
+  category: string;
+}
+
+// ---------------------------------------------------------------------------
+// Chat sessions — ephemeral chats; only a few recent ones are kept
+// ---------------------------------------------------------------------------
+
+export interface ChatSession {
+  id: string;
+  title: string;
+  messages: AgentMessage[];
+  at: number;
+}
+
+/** Ephemeral by design: at most this many recent chats are retained. */
+export const MAX_CHAT_SESSIONS = 5;
+
+// ---------------------------------------------------------------------------
 // The window.nt API (implemented in preload via contextBridge)
 // ---------------------------------------------------------------------------
 
@@ -356,6 +395,15 @@ export interface NextTokenAPI {
   agentCancel(runId: string): Promise<void>;
   agentHistory(): Promise<AgentMessage[]>;
   agentClearHistory(): Promise<void>;
+  /** Archive the current conversation into recent sessions and start fresh. */
+  agentNewChat(): Promise<void>;
+  agentSessions(): Promise<ChatSession[]>;
+  agentOpenSession(id: string): Promise<void>;
+  // skills (saved reusable prompts)
+  skillsList(): Promise<SkillDef[]>;
+  skillsSave(skill: SkillInput): Promise<SkillDef[]>;
+  skillsRemove(id: string): Promise<SkillDef[]>;
+  skillsReset(): Promise<SkillDef[]>;
   // settings (BYOK)
   settingsGetProvider(): Promise<ProviderConfigPublic>;
   settingsSetProvider(input: ProviderConfigInput): Promise<ProviderConfigPublic>;

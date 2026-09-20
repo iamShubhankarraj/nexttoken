@@ -33,6 +33,14 @@ const api: NextTokenAPI = {
   agentCancel: (runId) => ipcRenderer.invoke('nt.agent.cancel', runId),
   agentHistory: () => ipcRenderer.invoke('nt.agent.history'),
   agentClearHistory: () => ipcRenderer.invoke('nt.agent.clear-history'),
+  agentNewChat: () => ipcRenderer.invoke('nt.agent.new-chat'),
+  agentSessions: () => ipcRenderer.invoke('nt.agent.sessions'),
+  agentOpenSession: (id) => ipcRenderer.invoke('nt.agent.open-session', id),
+  // skills
+  skillsList: () => ipcRenderer.invoke('nt.skills.list'),
+  skillsSave: (skill) => ipcRenderer.invoke('nt.skills.save', skill),
+  skillsRemove: (id) => ipcRenderer.invoke('nt.skills.remove', id),
+  skillsReset: () => ipcRenderer.invoke('nt.skills.reset'),
   // settings
   settingsGetProvider: () => ipcRenderer.invoke('nt.settings.provider.get'),
   settingsSetProvider: (input) => ipcRenderer.invoke('nt.settings.provider.set', input),

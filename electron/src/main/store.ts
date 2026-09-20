@@ -2,9 +2,9 @@ import { app, safeStorage } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { DEFAULT_DARK_TOKENS, SPACE_PALETTE } from '../shared/ipc';
+import { DEFAULT_DARK_TOKENS, MAX_CHAT_SESSIONS, SPACE_PALETTE } from '../shared/ipc';
 import type {
-  AgentMessage, ArchivedTab, ProviderId, SiteBoost, ThemeTokens
+  AgentMessage, ArchivedTab, ProviderId, SiteBoost, SkillDef, SkillInput, ThemeTokens
 } from '../shared/ipc';
 import type { ModelRef } from './models/types';
 
@@ -20,6 +20,20 @@ export interface ProviderPersist {
   baseUrl: string;
   model: string;
   api: 'openai' | 'anthropic';
+}
+export interface SkillPersist {
+  id: string;
+  name: string;
+  trigger: string;
+  prompt: string;
+  category: string;
+  builtIn: boolean;
+}
+export interface ChatSessionPersist {
+  id: string;
+  title: string;
+  messages: AgentMessage[];
+  at: number;
 }
 
 /** One record per downloaded model file: bytes on disk + last download timestamp. */
@@ -47,9 +61,40 @@ interface Persisted {
     assignment: { chat: ModelRef; vision: ModelRef };
     appleFmAvailable: boolean | null;
   };
+  /** Saved reusable prompts (slash commands + one-click chips). */
+  skills: SkillPersist[];
+  /** Ephemeral chats — only the most recent few are kept. */
+  chatSessions: ChatSessionPersist[];
 }
 
 const ARCHIVE_AFTER_DEFAULT = 12 * 3600 * 1000;
+
+/** Built-in skills — original prompts, seeded on first run. */
+function defaultSkills(): SkillPersist[] {
+  const defs: Array<[string, string, string, string]> = [
+    ['Summarize', '/summarize',
+      'Summarize the current page: 3 key takeaways, the single most important fact or number, and why it matters — in one sentence. Under 120 words.',
+      'Reading'],
+    ['Write', '/write',
+      'Improve the writing I am working with: fix grammar, tighten the sentences, keep my voice. Reply with only the revised text.',
+      'Writing'],
+    ['Explain code', '/explain',
+      'Explain the code visible on this page step by step, as if to a smart beginner. Name what each part does and why it exists.',
+      'Coding'],
+    ['Brainstorm', '/ideas',
+      'Give me 6 fresh angles or ideas related to the topic of this page. One line each, no fluff.',
+      'Thinking'],
+    ['Social draft', '/social',
+      'Draft a short social-media post about this page: a hook first, one key point, then 3 hashtags.',
+      'Writing'],
+    ['Price compare', '/compare',
+      'Compare the products or prices discussed on this page in a compact table: name, price, key difference, verdict.',
+      'Shopping'],
+  ];
+  return defs.map(([name, trigger, prompt, category]) => ({
+    id: randomUUID(), name, trigger, prompt, category, builtIn: true,
+  }));
+}
 
 function defaultSpaces(): SpacePersist[] {
   const defs = [
@@ -88,7 +133,9 @@ function defaults(): Persisted {
       downloaded: {},
       assignment: { chat: 'apple-fm', vision: 'cloud' },
       appleFmAvailable: null
-    }
+    },
+    skills: defaultSkills(),
+    chatSessions: []
   };
 }
 
@@ -112,6 +159,9 @@ export class Store {
       const parsed = { ...defaults(), ...JSON.parse(raw) };
       // Backfill the models shape for installs that predate it.
       if (!parsed.models) parsed.models = defaults().models;
+      // Backfill skills + sessions for installs that predate them.
+      if (!parsed.skills) parsed.skills = defaultSkills();
+      if (!parsed.chatSessions) parsed.chatSessions = [];
       // Re-seed themes for spaces missing them (e.g. new spaces).
       for (const s of parsed.spaces) {
         if (!parsed.themes[s.id]) {
@@ -200,6 +250,73 @@ export class Store {
     if (this.data.agentHistory.length > 100) {
       this.data.agentHistory = this.data.agentHistory.slice(-100);
     }
+    this.saveSoon();
+  }
+
+  // -- skills (saved reusable prompts) ---------------------------------------
+  listSkills(): SkillDef[] {
+    return this.data.skills.map((s) => ({ ...s }));
+  }
+
+  saveSkill(input: SkillInput): void {
+    const name = String(input.name ?? '').trim();
+    const prompt = String(input.prompt ?? '').trim();
+    let trigger = String(input.trigger ?? '').trim().toLowerCase();
+    if (!name) throw new Error('Skill needs a name.');
+    if (!prompt) throw new Error('Skill needs a prompt.');
+    if (!trigger.startsWith('/')) trigger = `/${trigger}`;
+    if (!/^\/[a-z0-9-_]{1,32}$/.test(trigger)) {
+      throw new Error('Trigger must look like /summarize (lowercase, no spaces).');
+    }
+    const clash = this.data.skills.find(
+      (s) => s.trigger === trigger && s.id !== input.id,
+    );
+    if (clash) throw new Error(`Another skill already uses ${trigger}.`);
+    const category = String(input.category ?? '').trim() || 'General';
+    if (input.id) {
+      const existing = this.data.skills.find((s) => s.id === input.id);
+      if (!existing) throw new Error('Skill not found.');
+      existing.name = name;
+      existing.trigger = trigger;
+      existing.prompt = prompt;
+      existing.category = category;
+    } else {
+      this.data.skills.push({
+        id: randomUUID(), name, trigger, prompt, category, builtIn: false,
+      });
+    }
+    this.saveSoon();
+  }
+
+  removeSkill(id: string): void {
+    this.data.skills = this.data.skills.filter((s) => s.id !== id);
+    this.saveSoon();
+  }
+
+  resetSkills(): void {
+    this.data.skills = defaultSkills();
+    this.saveSoon();
+  }
+
+  // -- chat sessions (ephemeral chats) ---------------------------------------
+  /** Archive the current conversation and start fresh. No-op when empty. */
+  archiveChatSession(): void {
+    const hist = this.data.agentHistory;
+    if (hist.length === 0) return;
+    const firstUser = hist.find((m) => m.role === 'user');
+    const title = (firstUser?.text ?? 'Chat').replace(/\s+/g, ' ').trim().slice(0, 48) || 'Chat';
+    this.data.chatSessions.unshift({
+      id: randomUUID(), title, messages: [...hist], at: Date.now(),
+    });
+    this.data.chatSessions = this.data.chatSessions.slice(0, MAX_CHAT_SESSIONS);
+    this.data.agentHistory = [];
+    this.saveSoon();
+  }
+
+  openChatSession(id: string): void {
+    const s = this.data.chatSessions.find((x) => x.id === id);
+    if (!s) throw new Error('Chat not found.');
+    this.data.agentHistory = [...s.messages];
     this.saveSoon();
   }
 }
