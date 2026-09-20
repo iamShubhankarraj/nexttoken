@@ -12,7 +12,7 @@
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
-import { accessSync, constants } from 'node:fs';
+import { accessSync, chmodSync, constants } from 'node:fs';
 import os from 'node:os';
 
 export interface AppleFmProbe {
@@ -49,6 +49,25 @@ function isExecutable(path: string): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * The executable bit can be lost when the bridge is copied into the packaged
+ * app. If the file exists but isn't executable, try to repair it once.
+ */
+function ensureExecutable(path: string): boolean {
+  if (isExecutable(path)) return true;
+  try {
+    accessSync(path, constants.F_OK);
+  } catch {
+    return false;
+  }
+  try {
+    chmodSync(path, 0o755);
+  } catch {
+    /* repair failed — fall through */
+  }
+  return isExecutable(path);
 }
 
 export class AppleFmClient {
@@ -144,7 +163,7 @@ export class AppleFmClient {
 
   private findBinary(): string | null {
     for (const candidate of this.binaryCandidates) {
-      if (candidate && isExecutable(candidate)) return candidate;
+      if (candidate && ensureExecutable(candidate)) return candidate;
     }
     return null;
   }

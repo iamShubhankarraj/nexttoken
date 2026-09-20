@@ -27,7 +27,7 @@ import {
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AgentEvent, AgentMessage, BrowserSnapshot } from "../../shared/ipc";
 import { useBrowser } from "../BrowserContext";
-import { useVoice, runVoiceCommand } from "../hooks/useVoice";
+import { useVoice, runVoiceCommand, speakLocal } from "../hooks/useVoice";
 import { domainOf, nt } from "../nt";
 
 type ChatRole = "user" | "assistant" | "tool" | "system";
@@ -84,15 +84,19 @@ export function AgentPanel() {
 
   const speak = useCallback((text: string) => {
     if (!voiceCfgRef.current.speakReplies) return;
-    if (!("speechSynthesis" in window)) return;
-    try {
-      window.speechSynthesis.cancel();
-      const utter = new SpeechSynthesisUtterance(text.slice(0, 1200));
-      utter.rate = 1.05;
-      window.speechSynthesis.speak(utter);
-    } catch {
-      /* speech is best-effort */
-    }
+    // Prefer the on-device Kokoro voice; fall back to system speech.
+    void speakLocal(text).then((ok) => {
+      if (ok) return;
+      if (!("speechSynthesis" in window)) return;
+      try {
+        window.speechSynthesis.cancel();
+        const utter = new SpeechSynthesisUtterance(text.slice(0, 1200));
+        utter.rate = 1.05;
+        window.speechSynthesis.speak(utter);
+      } catch {
+        /* speech is best-effort */
+      }
+    });
   }, []);
 
   /* ------------------------- agent event handling ------------------------ */

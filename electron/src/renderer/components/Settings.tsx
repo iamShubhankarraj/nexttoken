@@ -9,6 +9,7 @@
 
 import {
   Check,
+  Database,
   KeyRound,
   Loader2,
   Mic,
@@ -26,12 +27,14 @@ import {
 } from "../../shared/ipc";
 import { useBrowser } from "../BrowserContext";
 import { nt } from "../nt";
+import { ModelsPanel } from "./ModelsPanel";
 import { ThemeEditor } from "./ThemeEditor";
 
-type Section = "provider" | "voice" | "theme";
+type Section = "provider" | "models" | "voice" | "theme";
 
 const SECTIONS: Array<{ id: Section; label: string; icon: typeof Plug }> = [
   { id: "provider", label: "AI Provider", icon: Plug },
+  { id: "models", label: "Models", icon: Database },
   { id: "voice", label: "Voice & Search", icon: Mic },
   { id: "theme", label: "Theme", icon: Palette },
 ];
@@ -108,6 +111,7 @@ export function Settings({ onClose }: { onClose: () => void }) {
 
           <div className="min-h-0 flex-1 overflow-y-auto p-5">
             {section === "provider" && <ProviderSection />}
+            {section === "models" && <ModelsPanel />}
             {section === "voice" && <VoiceSearchSection />}
             {section === "theme" &&
               (activeSpace ? (
@@ -236,7 +240,8 @@ function ProviderSection() {
     <div>
       <p className="mb-3 text-[13px]" style={{ color: "var(--nt-text-2)" }}>
         Bring your own key. The key is stored by the main process and never
-        shown here again.
+        shown here again. Cloud is the fallback tier — on-device models
+        (Settings → Models) are tried first.
       </p>
 
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">

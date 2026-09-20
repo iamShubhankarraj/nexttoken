@@ -245,7 +245,7 @@ export async function runVoiceCommand(
     return ctx.agentPanelOpen ? "Closed the agent panel." : "Opened the agent panel.";
   }
   if (match(/^summariz(e|e this page|e the page|e this)/)) {
-    await a.agentChat("Summarize the current page");
+    await a.agentChat("Summarize the current page", { voice: true });
     return "Asking the agent to summarize this page.";
   }
   if (match(/^(switch to|go to space|open space) /)) {

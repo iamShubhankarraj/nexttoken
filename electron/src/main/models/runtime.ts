@@ -14,6 +14,7 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import type { ModelEntry } from './types';
+import { mmprojPathFor } from './downloader';
 
 export type ServerSlot = 'chat' | 'vision';
 
@@ -167,11 +168,11 @@ export class LlamaServer {
       }
       let mmprojPath: string | null = null;
       if (slot === 'vision') {
-        mmprojPath = path.join(this.modelsDir, `${entry.id}.mmproj`);
+        mmprojPath = mmprojPathFor(this.modelsDir, entry);
         if (!fs.existsSync(mmprojPath)) {
           throw new Error(
             `Vision projector for model "${entry.name}" is not downloaded ` +
-              `(expected ${entry.id}.mmproj)`
+              `(expected ${path.basename(mmprojPath)})`
           );
         }
       }

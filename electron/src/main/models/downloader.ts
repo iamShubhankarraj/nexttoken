@@ -70,7 +70,9 @@ export function targetPathFor(modelsDir: string, entry: ModelEntry): string {
   return path.join(modelsDir, `${entry.id}${ext}`);
 }
 
-function mmprojPathFor(modelsDir: string, entry: ModelEntry): string {
+/** Final on-disk path for a vision entry's mmproj file. Exported so the
+ *  llama-server runtime resolves the exact same path the downloader writes. */
+export function mmprojPathFor(modelsDir: string, entry: ModelEntry): string {
   const base = fileNameFromUrl(entry.mmprojUrl!);
   const ext = path.extname(base) || '.gguf';
   return path.join(modelsDir, `${entry.id}.mmproj${ext}`);

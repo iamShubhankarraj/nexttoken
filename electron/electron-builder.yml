@@ -5,6 +5,11 @@ directories:
 files:
   - dist/**/*
   - package.json
+# Native sidecars (applefm-bridge — build on a Mac via native/applefm/build.sh).
+# Lands at <resources>/sidecars/, resolved by AppleFmClient's first candidate.
+extraResources:
+  - from: resources/sidecars
+    to: sidecars
 mac:
   target:
     - dmg

@@ -29,7 +29,7 @@ const api: NextTokenAPI = {
   uiSetAgentPanelOpen: (o) => ipcRenderer.invoke('nt.ui.agent-panel', o),
   uiSetSettingsOpen: (o) => ipcRenderer.invoke('nt.ui.settings-open', o),
   // agent
-  agentChat: (message) => ipcRenderer.invoke('nt.agent.chat', message),
+  agentChat: (message, opts) => ipcRenderer.invoke('nt.agent.chat', message, opts),
   agentCancel: (runId) => ipcRenderer.invoke('nt.agent.cancel', runId),
   agentHistory: () => ipcRenderer.invoke('nt.agent.history'),
   agentClearHistory: () => ipcRenderer.invoke('nt.agent.clear-history'),

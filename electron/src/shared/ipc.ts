@@ -352,7 +352,7 @@ export interface NextTokenAPI {
   uiSetAgentPanelOpen(open: boolean): Promise<void>;
   uiSetSettingsOpen(open: boolean): Promise<void>;
   // agent
-  agentChat(message: string): Promise<string>;
+  agentChat(message: string, opts?: { voice?: boolean }): Promise<string>;
   agentCancel(runId: string): Promise<void>;
   agentHistory(): Promise<AgentMessage[]>;
   agentClearHistory(): Promise<void>;

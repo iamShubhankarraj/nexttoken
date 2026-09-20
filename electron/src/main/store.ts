@@ -86,7 +86,7 @@ function defaults(): Persisted {
     archiveAfterMs: ARCHIVE_AFTER_DEFAULT,
     models: {
       downloaded: {},
-      assignment: { chat: 'applefm', vision: 'cloud' },
+      assignment: { chat: 'apple-fm', vision: 'cloud' },
       appleFmAvailable: null
     }
   };
