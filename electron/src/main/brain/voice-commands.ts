@@ -241,7 +241,9 @@ export interface HeuristicIntent {
 
 const STOP = new Set([
   'a', 'an', 'the', 'to', 'for', 'of', 'on', 'in', 'me', 'my', 'it', 'this', 'that',
-  'is', 'are', 'do', 'please', 'just', 'now', 'up', 'down', 'out', 'over'
+  'is', 'are', 'do', 'please', 'just', 'now', 'out', 'over'
+  // NOTE: 'up' and 'down' are intentionally NOT stop words — they are the
+  // discriminating token in "scroll up" vs "scroll down".
 ]);
 
 function tokens(s: string): string[] {

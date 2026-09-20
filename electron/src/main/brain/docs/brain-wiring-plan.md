@@ -17,27 +17,24 @@ Conventions used below: `nt.brain.*` IPC channels follow the existing
   every side effect the brain needs is injected there, so wiring is just
   filling in the five adapters).
 
-## Step 1 — `src/main/store.ts`: Jev key + config (mirrors the provider key)
+## Step 1 — `src/main/store.ts`: Jev base URL only (key lives in the keychain module)
+
+The Jev API key is **not** stored in `Store`. It lives in the new
+`src/main/brain/credentials.ts` (`JevCredentialStore`), which mirrors the
+exact safeStorage pattern of `setApiKey`/`getApiKey` (`jev-key.bin` under
+userData, no plaintext fallback). Only the non-secret base URL goes in Store:
 
 1. In the `Persisted` interface, add:
    ```ts
-   /** Brain / Jev config. API key itself lives in the OS keychain (below). */
+   /** Brain / Jev config. The API key itself lives in the OS keychain via JevCredentialStore. */
    brain: { jevBaseUrl: string };
    ```
-2. In `defaults()` (find where `models:` defaults are built), add:
-   `brain: { jevBaseUrl: '' },`
+2. In `defaults()`, add: `brain: { jevBaseUrl: '' },`
 3. In the migration block (near `if (!parsed.models) parsed.models = defaults().models;`), add:
    `if (!parsed.brain) parsed.brain = defaults().brain;`
-4. Next to the existing `// -- API key (OS keychain via safeStorage` section,
-   add a parallel Jev key pair backed by its own file (e.g.
-   `path.join(userData, 'jev-key.bin')`, mirroring how `this.keyFile` is built):
-   ```ts
-   setJevApiKey(key: string): boolean   // encryptString -> jevKeyFile, refuse when unavailable
-   getJevApiKey(): string | null       // decryptString, null when absent
-   get jevKeyInKeychain(): boolean
-   ```
-   Copy the exact safeStorage pattern from `setApiKey`/`getApiKey` — no
-   plaintext fallback, ever.
+
+No key accessors are added to `Store`. The wiring in Step 5 constructs
+`JevCredentialStore` directly.
 
 ## Step 2 — `src/shared/ipc.ts`: public contract
 
@@ -126,19 +123,24 @@ only when the default "Done." would confuse (e.g. tab.list speaks the list).
    ```ts
    import { dialog } from 'electron';
    import { JevClient } from './brain/jev';
+   import { JevCredentialStore } from './brain/credentials';
    import { Orchestrator, createRouterChat } from './brain/orchestrator';
    import { executeControl } from './brain/control';
    import { snapshotPage, formatSnapshot } from './agent/perceive';
    ```
 2. Module scope (next to `let voiceEngine` / `let routerDeps`):
    ```ts
+   let jevCreds: JevCredentialStore;
    let jevClient: JevClient;
    let orchestrator: Orchestrator;
    ```
 3. In init, right after `routerDeps = { store, appleFm, llama };`:
    ```ts
+   jevCreds = new JevCredentialStore(userData);
    jevClient = new JevClient({
-     apiKey: store.getJevApiKey() ?? '',
+     // Runtime key source: OS keychain, resolved on every call. The raw key
+     // is never held in app state and never logged.
+     keyProvider: () => jevCreds.loadKey(),
      baseUrl: store.d.brain.jevBaseUrl || undefined
    });
    const chat = createRouterChat(routerDeps);
@@ -187,28 +189,45 @@ only when the default "Done." would confuse (e.g. tab.list speaks the list).
 4. IPC handlers (after the `nt.voice.*` block):
    ```ts
    ipcMain.handle('nt.brain.jev.get', (): JevConfigPublic =>
-     ({ configured: store.jevKeyInKeychain, baseUrl: store.d.brain.jevBaseUrl }));
+     ({ configured: jevCreds.hasKey, baseUrl: store.d.brain.jevBaseUrl }));
    ipcMain.handle('nt.brain.jev.set', (_e, input: JevConfigInput): JevConfigPublic => {
-     if (input.apiKey) store.setJevApiKey(input.apiKey);
-     if (typeof input.baseUrl === 'string') store.d.brain.jevBaseUrl = input.baseUrl.trim();
-     store.save(); // check the actual persist method name in store.ts
-     jevClient = new JevClient({ apiKey: store.getJevApiKey() ?? '', baseUrl: store.d.brain.jevBaseUrl || undefined });
-     // NOTE: orchestrator holds the old client instance. Simplest correct fix:
-     // rebuild the orchestrator too, or give JevClient a setBaseUrl() and call
-     // jevClient.setApiKey()/setBaseUrl() instead of reconstructing. Prefer the setters.
-     return { configured: store.jevKeyInKeychain, baseUrl: store.d.brain.jevBaseUrl };
+     // Save first, then point the client at the new key. The transient
+     // `apiKey` path is only for the Validate button (Step 7) — it is never
+     // persisted here.
+     if (typeof input.baseUrl === 'string') {
+       store.d.brain.jevBaseUrl = input.baseUrl.trim();
+       store.save(); // check the actual persist method name in store.ts
+     }
+     if (input.apiKey) {
+       const ok = jevCreds.saveKey(input.apiKey);
+       if (!ok) throw new Error('OS keychain unavailable — Jev key was not stored.');
+     }
+     jevClient.setKeyProvider(() => jevCreds.loadKey());
+     return { configured: jevCreds.hasKey, baseUrl: store.d.brain.jevBaseUrl };
    });
    ipcMain.handle('nt.brain.jev.test', async () => {
      const r = await jevClient.booleanCheck('connectivity test', 'This is a connectivity test, not a real request');
      return r.ok ? { ok: true, latencyMs: 0 } : { ok: false, error: r.message };
+   });
+   ipcMain.handle('nt.brain.jev.validate', async (_e, apiKey: string, baseUrl?: string) => {
+     // ONE lightweight call with a transient client. The key is never
+     // persisted here — the renderer only calls nt.brain.jev.set after the
+     // user confirms. The transient client is discarded after this call.
+     const probe = new JevClient({ apiKey, baseUrl: baseUrl?.trim() || undefined, timeoutMs: 4000 });
+     const r = await probe.booleanCheck('validation probe', 'Is this a validation probe?');
+     return r.ok ? { ok: true } : { ok: false, error: r.message };
    });
    ipcMain.handle('nt.brain.utterance', (_e, text: string, source: 'voice' | 'text') => {
      void orchestrator.handleUtterance(text, source).catch((e) =>
        win?.webContents.send('nt.brain.event', { kind: 'error', message: String(e) }));
    });
    ```
-   Prefer adding `setBaseUrl()` to `JevClient` over reconstructing (keeps the
-   orchestrator's reference valid).
+   Add `brainValidateJev(apiKey: string, baseUrl?: string): Promise<{ ok: boolean; error?: string }>;`
+   to `NextTokenAPI` in `src/shared/ipc.ts` and the matching preload line
+   (`brainValidateJev: (apiKey, baseUrl) => ipcRenderer.invoke('nt.brain.jev.validate', apiKey, baseUrl)`).
+   Note: the Validate button sends the typed key over IPC to main, which uses
+   it transiently and drops it — the key is only written to the keychain on
+   explicit Save.
 
 ## Step 6 — voice hook: route transcripts into the brain
 

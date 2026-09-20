@@ -13,7 +13,12 @@
  *   `{ ok: false, reason }` so callers can degrade gracefully to local
  *   heuristics or LLM routing. It throws only for programmer errors
  *   (invalid question construction).
- * - The API key never appears in logs or error messages.
+ * - Key handling: the runtime path resolves the key on every call from the
+ *   OS keychain via JevCredentialStore (credentials.ts) through the
+ *   `keyProvider` callback — the raw key is never held in app state longer
+ *   than a single request and never appears in logs or error messages.
+ *   `config.apiKey` exists only for transient flows (the Settings Validate
+ *   button, tests) and is never persisted by this client.
  * - Timeout is short on purpose: Jev should answer in milliseconds; anything
  *   slower than ~2s is treated as a failure, not waited on.
  */
@@ -112,8 +117,19 @@ export interface JevDecision {
 export type JevCall = JevDecision | JevUnavailable;
 
 export interface JevConfig {
-  /** TypeSafe API key. Empty/missing -> every call returns { ok: false, reason: 'no-key' }. */
-  apiKey: string;
+  /**
+   * TypeSafe API key for transient use only (the Settings "Validate" button
+   * flow, tests). It is never persisted by this client.
+   * The runtime path must use `keyProvider` -> JevCredentialStore instead.
+   */
+  apiKey?: string;
+  /**
+   * Runtime key source: called on every decide() so saving/rotating the key
+   * in the OS keychain takes effect immediately without reconstructing the
+   * client. Wiring: () => jevCredentialStore.loadKey().
+   * Takes precedence over `apiKey` when it returns a non-empty key.
+   */
+  keyProvider?: () => string | null;
   baseUrl?: string;
   model?: string;
   /** Per-attempt timeout. Default 2000ms. */
@@ -229,22 +245,40 @@ export class JevClient {
   private readonly timeoutMs: number;
   private readonly maxRetries: number;
   private apiKey: string;
+  private keyProvider: (() => string | null) | null;
 
   constructor(config: JevConfig) {
     this.apiKey = (config.apiKey ?? '').trim();
+    this.keyProvider = config.keyProvider ?? null;
     this.baseUrl = (config.baseUrl ?? JEV_DEFAULT_BASE_URL).replace(/\/+$/, '');
     this.model = config.model ?? JEV_DEFAULT_MODEL;
     this.timeoutMs = config.timeoutMs ?? JEV_TIMEOUT_MS;
     this.maxRetries = config.maxRetries ?? JEV_MAX_RETRIES;
   }
 
-  /** Swap the key at runtime (e.g. after the user saves a new one in Settings). */
+  /** Swap the transient key at runtime (e.g. the Validate-button flow). */
   setApiKey(apiKey: string): void {
     this.apiKey = (apiKey ?? '').trim();
   }
 
+  /** Swap the runtime key source (e.g. after the credential store is ready). */
+  setKeyProvider(provider: (() => string | null) | null): void {
+    this.keyProvider = provider;
+  }
+
+  /** Resolve the key for this call: secure store first, transient key second. */
+  private resolveKey(): string | null {
+    try {
+      const fromStore = this.keyProvider?.();
+      if (fromStore && fromStore.trim().length > 0) return fromStore.trim();
+    } catch {
+      /* a failing provider must not break the call path */
+    }
+    return this.apiKey.length > 0 ? this.apiKey : null;
+  }
+
   get configured(): boolean {
-    return this.apiKey.length > 0;
+    return this.resolveKey() !== null;
   }
 
   /**
@@ -257,7 +291,8 @@ export class JevClient {
     opts?: { signal?: AbortSignal }
   ): Promise<JevCall> {
     validateQuestions(questions);
-    if (!this.configured) {
+    const key = this.resolveKey();
+    if (!key) {
       return { ok: false, reason: 'no-key', message: 'Jev API key is not configured' };
     }
 
@@ -281,7 +316,8 @@ export class JevClient {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            Authorization: `Bearer ${this.apiKey}`
+            // The key lives only in this header and the keychain; it is never logged.
+            Authorization: `Bearer ${key}`
           },
           body,
           signal: ac.signal

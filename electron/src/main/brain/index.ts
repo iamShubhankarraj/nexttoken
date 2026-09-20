@@ -11,5 +11,6 @@
  */
 
 export * from './jev';
+export * from './credentials';
 export * from './voice-commands';
 export * from './orchestrator';
