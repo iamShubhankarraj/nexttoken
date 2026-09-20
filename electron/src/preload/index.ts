@@ -45,6 +45,32 @@ const api: NextTokenAPI = {
   themesGet: (spaceId) => ipcRenderer.invoke('nt.themes.get', spaceId),
   themesSet: (spaceId, tokens) => ipcRenderer.invoke('nt.themes.set', spaceId, tokens),
   themesReset: (spaceId) => ipcRenderer.invoke('nt.themes.reset', spaceId),
+  // local models
+  modelsList: () => ipcRenderer.invoke('nt.models.list'),
+  modelsDownload: (id) => ipcRenderer.invoke('nt.models.download', id),
+  modelsCancelDownload: (id) => ipcRenderer.invoke('nt.models.cancel-download', id),
+  modelsRemove: (id) => ipcRenderer.invoke('nt.models.remove', id),
+  modelsGetAssignment: () => ipcRenderer.invoke('nt.models.assignment.get'),
+  modelsSetAssignment: (task, ref) => ipcRenderer.invoke('nt.models.assignment.set', task, ref),
+  modelsAppleFm: () => ipcRenderer.invoke('nt.models.applefm'),
+  modelsDiskUsage: () => ipcRenderer.invoke('nt.models.disk-usage'),
+  onModelEvent: (cb) => {
+    const l = (_e: unknown, e: Parameters<Parameters<NextTokenAPI['onModelEvent']>[0]>[0]) => cb(e);
+    ipcRenderer.on('nt.model-event', l);
+    return () => ipcRenderer.removeListener('nt.model-event', l);
+  },
+  // voice engine
+  voiceSttAvailable: () => ipcRenderer.invoke('nt.voice.stt-available'),
+  voiceStartListening: () => ipcRenderer.invoke('nt.voice.start-listening'),
+  voiceAudioChunk: (data) => ipcRenderer.invoke('nt.voice.audio-chunk', data),
+  voiceStopListening: () => ipcRenderer.invoke('nt.voice.stop-listening'),
+  voiceCancelListening: () => ipcRenderer.invoke('nt.voice.cancel-listening'),
+  voiceSpeak: (text) => ipcRenderer.invoke('nt.voice.speak', text),
+  onVoiceEngineState: (cb) => {
+    const l = (_e: unknown, s: Parameters<Parameters<NextTokenAPI['onVoiceEngineState']>[0]>[0]) => cb(s);
+    ipcRenderer.on('nt.voice-engine-state', l);
+    return () => ipcRenderer.removeListener('nt.voice-engine-state', l);
+  },
   // events
   onSnapshot: (cb) => {
     const l = (_e: unknown, s: Parameters<Parameters<NextTokenAPI['onSnapshot']>[0]>[0]) => cb(s);

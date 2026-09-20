@@ -278,6 +278,48 @@ export type AgentEvent =
   | { kind: 'done'; runId: string };
 
 // ---------------------------------------------------------------------------
+// Local models (on-device tier) + voice engine
+// ---------------------------------------------------------------------------
+
+export type ModelTask = 'chat' | 'vision' | 'stt' | 'tts';
+
+/** 'applefm' | 'cloud' | a catalog model id. */
+export type ModelRef = string;
+
+/** Catalog entry merged with local download state. */
+export interface ModelEntryPublic {
+  id: string;
+  name: string;
+  task: ModelTask;
+  params: string;
+  quant: string;
+  sizeBytes: number;
+  description: string;
+  license: string;
+  downloaded: boolean;
+  downloading: boolean;
+  bytesDownloaded: number;
+  totalBytes: number;
+}
+
+export type ModelEvent =
+  | { kind: 'progress'; id: string; bytesDownloaded: number; totalBytes: number }
+  | { kind: 'done'; id: string }
+  | { kind: 'error'; id: string; error: string };
+
+export interface ModelAssignment {
+  chat: ModelRef;
+  vision: ModelRef;
+}
+
+export interface AppleFmStatus {
+  available: boolean;
+  reason?: string;
+}
+
+export type VoiceEngineState = 'idle' | 'listening' | 'transcribing' | 'speaking';
+
+// ---------------------------------------------------------------------------
 // The window.nt API (implemented in preload via contextBridge)
 // ---------------------------------------------------------------------------
 
@@ -326,6 +368,24 @@ export interface NextTokenAPI {
   themesGet(spaceId: string): Promise<ThemeTokens>;
   themesSet(spaceId: string, tokens: ThemeTokens): Promise<void>;
   themesReset(spaceId: string): Promise<void>;
+  // local models (on-device tier; cloud BYOK stays the fallback)
+  modelsList(): Promise<ModelEntryPublic[]>;
+  modelsDownload(id: string): Promise<void>;
+  modelsCancelDownload(id: string): Promise<void>;
+  modelsRemove(id: string): Promise<void>;
+  modelsGetAssignment(): Promise<ModelAssignment>;
+  modelsSetAssignment(task: 'chat' | 'vision', ref: ModelRef): Promise<void>;
+  modelsAppleFm(): Promise<AppleFmStatus>;
+  modelsDiskUsage(): Promise<number>;
+  onModelEvent(cb: (e: ModelEvent) => void): () => void;
+  // voice engine (local STT/TTS sidecars; Web Speech remains the fallback)
+  voiceSttAvailable(): Promise<boolean>;
+  voiceStartListening(): Promise<void>;
+  voiceAudioChunk(data: Uint8Array): Promise<void>;
+  voiceStopListening(): Promise<string>;
+  voiceCancelListening(): Promise<void>;
+  voiceSpeak(text: string): Promise<Uint8Array>;
+  onVoiceEngineState(cb: (s: VoiceEngineState) => void): () => void;
   // events
   onSnapshot(cb: (s: BrowserSnapshot) => void): () => void;
   snapshotGet(): Promise<BrowserSnapshot>;
