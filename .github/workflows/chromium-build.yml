@@ -1,0 +1,80 @@
+# Next Token CI — full Chromium build
+#
+# Full builds happen HERE, not on laptops. Chromium needs 150-250 GB disk,
+# 16 GB+ RAM, and hours per clean build. This workflow uses large runners
+# with sccache so incremental builds stay in the minutes.
+#
+# Matrix: {avx2, sse3} x {linux, mac, win}  (see PLAN.md §5 — SIMD tiers)
+
+name: chromium-build
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    # Weekly rebase check: syncs latest pinned milestone, tries apply.sh,
+    # and reports patch conflicts before they become emergencies.
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+env:
+  SCCACHE_GHA_ENABLED: "true"
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        simd: [avx2, sse3]
+        os: [linux]
+        include:
+          - os: mac
+            simd: avx2
+          - os: win
+            simd: avx2
+    runs-on: ${{ matrix.os == 'linux' && 'ubuntu-22.04-32core-128gb' || matrix.os == 'mac' && 'macos-14-xlarge' || 'windows-2022-32core-128gb' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up depot_tools
+        run: |
+          git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
+          echo "$GITHUB_WORKSPACE/depot_tools" >> $GITHUB_PATH
+
+      - name: Sync Chromium (pinned milestone)
+        run: |
+          # PIN: update the tag on every rebase (see docs/REBASE.md)
+          gclient sync --with_branch_heads --jobs=16 --revision src@refs/tags/153.0.8010.36
+
+      - name: Apply ungoogled-chromium base series
+        run: |
+          git clone --depth 1 https://github.com/ungoogled-software/ungoogled-chromium.git
+          cd "$GITHUB_WORKSPACE/chromium/src"
+          python3 "$GITHUB_WORKSPACE/ungoogled-chromium/utils/patches.py" apply \
+            "$GITHUB_WORKSPACE/ungoogled-chromium/patches"
+
+      - name: Apply Next Token patch series
+        run: bash patches/apply.sh
+        env:
+          CHROMIUM_SRC: ${{ github.workspace }}/chromium/src
+
+      - name: Configure (sccache + speed recipe)
+        run: |
+          cd "$GITHUB_WORKSPACE/chromium/src"
+          gn gen out/Default --args='import("//../build/args.gn") cc_wrapper="sccache"'
+        # SIMD tier selection for this matrix leg is applied via the
+        # 2000-series compiler patches + args here (see build/args.gn note).
+
+      - name: Build
+        run: autoninja -C "$GITHUB_WORKSPACE/chromium/src/out/Default" chrome -j 32
+
+      - name: Benchmarks (gate releases)
+        run: |
+          echo "TODO(phase-1): run Speedometer 3.x, JetStream 3, cold-start,"
+          echo "idle-memory harness; fail the job on regression vs baseline."
+
+      - name: Upload build
+        uses: actions/upload-artifact@v4
+        with:
+          name: next-token-${{ matrix.os }}-${{ matrix.simd }}
+          path: ${{ github.workspace }}/chromium/src/out/Default/chrome*

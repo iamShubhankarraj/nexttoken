@@ -1,0 +1,16 @@
+# never commit build outputs or the Chromium tree
+out/
+chromium/
+*.o
+*.a
+# UI
+ui/node_modules/
+ui/dist/
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+# secrets — API keys live in the OS keychain, never here
+.env
+*.pem
+*.key

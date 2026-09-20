@@ -1,0 +1,32 @@
+# Next Token — GN build args (speed recipe)
+# Imported via: gn gen out/Default --args='import("//../build/args.gn")'
+# See ~/workspace/browser-plan/PLAN.md §5 for the full speed program.
+
+# Official-style optimized build
+is_official_build = true
+is_debug = false
+
+# Keep some symbols for crash triage; 0 = smallest binary
+symbol_level = 1
+
+# --- The big one: profile-guided optimization (Chrome has had this since 2016;
+# ungoogled-chromium disables it — we turn it back on) ---
+chrome_pgo_phase = 2
+
+# Link-time optimization (upstream default for official builds; needs 16-64 GB
+# link RAM — one more reason full builds live in CI)
+thin_lto_enable_optimizations = true
+
+# --- Debloat: ungoogled-style service stripping (small footprint/startup wins) ---
+disable_fieldtrial_testing_config = true
+enable_reporting = false
+enable_mdns = false
+enable_service_discovery = false
+enable_remoting = false
+exclude_unwind_tables = true
+
+# NOTE: -O3 and SIMD-tier builds (-march=... variants: AVX2 default + SSE3
+# fallback) are applied as patches against build/config/compiler/BUILD.gn in
+# patches/ (2000-series). They are deliberately NOT gn args: study Thorium's
+# PATCHES.md, reimplement against our pinned tree, don't copy blind.
+# The SIMD tiers multiply the CI build matrix (see .github/workflows).
