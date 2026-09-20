@@ -1,6 +1,7 @@
 /**
  * Settings overlay (nt.uiSetSettingsOpen) on the new design system:
- * BYOK provider, voice & search, and the per-space theme editor.
+ * BYOK provider, local models, saved skills, voice & search, and the
+ * per-space theme editor.
  *
  * The stored API key is never displayed — settingsGetProvider() only
  * reports keyConfigured, and the key field submits empty to keep the
@@ -18,6 +19,7 @@ import {
   Search,
   Volume2,
   X,
+  Zap,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import {
@@ -28,13 +30,15 @@ import {
 import { useBrowser } from "../BrowserContext";
 import { nt } from "../nt";
 import { ModelsPanel } from "./ModelsPanel";
+import { SkillsSection } from "./SettingsSkills";
 import { ThemeEditor } from "./ThemeEditor";
 
-type Section = "provider" | "models" | "voice" | "theme";
+type Section = "provider" | "models" | "skills" | "voice" | "theme";
 
 const SECTIONS: Array<{ id: Section; label: string; icon: typeof Plug }> = [
   { id: "provider", label: "AI Provider", icon: Plug },
   { id: "models", label: "Models", icon: Database },
+  { id: "skills", label: "Skills", icon: Zap },
   { id: "voice", label: "Voice & Search", icon: Mic },
   { id: "theme", label: "Theme", icon: Palette },
 ];
@@ -112,6 +116,7 @@ export function Settings({ onClose }: { onClose: () => void }) {
           <div className="min-h-0 flex-1 overflow-y-auto p-5">
             {section === "provider" && <ProviderSection />}
             {section === "models" && <ModelsPanel />}
+            {section === "skills" && <SkillsSection />}
             {section === "voice" && <VoiceSearchSection />}
             {section === "theme" &&
               (activeSpace ? (
