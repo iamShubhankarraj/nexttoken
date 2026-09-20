@@ -2,12 +2,13 @@ import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu } from 'electron';
 import type { WebContents } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { Store } from './store';
 import { TabManager } from './tabs';
 import { AdBlocker } from './adblock';
 import { startAgentRun, cancelAgentRun } from './agent/loop';
-import { testConnection } from './agent/llm';
 import { APPLE_FM_REF, CLOUD_REF, type RouterDeps } from './agent/router';
+import { ModelRouter } from './models/router';
 import { snapshotPage, formatSnapshot } from './agent/perceive';
 import { JevClient } from './brain/jev';
 import { JevCredentialStore } from './brain/credentials';
@@ -22,8 +23,8 @@ import {
   PROVIDER_PRESETS, DEFAULT_DARK_TOKENS
 } from '../shared/ipc';
 import type {
-  AdBlockState, AdBlockStats, AgentEvent, BrainEvent, BrowserSnapshot, ChatSession, JevConfigInput, JevConfigPublic, ModelAssignment,
-  ModelEntryPublic, ModelEvent, ProviderConfigInput, ProviderConfigPublic, SkillDef, SkillInput, SpaceState,
+  ActiveModelRef, AdBlockState, AdBlockStats, AgentEvent, BrainEvent, BrowserSnapshot, ChatSession, JevConfigInput, JevConfigPublic, ModelAssignment,
+  ModelChoice, ModelEntryPublic, ModelEvent, ProviderId, ProviderInput, ProviderPublic, ProviderValidateInput, SkillDef, SkillInput, SpaceState,
   TabDelta, ThemeTokens, VoiceEngineState
 } from '../shared/ipc';
 
@@ -41,6 +42,8 @@ let llama: LlamaServer;
 let appleFm: AppleFmClient;
 let voiceEngine: VoiceEngine;
 let routerDeps: RouterDeps;
+/** The unified model router — every LLM call in the app goes through this. */
+let modelRouter: ModelRouter;
 /** In-flight download progress (id -> bytes), mirrored from downloader events. */
 const dlProgress = new Map<string, { bytesDownloaded: number; totalBytes: number }>();
 
@@ -134,6 +137,7 @@ function initModelTier() {
     getTtsModelDir: ttsModelDir
   });
   routerDeps = { store, appleFm, llama };
+  modelRouter = new ModelRouter(routerDeps);
 
   // -- brain: Jev System-One orchestration --------------------------------------
   jevCreds = new JevCredentialStore(userData);
@@ -186,17 +190,28 @@ function initModelTier() {
   });
 }
 
-function publicProvider(): ProviderConfigPublic {
-  const p = store.d.provider;
-  const preset = PROVIDER_PRESETS.find((x) => x.id === p.presetId);
-  return {
+/** Push the active model to the renderer (Agent tab switcher stays in sync). */
+function emitActiveModel() {
+  win?.webContents.send('nt.model-active-changed', { ...store.d.models.activeModel });
+}
+
+function needsKeyFor(presetId: ProviderId): boolean {
+  return PROVIDER_PRESETS.find((x) => x.id === presetId)?.needsKey ?? true;
+}
+
+/** What the renderer may see — keys never leave main. */
+function publicProviders(): ProviderPublic[] {
+  return store.d.providers.map((p) => ({
+    id: p.id,
     presetId: p.presetId,
-    name: preset?.name ?? 'Custom',
+    name: p.name,
     baseUrl: p.baseUrl,
     model: p.model,
     api: p.api,
-    keyConfigured: !!store.getApiKey()
-  };
+    enabled: p.enabled,
+    keyConfigured: store.providerKeyConfigured(p.id),
+    needsKey: needsKeyFor(p.presetId)
+  }));
 }
 
 function snapshot(): BrowserSnapshot {
@@ -455,28 +470,67 @@ function registerIpc() {
     return store.listSkills();
   });
 
-  // -- settings / BYOK -----------------------------------------------------------
-  ipcMain.handle('nt.settings.provider.get', (): ProviderConfigPublic => publicProvider());
-  ipcMain.handle('nt.settings.provider.set', (_e, input: ProviderConfigInput): ProviderConfigPublic => {
+  // -- BYOK providers (provider manager: multiple API gateway providers) -----------
+  ipcMain.handle('nt.providers.list', (): ProviderPublic[] => publicProviders());
+  ipcMain.handle('nt.providers.save', (_e, input: ProviderInput): ProviderPublic[] => {
     const preset = PROVIDER_PRESETS.find((x) => x.id === input.presetId);
+    if (!preset) throw new Error(`Unknown provider preset "${input.presetId}"`);
+    const id = input.id ?? randomUUID();
+    const existing = store.d.providers.find((p) => p.id === id);
+    if (!existing && input.id) throw new Error('Provider not found.');
     // Save the key FIRST so a keychain failure leaves prior settings untouched.
-    if (input.apiKey && !store.setApiKey(input.apiKey)) {
+    const apiKey = (input.apiKey ?? '').trim();
+    if (apiKey && !store.setProviderKey(id, apiKey)) {
       throw new Error('Could not access the OS keychain — the API key was not saved, and provider settings were left unchanged.');
     }
-    store.d.provider = {
+    const rec = {
+      id,
       presetId: input.presetId,
-      baseUrl: input.baseUrl.trim() || preset?.baseUrl || '',
+      name: input.name.trim() || preset.name,
+      baseUrl: input.baseUrl.trim() || preset.baseUrl,
       model: input.model.trim(),
-      api: preset?.api ?? 'openai'
+      api: input.api ?? preset.api,
+      enabled: existing ? !!input.enabled : (input.enabled ?? true),
+      createdAt: existing?.createdAt ?? Date.now()
     };
+    if (existing) Object.assign(existing, rec);
+    else store.d.providers.push(rec);
     store.saveSoon();
-    return publicProvider();
+    return publicProviders();
   });
-  ipcMain.handle('nt.settings.provider.test', async () => {
-    const p = store.d.provider;
-    return testConnection({
-      baseUrl: p.baseUrl, api: p.api, apiKey: store.getApiKey() ?? '', model: p.model
-    });
+  ipcMain.handle('nt.providers.remove', (_e, id: string): ProviderPublic[] => {
+    const i = store.d.providers.findIndex((p) => p.id === id);
+    if (i === -1) throw new Error('Provider not found.');
+    store.d.providers.splice(i, 1);
+    store.removeProviderKey(id);
+    // If the deleted provider was the active model, fall to the next enabled provider.
+    const active = store.d.models.activeModel;
+    if (active?.kind === 'cloud' && active.id === id) {
+      const next = store.d.providers.find((p) => p.enabled);
+      store.d.models.activeModel = next ? { kind: 'cloud', id: next.id } : { kind: 'local-applefm' };
+      emitActiveModel();
+    }
+    store.saveSoon();
+    return publicProviders();
+  });
+  ipcMain.handle('nt.providers.set-enabled', (_e, id: string, enabled: boolean): ProviderPublic[] => {
+    const p = store.d.providers.find((x) => x.id === id);
+    if (!p) throw new Error('Provider not found.');
+    p.enabled = !!enabled;
+    store.saveSoon();
+    return publicProviders();
+  });
+  ipcMain.handle('nt.providers.validate', async (_e, input: ProviderValidateInput) => {
+    return modelRouter.validateProvider(input);
+  });
+
+  // -- unified model routing --------------------------------------------------
+  ipcMain.handle('nt.models.choices', (): Promise<ModelChoice[]> => modelRouter.listChoices());
+  ipcMain.handle('nt.models.active.get', (): ActiveModelRef => modelRouter.getActive());
+  ipcMain.handle('nt.models.active.set', (_e, ref: ActiveModelRef): ActiveModelRef => {
+    const saved = modelRouter.setActive(ref);
+    emitActiveModel();
+    return saved;
   });
   ipcMain.handle('nt.settings.voice.get', () => store.d.voice);
   ipcMain.handle('nt.settings.voice.set', (_e, v: { enabled: boolean; speakReplies: boolean; voiceControl?: boolean }) => {
@@ -563,6 +617,11 @@ function registerIpc() {
     delete store.d.models.downloaded[id];
     if (store.d.models.assignment.chat === id) store.d.models.assignment.chat = APPLE_FM_REF;
     if (store.d.models.assignment.vision === id) store.d.models.assignment.vision = CLOUD_REF;
+    const active = store.d.models.activeModel;
+    if (active?.kind === 'local' && active.id === id) {
+      store.d.models.activeModel = { kind: 'local-applefm' };
+      emitActiveModel();
+    }
     store.saveSoon();
   });
   ipcMain.handle('nt.models.assignment.get', (): ModelAssignment => {

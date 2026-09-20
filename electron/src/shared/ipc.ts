@@ -241,21 +241,69 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
   { id: 'custom', name: 'Custom OpenAI-compatible', baseUrl: '', modelHint: 'model-id', api: 'openai', needsKey: true }
 ];
 
-/** What the renderer is allowed to see — the key itself never leaves main. */
-export interface ProviderConfigPublic {
+/** What the renderer is allowed to see of one BYOK provider — keys never cross IPC. */
+export interface ProviderPublic {
+  id: string;
   presetId: ProviderId;
   name: string;
   baseUrl: string;
   model: string;
   api: 'openai' | 'anthropic';
+  enabled: boolean;
   keyConfigured: boolean;
+  needsKey: boolean;
 }
 
-export interface ProviderConfigInput {
+/** Payload for creating or updating one provider in the manager. */
+export interface ProviderInput {
+  id?: string;
+  presetId: ProviderId;
+  name: string;
+  baseUrl: string;
+  model: string;
+  api: 'openai' | 'anthropic';
+  enabled: boolean;
+  /** Plaintext key only at submit time; stored via Electron safeStorage. */
+  apiKey?: string;
+}
+
+/** Validate/Test button payload — tests the CURRENT form values, saved or not. */
+export interface ProviderValidateInput {
+  id?: string;
   presetId: ProviderId;
   baseUrl: string;
-  apiKey: string; // empty string = keep existing
+  api: 'openai' | 'anthropic';
+  /** Plaintext key only for this test; when empty, the stored key (if any) is used. */
+  apiKey?: string;
   model: string;
+}
+
+// ---------------------------------------------------------------------------
+// Unified model routing + BYOK provider manager
+// ---------------------------------------------------------------------------
+
+/**
+ * The user's active model choice — the single selection that drives every
+ * LLM call in the app (agent chat, skills, slash commands, writing help,
+ * follow-ups, summarization, brain/voice pipeline).
+ */
+export interface ActiveModelRef {
+  /** 'local-applefm' = Apple Foundation Models; 'local' = downloaded GGUF; 'cloud' = BYOK provider. */
+  kind: 'local-applefm' | 'local' | 'cloud';
+  /** Model catalog id when kind='local'; provider id when kind='cloud'. */
+  id?: string;
+}
+
+/** One selectable model in the Agent tab switcher, grouped Local / Cloud. */
+export interface ModelChoice {
+  ref: ActiveModelRef;
+  /** Display label, e.g. "Apple Foundation Models", "SmolLM3 3B", "OpenAI". */
+  label: string;
+  /** Secondary line, e.g. "On-device · 3B", "gpt-5". */
+  detail: string;
+  group: 'local' | 'cloud';
+  available: boolean;
+  unavailableReason?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -352,6 +400,8 @@ export type BrainEvent =
   | { kind: 'acted'; intent: string; summary: string }
   | { kind: 'ask'; question: string }
   | { kind: 'spoken'; text: string }
+  /** Informational note, e.g. the model router fell back to another model. Never spoken aloud. */
+  | { kind: 'note'; text: string }
   | { kind: 'error'; message: string };
 
 // ---------------------------------------------------------------------------
@@ -455,14 +505,23 @@ export interface NextTokenAPI {
   skillsSave(skill: SkillInput): Promise<SkillDef[]>;
   skillsRemove(id: string): Promise<SkillDef[]>;
   skillsReset(): Promise<SkillDef[]>;
-  // settings (BYOK)
-  settingsGetProvider(): Promise<ProviderConfigPublic>;
-  settingsSetProvider(input: ProviderConfigInput): Promise<ProviderConfigPublic>;
-  settingsTestConnection(): Promise<{ ok: boolean; error?: string; model?: string }>;
+  // settings (voice, search)
   settingsGetVoice(): Promise<VoiceSettings>;
   settingsSetVoice(v: { enabled: boolean; speakReplies: boolean; voiceControl?: boolean }): Promise<void>;
   settingsGetSearchEngine(): Promise<string>;
   settingsSetSearchEngine(url: string): Promise<void>;
+  // BYOK providers — the provider manager (multiple API gateway providers)
+  providersList(): Promise<ProviderPublic[]>;
+  providersSave(input: ProviderInput): Promise<ProviderPublic[]>;
+  providersRemove(id: string): Promise<ProviderPublic[]>;
+  providersSetEnabled(id: string, enabled: boolean): Promise<ProviderPublic[]>;
+  providersValidate(input: ProviderValidateInput): Promise<{ ok: boolean; message: string }>;
+  // unified model routing — the active model drives every LLM call in the app
+  modelsChoices(): Promise<ModelChoice[]>;
+  modelsGetActive(): Promise<ActiveModelRef>;
+  modelsSetActive(ref: ActiveModelRef): Promise<ActiveModelRef>;
+  /** Fires whenever the active model changes (any surface). */
+  onActiveModel(cb: (ref: ActiveModelRef) => void): () => void;
   // themes
   themesGet(spaceId: string): Promise<ThemeTokens>;
   themesSet(spaceId: string, tokens: ThemeTokens): Promise<void>;

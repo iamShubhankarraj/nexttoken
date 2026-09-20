@@ -43,6 +43,7 @@ import { registerAskHandler, registerPrefillHandler } from "../agentBus";
 import { useVoice, runVoiceCommand, speakLocal } from "../hooks/useVoice";
 import { registerBrainVoiceControl } from "../hooks/useBrainAudio";
 import { domainOf, nt } from "../nt";
+import { ModelSwitcher } from "./ModelSwitcher";
 
 /** One-line label for a brain pipeline event in the trace feed. */
 function brainEventLabel(e: BrainEvent): string {
@@ -55,6 +56,7 @@ function brainEventLabel(e: BrainEvent): string {
     case "acted": return e.summary;
     case "ask": return e.question;
     case "spoken": return `“${e.text}”`;
+    case "note": return `Note: ${e.text}`;
     case "error": return e.message;
   }
 }
@@ -443,6 +445,10 @@ export function AgentPanel() {
         <p className="text-[15px] font-semibold tracking-[-0.01em]" style={{ color: "var(--nt-text-1)" }}>
           Agent
         </p>
+        {/* model switcher — the active model drives everything the agent does */}
+        <div className="ml-2">
+          <ModelSwitcher />
+        </div>
         <span className="flex-1" />
         <button
           title="New chat (archives this one)"

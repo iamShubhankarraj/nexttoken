@@ -10,23 +10,26 @@
 
 import {
   Check,
+  ChevronRight,
   Database,
   KeyRound,
   Loader2,
   Mic,
   Palette,
   Plug,
+  Plus,
   Search,
   Shield,
+  Trash2,
   Volume2,
   X,
   Zap,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type CSSProperties } from "react";
 import {
   PROVIDER_PRESETS,
   type AdBlockState,
-  type ProviderConfigPublic,
+  type ProviderPublic,
   type ProviderId,
 } from "../../shared/ipc";
 import { useBrowser } from "../BrowserContext";
@@ -137,262 +140,368 @@ export function Settings({ onClose }: { onClose: () => void }) {
   );
 }
 
-/* ------------------------------ AI provider ----------------------------- */
+/* ------------------------------ AI providers ---------------------------- */
+/*
+ * Provider manager — connect multiple API gateway providers:
+ * OpenAI, Anthropic, OpenRouter, Ollama, and any number of Custom
+ * OpenAI-compatible endpoints. Each provider gets its own card with
+ * name, endpoint, default model, secure key, enable toggle, Test, and
+ * Remove. Keys live in the OS keychain via the main process (one
+ * encrypted file per provider) and are never displayed or echoed.
+ */
+
+const PROVIDER_KINDS = ["openai", "anthropic", "openrouter", "ollama", "custom"] as const;
 
 function ProviderSection() {
-  const [presetId, setPresetId] = useState<ProviderId>("openai");
-  const [baseUrl, setBaseUrl] = useState("");
-  const [apiKey, setApiKey] = useState("");
-  const [model, setModel] = useState("");
-  const [keyConfigured, setKeyConfigured] = useState(false);
+  const [providers, setProviders] = useState<ProviderPublic[]>([]);
   const [loaded, setLoaded] = useState(false);
+  const [adding, setAdding] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      setProviders(await nt().providersList());
+    } catch {
+      /* bridge unavailable */
+    } finally {
+      setLoaded(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const addProvider = async (presetId: ProviderId) => {
+    const preset = PROVIDER_PRESETS.find((p) => p.id === presetId);
+    if (!preset) return;
+    try {
+      const list = await nt().providersSave({
+        presetId,
+        name: preset.name,
+        baseUrl: preset.baseUrl,
+        model: "",
+        api: preset.api,
+        apiKey: "",
+        enabled: true,
+      });
+      setProviders(list);
+    } catch {
+      /* surface on the card instead */
+    } finally {
+      setAdding(false);
+    }
+  };
+
+  if (!loaded) {
+    return (
+      <div>
+        <p className="mb-4 text-[13px] leading-relaxed" style={{ color: "var(--nt-text-2)" }}>
+          Loading providers…
+        </p>
+        <JevSection />
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <p className="mb-4 text-[13px] leading-relaxed" style={{ color: "var(--nt-text-2)" }}>
+        Bring your own keys — connect as many AI providers as you like. The model you pick in the
+        Agent tab is served from these providers; each one gets a per-key OS-keychain vault, and
+        keys are never shown or logged.
+      </p>
+
+      <div className="flex flex-col gap-3">
+        {providers.map((p) => (
+          <ProviderCard key={p.id} provider={p} onChanged={setProviders} />
+        ))}
+        {providers.length === 0 && (
+          <p className="nt-r-md border border-dashed px-4 py-5 text-center text-[13px]" style={{ borderColor: "var(--nt-border)", color: "var(--nt-text-3)" }}>
+            No providers yet — add one below to power the agent with cloud models.
+          </p>
+        )}
+      </div>
+
+      {adding ? (
+        <div className="nt-r-md mt-3 border p-3" style={{ borderColor: "var(--nt-border)", background: "var(--nt-bg-raised)" }}>
+          <p className="nt-micro mb-2">Add a provider</p>
+          <div className="flex flex-wrap gap-2">
+            {PROVIDER_KINDS.map((kind) => {
+              const preset = PROVIDER_PRESETS.find((p) => p.id === kind);
+              if (!preset) return null;
+              return (
+                <button
+                  key={kind}
+                  onClick={() => void addProvider(kind)}
+                  className="nt-r-sm border px-3 py-1.5 text-[13px] font-medium transition-colors hover:bg-[var(--nt-bg-hover)]"
+                  style={{ borderColor: "var(--nt-border)", color: "var(--nt-text-1)" }}
+                >
+                  {preset.name}
+                </button>
+              );
+            })}
+          </div>
+          <button
+            onClick={() => setAdding(false)}
+            className="mt-2 text-[12px] underline"
+            style={{ color: "var(--nt-text-3)" }}
+          >
+            Cancel
+          </button>
+        </div>
+      ) : (
+        <button
+          onClick={() => setAdding(true)}
+          className="nt-r-sm mt-3 flex items-center gap-1.5 border px-4 py-2 text-[13px] font-medium transition-colors hover:bg-[var(--nt-bg-hover)]"
+          style={{ borderColor: "var(--nt-border)", color: "var(--nt-text-1)" }}
+        >
+          <Plus size={14} strokeWidth={1.75} />
+          Add provider
+        </button>
+      )}
+
+      {/* Jev System-One — the orchestration brain. Key in OS keychain. */}
+      <JevSection />
+    </div>
+  );
+}
+
+/** One provider card: name, endpoint, model, key, enable toggle, test, remove. */
+function ProviderCard({ provider, onChanged }: { provider: ProviderPublic; onChanged: (p: ProviderPublic[]) => void }) {
+  const [name, setName] = useState(provider.name);
+  const [baseUrl, setBaseUrl] = useState(provider.baseUrl);
+  const [model, setModel] = useState(provider.model);
+  const [apiKey, setApiKey] = useState("");
+  const [api, setApi] = useState<"openai" | "anthropic">(provider.api);
+  const [expanded, setExpanded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<string | null>(null);
   const [testOk, setTestOk] = useState<boolean | null>(null);
   const [savedTick, setSavedTick] = useState(false);
+  const [confirmRemove, setConfirmRemove] = useState(false);
 
-  // Load current config once (key itself never leaves main).
-  useEffect(() => {
-    let alive = true;
-    nt()
-      .settingsGetProvider()
-      .then((c: ProviderConfigPublic) => {
-        if (!alive) return;
-        setPresetId(c.presetId);
-        setBaseUrl(c.baseUrl);
-        setModel(c.model);
-        setKeyConfigured(c.keyConfigured);
-        setLoaded(true);
-      })
-      .catch(() => setLoaded(true));
-    return () => {
-      alive = false;
-    };
-  }, []);
-
-  const applyPreset = (id: ProviderId) => {
-    setPresetId(id);
-    const p = PROVIDER_PRESETS.find((x) => x.id === id);
-    if (p) {
-      setBaseUrl(p.baseUrl);
-      setModel("");
-      setApiKey("");
-    }
-    setTestResult(null);
-    setTestOk(null);
-  };
-
-  const preset = PROVIDER_PRESETS.find((p) => p.id === presetId);
+  const preset = PROVIDER_PRESETS.find((p) => p.id === provider.presetId);
+  const needsKey = provider.needsKey;
 
   const save = async () => {
+    if (saving) return;
     setSaving(true);
     try {
-      const updated = await nt().settingsSetProvider({
-        presetId,
-        baseUrl: baseUrl.trim(),
-        apiKey, // empty string = keep existing key
-        model: model.trim() || preset?.modelHint || "",
+      const list = await nt().providersSave({
+        id: provider.id,
+        presetId: provider.presetId,
+        name,
+        baseUrl,
+        model,
+        api,
+        apiKey,
+        enabled: provider.enabled,
       });
-      setKeyConfigured(updated.keyConfigured);
+      onChanged(list);
       setApiKey("");
       setSavedTick(true);
-      setTimeout(() => setSavedTick(false), 1600);
-    } catch (err) {
-      setTestResult(
-        `Couldn't save: ${err instanceof Error ? err.message : String(err)}`,
-      );
-      setTestOk(false);
+      setTimeout(() => setSavedTick(false), 1800);
     } finally {
       setSaving(false);
     }
   };
 
   const test = async () => {
+    if (testing) return;
     setTesting(true);
     setTestResult(null);
     setTestOk(null);
     try {
-      const r = await nt().settingsTestConnection();
+      // Tests the CURRENT form values, so the user can validate before saving.
+      const r = await nt().providersValidate({
+        id: provider.id,
+        presetId: provider.presetId,
+        baseUrl,
+        api,
+        apiKey,
+        model,
+      });
       setTestOk(r.ok);
-      setTestResult(
-        r.ok
-          ? `Connected${r.model ? ` — model “${r.model}” responded` : ""}.`
-          : `Connection failed: ${r.error ?? "unknown error"}.`,
-      );
+      setTestResult(r.message);
     } catch (err) {
       setTestOk(false);
-      setTestResult(
-        `Connection failed: ${err instanceof Error ? err.message : String(err)}.`,
-      );
+      setTestResult(err instanceof Error ? err.message : String(err));
     } finally {
       setTesting(false);
     }
   };
 
-  const inputCls =
-    "nt-r-sm w-full border bg-[var(--nt-bg-base)] px-3 py-2 text-[13px] outline-none transition-colors placeholder:text-[var(--nt-text-3)] focus:border-[var(--nt-accent)]";
-  const inputStyle = {
-    borderColor: "var(--nt-border)",
-    color: "var(--nt-text-1)",
-  } as const;
+  const toggleEnabled = async () => {
+    try {
+      onChanged(await nt().providersSetEnabled(provider.id, !provider.enabled));
+    } catch {
+      /* leave the toggle as-is */
+    }
+  };
 
-  if (!loaded) {
-    return (
-      <p className="text-[13px]" style={{ color: "var(--nt-text-3)" }}>
-        Loading provider settings…
-      </p>
-    );
-  }
+  const remove = async () => {
+    if (!confirmRemove) {
+      setConfirmRemove(true);
+      setTimeout(() => setConfirmRemove(false), 4000);
+      return;
+    }
+    try {
+      onChanged(await nt().providersRemove(provider.id));
+    } catch {
+      /* leave the card in place */
+    }
+  };
+
+  const inputCls =
+    "nt-r-sm w-full border px-3 py-2 text-[13px] outline-none transition-colors placeholder:text-[var(--nt-text-faint)] focus:border-[var(--nt-accent)]";
+  const inputStyle: CSSProperties = {
+    borderColor: "var(--nt-border)",
+    background: "var(--nt-bg-sunken)",
+    color: "var(--nt-text-1)",
+  };
 
   return (
-    <div>
-      <p className="mb-3 text-[13px]" style={{ color: "var(--nt-text-2)" }}>
-        Bring your own key. The key is stored by the main process and never
-        shown here again. Cloud is the fallback tier — on-device models
-        (Settings → Models) are tried first.
-      </p>
-
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-        {PROVIDER_PRESETS.map((p) => {
-          const active = p.id === presetId;
-          return (
-            <button
-              key={p.id}
-              onClick={() => applyPreset(p.id)}
-              className="nt-r-md border p-3 text-left transition-colors"
-              style={
-                active
-                  ? {
-                      borderColor: "var(--nt-accent)",
-                      background: "var(--nt-accent-soft)",
-                    }
-                  : {
-                      borderColor: "var(--nt-border)",
-                      background: "var(--nt-bg-base)",
-                    }
-              }
-            >
-              <span
-                className="flex items-center gap-1.5 text-[13px] font-medium"
-                style={{ color: "var(--nt-text-1)" }}
-              >
-                {active && (
-                  <Check size={13} strokeWidth={2.5} style={{ color: "var(--nt-accent)" }} />
-                )}
-                {p.name}
-              </span>
-              <span
-                className="mt-1 block truncate text-[11px]"
-                style={{ color: "var(--nt-text-3)" }}
-              >
-                {p.needsKey ? "API key" : "No key needed"} · {p.api}
-              </span>
-            </button>
-          );
-        })}
-      </div>
-
-      <div className="mt-4 space-y-3">
-        <label className="block">
-          <FieldLabel text="Endpoint URL" />
-          <input
-            value={baseUrl}
-            onChange={(e) => setBaseUrl(e.target.value)}
-            placeholder={preset?.baseUrl || "https://…"}
-            spellCheck={false}
-            className={inputCls}
-            style={inputStyle}
-          />
-        </label>
-
-        {preset?.needsKey && (
-          <label className="block">
-            <FieldLabel
-              text="API key"
-              hint={
-                keyConfigured
-                  ? "A key is stored. Leave blank to keep it."
-                  : "Stored securely by the main process."
-              }
-            />
-            <div className="relative">
-              <KeyRound
-                size={14}
-                strokeWidth={1.75}
-                className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2"
-                style={{ color: "var(--nt-text-3)" }}
-              />
-              <input
-                type="password"
-                value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
-                placeholder={keyConfigured ? "•••••••• (stored)" : "sk-…"}
-                spellCheck={false}
-                autoComplete="off"
-                className={`${inputCls} pl-9`}
-                style={inputStyle}
-              />
-            </div>
-          </label>
-        )}
-
-        <label className="block">
-          <FieldLabel text="Model" />
-          <input
-            value={model}
-            onChange={(e) => setModel(e.target.value)}
-            placeholder={preset?.modelHint || "model-id"}
-            spellCheck={false}
-            className={inputCls}
-            style={inputStyle}
-          />
-        </label>
-      </div>
-
-      <div className="mt-4 flex items-center gap-2">
+    <div className="nt-r-md border" style={{ borderColor: "var(--nt-border)", background: "var(--nt-bg-raised)" }}>
+      {/* header row */}
+      <div className="flex items-center gap-2.5 px-3.5 py-3">
         <button
-          onClick={() => void save()}
-          disabled={saving}
-          className="nt-r-sm flex items-center gap-1.5 px-4 py-2 text-[13px] font-semibold transition-transform hover:scale-[1.02] disabled:opacity-50"
-          style={{ background: "var(--nt-accent)", color: "var(--nt-accent-text)" }}
-        >
-          {saving && <Loader2 size={14} strokeWidth={1.75} className="animate-spin" />}
-          {savedTick ? "Saved ✓" : "Save"}
-        </button>
-        <button
-          onClick={() => void test()}
-          disabled={testing}
-          className="nt-r-sm flex items-center gap-1.5 border px-4 py-2 text-[13px] font-medium transition-colors hover:bg-[var(--nt-bg-hover)] disabled:opacity-50"
-          style={{ borderColor: "var(--nt-border)", color: "var(--nt-text-1)" }}
-        >
-          {testing ? (
-            <Loader2 size={14} strokeWidth={1.75} className="animate-spin" />
-          ) : (
-            <Plug size={14} strokeWidth={1.75} />
-          )}
-          Test connection
-        </button>
-      </div>
-
-      {testResult && (
-        <p
-          className="mt-3 text-[13px]"
+          onClick={toggleEnabled}
+          title={provider.enabled ? "Disable provider" : "Enable provider"}
+          aria-pressed={provider.enabled}
+          className="nt-r-full relative h-5.5 w-10 shrink-0 transition-colors"
           style={{
-            color:
-              testOk === true
-                ? "#6fa287"
-                : testOk === false
-                  ? "#d97362"
-                  : "var(--nt-text-2)",
+            height: 22,
+            background: provider.enabled ? "var(--nt-accent)" : "var(--nt-bg-sunken)",
+            border: "1px solid var(--nt-border)",
+            borderRadius: 999,
           }}
         >
-          {testResult}
-        </p>
-      )}
+          <span
+            className="absolute top-1/2 h-3.5 w-3.5 -translate-y-1/2 rounded-full transition-all"
+            style={{
+              height: 14,
+              width: 14,
+              left: provider.enabled ? 22 : 4,
+              background: provider.enabled ? "var(--nt-accent-text)" : "var(--nt-text-3)",
+            }}
+          />
+        </button>
+        <button
+          onClick={() => setExpanded((e) => !e)}
+          className="flex min-w-0 flex-1 items-center gap-2 text-left"
+        >
+          <span className="truncate text-[14px] font-semibold" style={{ color: "var(--nt-text-1)" }}>
+            {provider.name}
+          </span>
+          {provider.keyConfigured && needsKey ? (
+            <span className="nt-r-full shrink-0 px-2 py-0.5 text-[10px] font-medium" style={{ background: "var(--nt-accent-soft)", color: "var(--nt-accent)" }}>
+              key ✓
+            </span>
+          ) : needsKey ? (
+            <span className="nt-r-full shrink-0 px-2 py-0.5 text-[10px] font-medium" style={{ background: "var(--nt-bg-sunken)", color: "var(--nt-text-3)" }}>
+              no key
+            </span>
+          ) : (
+            <span className="nt-r-full shrink-0 px-2 py-0.5 text-[10px] font-medium" style={{ background: "var(--nt-bg-sunken)", color: "var(--nt-text-3)" }}>
+              no key needed
+            </span>
+          )}
+          {!provider.enabled && (
+            <span className="nt-r-full shrink-0 px-2 py-0.5 text-[10px] font-medium" style={{ background: "var(--nt-bg-sunken)", color: "var(--nt-text-3)" }}>
+              off
+            </span>
+          )}
+          <ChevronRight
+            size={14}
+            strokeWidth={1.75}
+            className="shrink-0 transition-transform"
+            style={{ color: "var(--nt-text-3)", transform: expanded ? "rotate(90deg)" : undefined }}
+          />
+        </button>
+      </div>
 
-      {/* Jev System-One — the orchestration brain. Key in OS keychain. */}
-      <JevSection />
+      {expanded && (
+        <div className="border-t px-3.5 pb-3.5 pt-3" style={{ borderColor: "var(--nt-border)" }}>
+          <div className="grid grid-cols-2 gap-3">
+            <label className="block">
+              <FieldLabel text="Name" />
+              <input value={name} onChange={(e) => setName(e.target.value)} placeholder={preset?.name} spellCheck={false} className={inputCls} style={inputStyle} />
+            </label>
+            <label className="block">
+              <FieldLabel text="Model" />
+              <input value={model} onChange={(e) => setModel(e.target.value)} placeholder={preset?.modelHint || "model-id"} spellCheck={false} className={inputCls} style={inputStyle} />
+            </label>
+          </div>
+          <label className="mt-3 block">
+            <FieldLabel text="Base URL" hint="Local Ollama: keep http://localhost:11434/v1" />
+            <input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder={preset?.baseUrl || "https://…"} spellCheck={false} className={inputCls} style={inputStyle} />
+          </label>
+          {provider.presetId === "custom" && (
+            <label className="mt-3 block">
+              <FieldLabel text="API style" hint="How this endpoint speaks" />
+              <div className="nt-r-sm flex overflow-hidden border" style={{ borderColor: "var(--nt-border)" }}>
+                {(["openai", "anthropic"] as const).map((k) => (
+                  <button
+                    key={k}
+                    onClick={() => setApi(k)}
+                    className="flex-1 px-3 py-1.5 text-[13px] font-medium transition-colors"
+                    style={{
+                      background: api === k ? "var(--nt-accent-soft)" : "transparent",
+                      color: api === k ? "var(--nt-accent)" : "var(--nt-text-2)",
+                    }}
+                  >
+                    {k === "openai" ? "OpenAI-compatible" : "Anthropic"}
+                  </button>
+                ))}
+              </div>
+            </label>
+          )}
+          {needsKey && (
+            <label className="mt-3 block">
+              <FieldLabel text="API key" hint={provider.keyConfigured ? "A key is stored. Leave blank to keep it." : "Stored securely by the main process."} />
+              <div className="relative">
+                <KeyRound size={14} strokeWidth={1.75} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2" style={{ color: "var(--nt-text-3)" }} />
+                <input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder={provider.keyConfigured ? "•••••••• (stored)" : "paste key…"} spellCheck={false} autoComplete="off" className={`${inputCls} pl-9`} style={inputStyle} />
+              </div>
+            </label>
+          )}
+          <div className="mt-4 flex items-center gap-2">
+            <button
+              onClick={() => void save()}
+              disabled={saving}
+              className="nt-r-sm flex items-center gap-1.5 px-4 py-2 text-[13px] font-semibold transition-transform hover:scale-[1.02] disabled:opacity-50"
+              style={{ background: "var(--nt-accent)", color: "var(--nt-accent-text)" }}
+            >
+              {saving && <Loader2 size={14} strokeWidth={1.75} className="animate-spin" />}
+              {savedTick ? "Saved ✓" : "Save"}
+            </button>
+            <button
+              onClick={() => void test()}
+              disabled={testing}
+              className="nt-r-sm flex items-center gap-1.5 border px-4 py-2 text-[13px] font-medium transition-colors hover:bg-[var(--nt-bg-hover)] disabled:opacity-50"
+              style={{ borderColor: "var(--nt-border)", color: "var(--nt-text-1)" }}
+            >
+              {testing ? <Loader2 size={14} strokeWidth={1.75} className="animate-spin" /> : <Plug size={14} strokeWidth={1.75} />}
+              Test connection
+            </button>
+            <span className="flex-1" />
+            <button
+              onClick={() => void remove()}
+              className="nt-r-sm flex items-center gap-1.5 border px-3 py-2 text-[13px] font-medium transition-colors hover:bg-[var(--nt-bg-hover)]"
+              style={{ borderColor: confirmRemove ? "#d97362" : "var(--nt-border)", color: confirmRemove ? "#d97362" : "var(--nt-text-2)" }}
+            >
+              <Trash2 size={14} strokeWidth={1.75} />
+              {confirmRemove ? "Sure?" : "Remove"}
+            </button>
+          </div>
+          {testResult && (
+            <p className="mt-3 text-[13px]" style={{ color: testOk === true ? "#6fa287" : testOk === false ? "#d97362" : "var(--nt-text-2)" }}>
+              {testResult}
+            </p>
+          )}
+        </div>
+      )}
     </div>
   );
 }

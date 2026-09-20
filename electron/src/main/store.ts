@@ -2,9 +2,9 @@ import { app, safeStorage } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { DEFAULT_DARK_TOKENS, MAX_CHAT_SESSIONS, SPACE_PALETTE } from '../shared/ipc';
+import { DEFAULT_DARK_TOKENS, MAX_CHAT_SESSIONS, PROVIDER_PRESETS, SPACE_PALETTE } from '../shared/ipc';
 import type {
-  AgentMessage, ArchivedTab, ProviderId, SiteBoost, SkillDef, SkillInput, ThemeTokens
+  ActiveModelRef, AgentMessage, ArchivedTab, ProviderId, SiteBoost, SkillDef, SkillInput, ThemeTokens
 } from '../shared/ipc';
 import type { ModelRef } from './models/types';
 
@@ -16,10 +16,17 @@ export interface SpacePersist {
   pinned: { url: string; title: string }[];
 }
 export interface ProviderPersist {
+  /** Stable uuid — the keychain file for this provider's key is keyed by it. */
+  id: string;
   presetId: ProviderId;
+  /** User-editable display name, e.g. "Work OpenAI". */
+  name: string;
   baseUrl: string;
+  /** Default model id for this provider. */
   model: string;
   api: 'openai' | 'anthropic';
+  enabled: boolean;
+  createdAt: number;
 }
 export interface SkillPersist {
   id: string;
@@ -48,18 +55,22 @@ interface Persisted {
   themes: Record<string, ThemeTokens>;
   voice: { enabled: boolean; speakReplies: boolean; voiceControl: boolean };
   searchEngine: string;
-  provider: ProviderPersist;
+  /** BYOK providers (provider manager). Each provider's API key lives in the OS keychain. */
+  providers: ProviderPersist[];
   agentHistory: AgentMessage[];
   archived: ArchivedTab[];
   /** Per-site restyling — planned Boosts feature. Persisted now, no UI yet. */
   boosts: SiteBoost[];
   /** Auto-archive idle tabs after this long. Default 12h (Arc parity). */
   archiveAfterMs: number;
-  /** Local model state: downloaded files, per-task assignment, Apple FM probe. */
+  /** Local model state: downloaded files, per-task assignment, Apple FM probe, active model. */
   models: {
     downloaded: Record<string, ModelDownloadRecord>;
+    /** 'vision' still has its own per-task override; 'chat' is legacy — the unified activeModel drives chat now. */
     assignment: { chat: ModelRef; vision: ModelRef };
     appleFmAvailable: boolean | null;
+    /** The single model selection used by every LLM call in the app. */
+    activeModel: ActiveModelRef;
   };
   /** Brain / Jev config. The API key itself lives in the OS keychain via JevCredentialStore. */
   brain: { jevBaseUrl: string };
@@ -128,7 +139,16 @@ function defaults(): Persisted {
     themes,
     voice: { enabled: true, speakReplies: false, voiceControl: false },
     searchEngine: 'https://www.google.com/search?q=',
-    provider: { presetId: 'openai', baseUrl: 'https://api.openai.com/v1', model: 'gpt-5', api: 'openai' },
+    providers: [{
+      id: randomUUID(),
+      presetId: 'openai',
+      name: 'OpenAI',
+      baseUrl: 'https://api.openai.com/v1',
+      model: 'gpt-5',
+      api: 'openai',
+      enabled: true,
+      createdAt: Date.now()
+    }],
     agentHistory: [],
     archived: [],
     boosts: [],
@@ -136,7 +156,8 @@ function defaults(): Persisted {
     models: {
       downloaded: {},
       assignment: { chat: 'apple-fm', vision: 'cloud' },
-      appleFmAvailable: null
+      appleFmAvailable: null,
+      activeModel: { kind: 'local-applefm' }
     },
     brain: { jevBaseUrl: '' },
     skills: defaultSkills(),
@@ -147,7 +168,6 @@ function defaults(): Persisted {
 
 export class Store {
   private file: string;
-  private keyFile: string;
   private data: Persisted;
   private saveTimer: NodeJS.Timeout | null = null;
 
@@ -155,7 +175,6 @@ export class Store {
     const dir = app.getPath('userData');
     fs.mkdirSync(dir, { recursive: true });
     this.file = path.join(dir, 'next-token.json');
-    this.keyFile = path.join(dir, 'provider-key.bin');
     this.data = this.load();
   }
 
@@ -174,6 +193,41 @@ export class Store {
       if (!parsed.chatSessions) parsed.chatSessions = [];
       // Backfill ad-blocker config for installs that predate it.
       if (!parsed.adblock) parsed.adblock = defaults().adblock;
+      // Backfill the multi-provider manager for installs that predate it.
+      if (!Array.isArray(parsed.providers)) {
+        const legacy = parsed.provider ?? defaults().providers[0];
+        const id = randomUUID();
+        const preset = PROVIDER_PRESETS.find((p) => p.id === legacy.presetId);
+        parsed.providers = [{
+          id,
+          presetId: legacy.presetId,
+          name: preset?.name ?? 'Custom',
+          baseUrl: legacy.baseUrl,
+          model: legacy.model,
+          api: legacy.api,
+          enabled: true,
+          createdAt: Date.now()
+        }];
+        // Migrate the legacy single key file into the new per-provider slot.
+        try {
+          const legacyFile = path.join(app.getPath('userData'), 'provider-key.bin');
+          if (fs.existsSync(legacyFile)) {
+            fs.mkdirSync(path.join(app.getPath('userData'), 'provider-keys'), { recursive: true });
+            fs.copyFileSync(legacyFile, path.join(app.getPath('userData'), 'provider-keys', `${id}.bin`));
+            fs.rmSync(legacyFile);
+          }
+        } catch { /* best effort — the user can re-enter the key */ }
+        delete parsed.provider;
+      }
+      // Backfill the unified active model from the legacy per-task chat assignment.
+      if (!parsed.models.activeModel) {
+        const legacyChat: string = parsed.models.assignment?.chat ?? 'apple-fm';
+        const cloud = parsed.providers.find((p: ProviderPersist) => p.enabled) ?? parsed.providers[0];
+        parsed.models.activeModel =
+          legacyChat === 'apple-fm' ? { kind: 'local-applefm' as const } :
+          legacyChat === 'cloud' && cloud ? { kind: 'cloud' as const, id: cloud.id } :
+          { kind: 'local' as const, id: legacyChat };
+      }
       // Re-seed themes for spaces missing them (e.g. new spaces).
       for (const s of parsed.spaces) {
         if (!parsed.themes[s.id]) {
@@ -223,37 +277,57 @@ export class Store {
     return this.data.themes[spaceId] ?? { ...DEFAULT_DARK_TOKENS };
   }
 
-  // -- API key (OS keychain via safeStorage; never in the JSON) -------------
-  // Returns true when the key was encrypted into the OS keychain.
-  // If OS encryption is unavailable we REFUSE to store the key at all —
-  // there is no plaintext fallback. (On macOS safeStorage always works.)
-  setApiKey(key: string): boolean {
-    if (!key) return true; // nothing to store
+  // -- BYOK provider keys (one per provider, OS keychain via safeStorage; never in the JSON) --
+  private keyFileFor(providerId: string): string {
+    const dir = path.join(app.getPath('userData'), 'provider-keys');
+    fs.mkdirSync(dir, { recursive: true });
+    return path.join(dir, `${providerId}.bin`);
+  }
+
+  /**
+   * Persist one provider's API key to the OS keychain.
+   * Returns true when stored. Empty input clears the stored key.
+   * Returns false (and stores nothing) when OS encryption is unavailable —
+   * there is no plaintext fallback, ever.
+   */
+  setProviderKey(providerId: string, key: string): boolean {
+    const trimmed = (key ?? '').trim();
     try {
+      const file = this.keyFileFor(providerId);
+      if (trimmed.length === 0) {
+        fs.rmSync(file, { force: true });
+        return true;
+      }
       if (safeStorage.isEncryptionAvailable()) {
-        fs.writeFileSync(this.keyFile, safeStorage.encryptString(key));
+        fs.writeFileSync(file, safeStorage.encryptString(trimmed));
         return true;
       }
     } catch { /* fall through to refusal */ }
     return false;
   }
 
-  getApiKey(): string | null {
+  /** Decrypt and return a provider's stored key, or null when absent/unreadable. */
+  getProviderKey(providerId: string): string | null {
     try {
       if (!safeStorage.isEncryptionAvailable()) return null;
-      const buf = fs.readFileSync(this.keyFile);
-      return safeStorage.decryptString(buf);
+      const key = safeStorage.decryptString(fs.readFileSync(this.keyFileFor(providerId)));
+      return key.length > 0 ? key : null;
     } catch {
       return null;
     }
   }
 
-  get keyInKeychain(): boolean {
+  providerKeyConfigured(providerId: string): boolean {
     if (!safeStorage.isEncryptionAvailable()) return false;
     try {
-      fs.readFileSync(this.keyFile);
+      fs.readFileSync(this.keyFileFor(providerId));
       return true;
     } catch { return false; }
+  }
+
+  /** Remove a provider's key file (used when the provider is deleted). */
+  removeProviderKey(providerId: string): void {
+    try { fs.rmSync(this.keyFileFor(providerId), { force: true }); } catch { /* best effort */ }
   }
 
   // -- agent history (text only, capped) -------------------------------------

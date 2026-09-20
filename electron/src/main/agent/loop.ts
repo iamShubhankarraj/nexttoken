@@ -65,18 +65,22 @@ async function runLoop(runId: string, userText: string, rt: AgentRuntime, signal
         ? `Current tab perception:\n${formatSnapshot(snap)}`
         : 'Current tab perception: (no active tab or page not readable — you can open_tab or navigate first)';
 
-      // Tiered routing: Apple FM → local llama-server → cloud BYOK.
-      const { text, toolCalls } = (await routeChat(router, {
+      // Unified routing: the Agent tab's active model serves the turn, with
+      // a visible fallback chain. Never silently swap — the note names the
+      // model that actually answered.
+      const routed = await routeChat(router, {
         task: 'chat',
         messages: [...convo, { role: 'user', content: perception }],
         tools: TOOL_DEFS,
         signal
-      })).result;
+      });
+      const { text, toolCalls } = routed.result;
 
       if (toolCalls.length === 0) {
         const final = text.trim() || '(no response)';
-        emit({ kind: 'message', runId, text: final, done: true });
-        store.pushHistory({ id: randomUUID(), role: 'assistant', text: final, at: Date.now() });
+        const withNote = routed.fallbackNote ? `${final}\n\n_(${routed.fallbackNote})_` : final;
+        emit({ kind: 'message', runId, text: withNote, done: true });
+        store.pushHistory({ id: randomUUID(), role: 'assistant', text: withNote, at: Date.now() });
         convo.push({ role: 'assistant', content: final });
         emit({ kind: 'done', runId });
         return;

@@ -111,6 +111,22 @@ export function ModelsPanel() {
   const [confirmRemoveId, setConfirmRemoveId] = useState<string | null>(null);
   const [assignBusy, setAssignBusy] = useState<"" | "chat" | "vision">("");
   const [assignError, setAssignError] = useState<string | null>(null);
+  const [activeModelLabel, setActiveModelLabel] = useState<string | null>(null);
+
+  /** The unified active model drives every LLM call — keep its label fresh. */
+  const loadActiveModelLabel = useCallback(async () => {
+    try {
+      const [choices, active] = await Promise.all([
+        nt().modelsChoices(),
+        nt().modelsGetActive(),
+      ]);
+      const key = `${active.kind}:${active.id ?? ""}`;
+      const match = choices.find((c) => `${c.ref.kind}:${c.ref.id ?? ""}` === key);
+      setActiveModelLabel(match ? match.label : "—");
+    } catch {
+      /* bridge unavailable */
+    }
+  }, []);
 
   const load = useCallback(async () => {
     setLoadError(null);
@@ -133,7 +149,15 @@ export function ModelsPanel() {
 
   useEffect(() => {
     void load();
-  }, [load]);
+    void loadActiveModelLabel();
+    let off: (() => void) | undefined;
+    try {
+      off = nt().onActiveModel(() => void loadActiveModelLabel());
+    } catch {
+      /* no bridge */
+    }
+    return () => off?.();
+  }, [load, loadActiveModelLabel]);
 
   // Live updates: progress ticks update the row in place; done/error do a
   // full refresh (list, assignment options, disk usage).
@@ -233,6 +257,18 @@ export function ModelsPanel() {
     try {
       await modelsApi().modelsSetAssignment(task, ref);
       setAssignment((prev) => ({ ...prev, [task]: ref }));
+      // The chat assignment IS the active model for everything the agent does:
+      // choosing a local chat model here switches the unified active model too.
+      if (task === "chat") {
+        const activeRef =
+          ref === APPLE_FM_REF
+            ? { kind: "local-applefm" as const }
+            : ref !== CLOUD_REF
+              ? { kind: "local" as const, id: ref }
+              : null;
+        if (activeRef) await nt().modelsSetActive(activeRef);
+        await loadActiveModelLabel();
+      }
     } catch (err) {
       setAssignError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -356,23 +392,33 @@ export function ModelsPanel() {
         Model assignment
       </h3>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <AssignmentSelect
-          label="Chat model"
-          value={chatValue}
-          busy={assignBusy === "chat"}
-          disabled={assignBusy !== ""}
-          onChange={(v) => void setAssign("chat", v)}
-          options={[
-            ...(apple.available
-              ? [{ value: APPLE_FM_REF, label: "Apple Foundation Models" }]
-              : []),
-            ...downloadedFor("chat").map((e) => ({
-              value: e.id,
-              label: `${e.name} (${formatBytes(e.sizeBytes)})`,
-            })),
-            { value: CLOUD_REF, label: "Cloud (BYOK fallback)" },
-          ]}
-        />
+        <div>
+          <AssignmentSelect
+            label="Chat model"
+            value={chatValue}
+            busy={assignBusy === "chat"}
+            disabled={assignBusy !== ""}
+            onChange={(v) => void setAssign("chat", v)}
+            options={[
+              ...(apple.available
+                ? [{ value: APPLE_FM_REF, label: "Apple Foundation Models" }]
+                : []),
+              ...downloadedFor("chat").map((e) => ({
+                value: e.id,
+                label: `${e.name} (${formatBytes(e.sizeBytes)})`,
+              })),
+              { value: CLOUD_REF, label: "Cloud (BYOK fallback)" },
+            ]}
+          />
+          <p className="mt-1.5 text-[11.5px]" style={{ color: "var(--nt-text-3)" }}>
+            Active model:{" "}
+            <span className="font-medium" style={{ color: "var(--nt-accent)" }}>
+              {activeModelLabel ?? "…"}
+            </span>{" "}
+            — answers everything, everywhere. Pick a cloud model from the switcher in the
+            Agent tab.
+          </p>
+        </div>
         <AssignmentSelect
           label="Vision model"
           value={visionValue}

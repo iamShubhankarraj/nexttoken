@@ -41,10 +41,21 @@ const api: NextTokenAPI = {
   skillsSave: (skill) => ipcRenderer.invoke('nt.skills.save', skill),
   skillsRemove: (id) => ipcRenderer.invoke('nt.skills.remove', id),
   skillsReset: () => ipcRenderer.invoke('nt.skills.reset'),
-  // settings
-  settingsGetProvider: () => ipcRenderer.invoke('nt.settings.provider.get'),
-  settingsSetProvider: (input) => ipcRenderer.invoke('nt.settings.provider.set', input),
-  settingsTestConnection: () => ipcRenderer.invoke('nt.settings.provider.test'),
+  // BYOK providers — the provider manager (multiple API gateway providers)
+  providersList: () => ipcRenderer.invoke('nt.providers.list'),
+  providersSave: (input) => ipcRenderer.invoke('nt.providers.save', input),
+  providersRemove: (id) => ipcRenderer.invoke('nt.providers.remove', id),
+  providersSetEnabled: (id, enabled) => ipcRenderer.invoke('nt.providers.set-enabled', id, enabled),
+  providersValidate: (input) => ipcRenderer.invoke('nt.providers.validate', input),
+  // unified model routing — the active model drives every LLM call
+  modelsChoices: () => ipcRenderer.invoke('nt.models.choices'),
+  modelsGetActive: () => ipcRenderer.invoke('nt.models.active.get'),
+  modelsSetActive: (ref) => ipcRenderer.invoke('nt.models.active.set', ref),
+  onActiveModel: (cb) => {
+    const l = (_e: unknown, ref: Parameters<Parameters<NextTokenAPI['onActiveModel']>[0]>[0]) => cb(ref);
+    ipcRenderer.on('nt.model-active-changed', l);
+    return () => ipcRenderer.removeListener('nt.model-active-changed', l);
+  },
   settingsGetVoice: () => ipcRenderer.invoke('nt.settings.voice.get'),
   settingsSetVoice: (v) => ipcRenderer.invoke('nt.settings.voice.set', v),
   settingsGetSearchEngine: () => ipcRenderer.invoke('nt.settings.search-engine.get'),
