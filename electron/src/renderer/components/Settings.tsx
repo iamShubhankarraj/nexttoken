@@ -386,6 +386,183 @@ function ProviderSection() {
           {testResult}
         </p>
       )}
+
+      {/* Jev System-One — the orchestration brain. Key in OS keychain. */}
+      <JevSection />
+    </div>
+  );
+}
+
+/* --------------------------- Jev orchestration -------------------------- */
+
+function JevSection() {
+  const [baseUrl, setBaseUrl] = useState("");
+  const [apiKey, setApiKey] = useState("");
+  const [configured, setConfigured] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [validating, setValidating] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+  const [noteOk, setNoteOk] = useState<boolean | null>(null);
+  const [savedTick, setSavedTick] = useState(false);
+
+  // Load public config once — the key itself never leaves main.
+  useEffect(() => {
+    let alive = true;
+    nt()
+      .brainGetJev()
+      .then((c) => {
+        if (!alive) return;
+        setBaseUrl(c.baseUrl);
+        setConfigured(c.configured);
+        setLoaded(true);
+      })
+      .catch(() => setLoaded(true));
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const save = async () => {
+    setSaving(true);
+    setNote(null);
+    try {
+      const updated = await nt().brainSetJev({ apiKey, baseUrl: baseUrl.trim() });
+      setConfigured(updated.configured);
+      setBaseUrl(updated.baseUrl);
+      setApiKey("");
+      setSavedTick(true);
+      setTimeout(() => setSavedTick(false), 1600);
+    } catch (err) {
+      setNoteOk(false);
+      setNote(`Couldn't save: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const validate = async () => {
+    setValidating(true);
+    setNote(null);
+    try {
+      // One lightweight decide() call with the typed key. It is NOT stored —
+      // saving happens only when you press Save below.
+      const r = await nt().brainValidateJev(apiKey, baseUrl.trim() || undefined);
+      setNoteOk(r.ok);
+      setNote(
+        r.ok
+          ? "Key accepted — Jev answered the validation probe."
+          : `Validation failed: ${r.error ?? "unknown error"}.`,
+      );
+    } catch (err) {
+      setNoteOk(false);
+      setNote(
+        `Validation failed: ${err instanceof Error ? err.message : String(err)}.`,
+      );
+    } finally {
+      setValidating(false);
+    }
+  };
+
+  const inputCls =
+    "nt-r-sm w-full border bg-[var(--nt-bg-base)] px-3 py-2 text-[13px] outline-none transition-colors placeholder:text-[var(--nt-text-3)] focus:border-[var(--nt-accent)]";
+  const inputStyle = {
+    borderColor: "var(--nt-border)",
+    color: "var(--nt-text-1)",
+  } as const;
+
+  if (!loaded) return null;
+
+  return (
+    <div
+      className="nt-r-md mt-6 border p-4"
+      style={{ borderColor: "var(--nt-border)", background: "var(--nt-bg-raised)" }}
+    >
+      <h3
+        className="flex items-center gap-2 text-[13px] font-semibold"
+        style={{ color: "var(--nt-text-1)" }}
+      >
+        <Zap size={14} strokeWidth={1.75} style={{ color: "var(--nt-accent)" }} />
+        Jev — orchestration brain
+      </h3>
+      <p className="mt-1.5 text-[12px]" style={{ color: "var(--nt-text-2)" }}>
+        Jev (TypeSafe AI) makes the fast System-One decisions: which voice
+        command you meant, how complex a task is, whether it is sensitive, and
+        whether the page is needed. Specialists still do the work. The key is
+        stored in the OS keychain and never shown again.
+      </p>
+
+      <div className="mt-3 space-y-3">
+        <label className="block">
+          <FieldLabel text="Jev API base URL (optional)" />
+          <input
+            value={baseUrl}
+            onChange={(e) => setBaseUrl(e.target.value)}
+            placeholder="https://api.typesafe.ai/v1"
+            spellCheck={false}
+            autoComplete="off"
+            className={inputCls}
+            style={inputStyle}
+          />
+        </label>
+        <label className="block">
+          <FieldLabel
+            text="Jev API key"
+            hint={
+              configured
+                ? "A key is stored. Leave blank to keep it."
+                : "Stored in the OS keychain, never in plain text."
+            }
+          />
+          <input
+            type="password"
+            value={apiKey}
+            onChange={(e) => setApiKey(e.target.value)}
+            placeholder={configured ? "•••••••• (stored)" : "jev-…"}
+            spellCheck={false}
+            autoComplete="off"
+            className={inputCls}
+            style={inputStyle}
+          />
+        </label>
+      </div>
+
+      <div className="mt-4 flex items-center gap-2">
+        <button
+          onClick={() => void save()}
+          disabled={saving}
+          className="nt-r-sm flex items-center gap-1.5 px-4 py-2 text-[13px] font-semibold transition-transform hover:scale-[1.02] disabled:opacity-50"
+          style={{ background: "var(--nt-accent)", color: "var(--nt-accent-text)" }}
+        >
+          {saving && <Loader2 size={14} strokeWidth={1.75} className="animate-spin" />}
+          {savedTick ? "Saved ✓" : "Save"}
+        </button>
+        <button
+          onClick={() => void validate()}
+          disabled={validating || !apiKey.trim()}
+          title="One lightweight probe with the typed key — not stored"
+          className="nt-r-sm flex items-center gap-1.5 border px-4 py-2 text-[13px] font-medium transition-colors hover:bg-[var(--nt-bg-hover)] disabled:opacity-50"
+          style={{ borderColor: "var(--nt-border)", color: "var(--nt-text-1)" }}
+        >
+          {validating ? (
+            <Loader2 size={14} strokeWidth={1.75} className="animate-spin" />
+          ) : (
+            <Zap size={14} strokeWidth={1.75} />
+          )}
+          Validate
+        </button>
+      </div>
+
+      {note && (
+        <p
+          className="mt-3 text-[13px]"
+          style={{
+            color: noteOk === true ? "#6fa287" : noteOk === false ? "#d97362" : "var(--nt-text-2)",
+          }}
+        >
+          {note}
+        </p>
+      )}
     </div>
   );
 }
@@ -393,7 +570,11 @@ function ProviderSection() {
 /* ---------------------------- voice & search ---------------------------- */
 
 function VoiceSearchSection() {
-  const [voice, setVoice] = useState({ enabled: false, speakReplies: false });
+  const [voice, setVoice] = useState({
+    enabled: false,
+    speakReplies: false,
+    voiceControl: false,
+  });
   const [engine, setEngine] = useState("");
   const [loaded, setLoaded] = useState(false);
   const [savedTick, setSavedTick] = useState(false);
@@ -416,7 +597,11 @@ function VoiceSearchSection() {
     };
   }, []);
 
-  const setVoiceCfg = (next: { enabled: boolean; speakReplies: boolean }) => {
+  const setVoiceCfg = (next: {
+    enabled: boolean;
+    speakReplies: boolean;
+    voiceControl: boolean;
+  }) => {
     setVoice(next);
     nt().settingsSetVoice(next).catch(() => {});
   };
@@ -473,6 +658,12 @@ function VoiceSearchSection() {
             hint="Read assistant messages aloud with speech synthesis"
             checked={voice.speakReplies}
             onChange={(v) => setVoiceCfg({ ...voice, speakReplies: v })}
+          />
+          <ToggleRow
+            label="Control the browser by voice"
+            hint="Route voice transcripts through the Jev brain: tabs, navigation, pages, settings"
+            checked={voice.voiceControl}
+            onChange={(v) => setVoiceCfg({ ...voice, voiceControl: v })}
           />
         </div>
       </div>

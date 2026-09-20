@@ -30,10 +30,13 @@ import { Sidebar } from "./components/Sidebar";
 import { TabViews } from "./components/TabView";
 import { TopStrip } from "./components/TopStrip";
 import { WritingHint } from "./components/WritingHint";
+import { useBrainAudio } from "./hooks/useBrainAudio";
 import { isNewTabUrl, nt } from "./nt";
 import { rootStyleProp } from "./theme";
 
 function Shell() {
+  // Brain TTS playback + brain-driven listen/command-bar requests.
+  useBrainAudio();
   const {
     snapshot,
     bridgeError,
@@ -53,6 +56,13 @@ function Shell() {
     const t = setTimeout(() => setDelight(false), 340);
     return () => clearTimeout(t);
   }, [activeSpaceId]);
+
+  // Brain-driven command-bar opens (voice: "open the command bar").
+  useEffect(() => {
+    const open = () => setCommandOpen(true);
+    window.addEventListener("nt:open-command-bar", open);
+    return () => window.removeEventListener("nt:open-command-bar", open);
+  }, []);
 
   const closeOverlays = useCallback(() => {
     if (commandOpen) setCommandOpen(false);

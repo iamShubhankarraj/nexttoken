@@ -33,6 +33,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   AgentEvent,
   AgentMessage,
+  BrainEvent,
   BrowserSnapshot,
   ChatSession,
   SkillDef,
@@ -40,7 +41,23 @@ import type {
 import { useBrowser } from "../BrowserContext";
 import { registerAskHandler, registerPrefillHandler } from "../agentBus";
 import { useVoice, runVoiceCommand, speakLocal } from "../hooks/useVoice";
+import { registerBrainVoiceControl } from "../hooks/useBrainAudio";
 import { domainOf, nt } from "../nt";
+
+/** One-line label for a brain pipeline event in the trace feed. */
+function brainEventLabel(e: BrainEvent): string {
+  switch (e.kind) {
+    case "heard": return `“${e.text}” (${e.source})`;
+    case "classified": return `${e.intent} · ${(e.confidence * 100).toFixed(0)}% via ${e.via}`;
+    case "gated": return `${e.outcome} — ${e.reason}`;
+    case "safety": return `${e.verdict} · ${e.checks.filter((c) => c.passed).length}/${e.checks.length} checks passed`;
+    case "dispatched": return e.specialist + (e.via ? ` (${e.via})` : "");
+    case "acted": return e.summary;
+    case "ask": return e.question;
+    case "spoken": return `“${e.text}”`;
+    case "error": return e.message;
+  }
+}
 import { SmartInput, type SmartTab } from "./SmartInput";
 
 type ChatRole = "user" | "assistant" | "tool" | "system";
@@ -93,8 +110,11 @@ export function AgentPanel() {
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [showSessions, setShowSessions] = useState(false);
   const [skills, setSkills] = useState<SkillDef[]>([]);
-  const [voiceCfg, setVoiceCfg] = useState({ enabled: false, speakReplies: false });
+  const [voiceCfg, setVoiceCfg] = useState({ enabled: false, speakReplies: false, voiceControl: false });
   const [voiceFeedback, setVoiceFeedback] = useState<string | null>(null);
+  /** Compact trace of brain pipeline events (heard → classified → acted). */
+  const [brainTrace, setBrainTrace] = useState<BrainEvent[]>([]);
+  const [showBrainTrace, setShowBrainTrace] = useState(false);
 
   const voiceCfgRef = useRef(voiceCfg);
   voiceCfgRef.current = voiceCfg;
@@ -321,6 +341,19 @@ export function AgentPanel() {
       inputRef.current?.focus();
       return;
     }
+    // Voice-control mode: the Jev brain owns the transcript end to end
+    // (intent → confidence gate → safety → control.ts → TTS reply).
+    if (voiceCfgRef.current.voiceControl) {
+      setVoiceFeedback(`Heard “${text}” — routing…`);
+      nt()
+        .brainHandleUtterance(text, "voice")
+        .catch((err) =>
+          setVoiceFeedback(
+            `Brain error: ${err instanceof Error ? err.message : String(err)}`,
+          ),
+        );
+      return;
+    }
     const s = snapshotRef.current;
     if (!s) return;
     const space = s.spaces.find((x) => x.id === s.activeSpaceId);
@@ -346,6 +379,31 @@ export function AgentPanel() {
     },
     isEnabled: () => voiceCfgRef.current.enabled,
   });
+
+  // Let the brain start/stop microphone capture (voice.listen.start/stop intents).
+  const voiceCtlRef = useRef(voice);
+  voiceCtlRef.current = voice;
+  useEffect(() => {
+    registerBrainVoiceControl({
+      startListening: () => {
+        const v = voiceCtlRef.current;
+        if (!v.listening) v.toggleCommand();
+      },
+      stopListening: () => voiceCtlRef.current.stop(),
+    });
+    return () => registerBrainVoiceControl(null);
+  }, []);
+
+  // Brain pipeline trace — compact feed of heard → classified → acted events.
+  useEffect(() => {
+    const off = nt().onBrainEvent((e) => {
+      setBrainTrace((prev) => [...prev.slice(-29), e]);
+      if (e.kind === "acted") setVoiceFeedback(e.summary);
+      else if (e.kind === "ask") setVoiceFeedback(e.question);
+      else if (e.kind === "error") setVoiceFeedback(`Brain: ${e.message}`);
+    });
+    return off;
+  }, []);
 
   const busy = activeRun !== null;
   const streamingText = activeRun ? (streams.get(activeRun) ?? "") : "";
@@ -668,6 +726,35 @@ export function AgentPanel() {
             </p>
           )}
           {voiceFeedback && !voice.listening && <p>{voiceFeedback}</p>}
+        </div>
+      )}
+
+      {/* brain pipeline trace */}
+      {brainTrace.length > 0 && (
+        <div className="border-t px-3.5 py-1.5" style={{ borderColor: "var(--nt-border)" }}>
+          <button
+            onClick={() => setShowBrainTrace((v) => !v)}
+            className="flex w-full items-center gap-1.5 py-1 text-[11px] font-medium uppercase tracking-wide"
+            style={{ color: "var(--nt-text-3)" }}
+          >
+            <Zap size={11} strokeWidth={1.75} style={{ color: "var(--nt-accent)" }} />
+            Brain trace
+            <span style={{ color: "var(--nt-text-3)" }}>
+              {showBrainTrace ? "▾" : "▸"}
+            </span>
+          </button>
+          {showBrainTrace && (
+            <ol className="max-h-36 space-y-1 overflow-y-auto pb-1.5 text-[11px]" style={{ color: "var(--nt-text-2)" }}>
+              {brainTrace.map((e, i) => (
+                <li key={i} className="flex gap-1.5">
+                  <span className="shrink-0 font-mono" style={{ color: "var(--nt-text-3)" }}>
+                    {e.kind}
+                  </span>
+                  <span className="truncate">{brainEventLabel(e)}</span>
+                </li>
+              ))}
+            </ol>
+          )}
         </div>
       )}
 

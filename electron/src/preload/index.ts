@@ -79,6 +79,32 @@ const api: NextTokenAPI = {
     ipcRenderer.on('nt.voice-engine-state', l);
     return () => ipcRenderer.removeListener('nt.voice-engine-state', l);
   },
+  onVoicePlayback: (cb) => {
+    const l = (_e: unknown, bytes: number[]) => cb(bytes);
+    ipcRenderer.on('nt.voice.playback', l);
+    return () => ipcRenderer.removeListener('nt.voice.playback', l);
+  },
+  onCommandBar: (cb) => {
+    const l = () => cb();
+    ipcRenderer.on('nt.ui.command-bar', l);
+    return () => ipcRenderer.removeListener('nt.ui.command-bar', l);
+  },
+  onVoiceRequestListen: (cb) => {
+    const l = (_e: unknown, start: boolean) => cb(start);
+    ipcRenderer.on('nt.voice.request-listen', l);
+    return () => ipcRenderer.removeListener('nt.voice.request-listen', l);
+  },
+  // brain — Jev System-One orchestration
+  brainGetJev: () => ipcRenderer.invoke('nt.brain.jev.get'),
+  brainSetJev: (input) => ipcRenderer.invoke('nt.brain.jev.set', input),
+  brainTestJev: () => ipcRenderer.invoke('nt.brain.jev.test'),
+  brainValidateJev: (apiKey, baseUrl) => ipcRenderer.invoke('nt.brain.jev.validate', apiKey, baseUrl),
+  brainHandleUtterance: (text, source) => ipcRenderer.invoke('nt.brain.utterance', text, source),
+  onBrainEvent: (cb) => {
+    const l = (_e: unknown, e: Parameters<Parameters<NextTokenAPI['onBrainEvent']>[0]>[0]) => cb(e);
+    ipcRenderer.on('nt.brain.event', l);
+    return () => ipcRenderer.removeListener('nt.brain.event', l);
+  },
   // events
   onSnapshot: (cb) => {
     const l = (_e: unknown, s: Parameters<Parameters<NextTokenAPI['onSnapshot']>[0]>[0]) => cb(s);

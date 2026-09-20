@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs';
 import { Store } from './store';
@@ -6,6 +6,11 @@ import { TabManager } from './tabs';
 import { startAgentRun, cancelAgentRun } from './agent/loop';
 import { testConnection } from './agent/llm';
 import { APPLE_FM_REF, CLOUD_REF, type RouterDeps } from './agent/router';
+import { snapshotPage, formatSnapshot } from './agent/perceive';
+import { JevClient } from './brain/jev';
+import { JevCredentialStore } from './brain/credentials';
+import { Orchestrator, createRouterChat, type BrainPageState } from './brain/orchestrator';
+import { executeControl, type ControlEnv } from './brain/control';
 import { MODEL_CATALOG, ModelDownloader, targetPathFor, type DownloadEvent } from './models';
 import { ensureSidecar } from './models/binaries';
 import { LlamaServer } from './models/runtime';
@@ -15,9 +20,9 @@ import {
   PROVIDER_PRESETS, DEFAULT_DARK_TOKENS
 } from '../shared/ipc';
 import type {
-  AgentEvent, BrowserSnapshot, ChatSession, ModelAssignment, ModelEntryPublic, ModelEvent,
-  ProviderConfigInput, ProviderConfigPublic, SkillDef, SkillInput, SpaceState, TabDelta, ThemeTokens,
-  VoiceEngineState
+  AgentEvent, BrainEvent, BrowserSnapshot, ChatSession, JevConfigInput, JevConfigPublic, ModelAssignment,
+  ModelEntryPublic, ModelEvent, ProviderConfigInput, ProviderConfigPublic, SkillDef, SkillInput, SpaceState,
+  TabDelta, ThemeTokens, VoiceEngineState
 } from '../shared/ipc';
 
 let win: BrowserWindow | null = null;
@@ -35,6 +40,11 @@ let voiceEngine: VoiceEngine;
 let routerDeps: RouterDeps;
 /** In-flight download progress (id -> bytes), mirrored from downloader events. */
 const dlProgress = new Map<string, { bytesDownloaded: number; totalBytes: number }>();
+
+// -- brain (Jev System-One orchestration) ---------------------------------------
+let jevCreds: JevCredentialStore;
+let jevClient: JevClient;
+let orchestrator: Orchestrator;
 
 function emitModelEvent(e: ModelEvent) {
   if (e.kind === 'progress') {
@@ -121,6 +131,56 @@ function initModelTier() {
     getTtsModelDir: ttsModelDir
   });
   routerDeps = { store, appleFm, llama };
+
+  // -- brain: Jev System-One orchestration --------------------------------------
+  jevCreds = new JevCredentialStore(userData);
+  jevClient = new JevClient({
+    // Runtime key source: OS keychain, resolved on every call. The raw key is
+    // never held in app state and never logged.
+    keyProvider: () => jevCreds.loadKey(),
+    baseUrl: store.d.brain.jevBaseUrl || undefined
+  });
+  orchestrator = new Orchestrator({
+    jev: jevClient,
+    control: { execute: (intent, slots) => executeControl(brainControlEnv(), intent, slots) },
+    chat: createRouterChat(routerDeps),
+    speak: {
+      speak: async (text: string) => {
+        const wav = await voiceEngine.speak(text);
+        win?.webContents.send('nt.voice.playback', Array.from(wav));
+      }
+    },
+    confirm: {
+      ask: async (text: string) => {
+        if (!win) return false;
+        const r = await dialog.showMessageBox(win, {
+          type: 'question',
+          buttons: ['Cancel', 'Confirm'],
+          defaultId: 0,
+          cancelId: 0,
+          message: text
+        });
+        return r.response === 1;
+      }
+    },
+    getPageState: async (): Promise<BrainPageState> => {
+      const wc = tabs.activeWebContents();
+      const snap = wc ? await snapshotPage(wc).catch(() => null) : null;
+      const tabList = [...tabs.tabs.values()].filter((t) => t.spaceId === store.d.activeSpaceId);
+      const tabSummary = tabList.length === 0
+        ? 'no tabs open'
+        : tabList.map((t) => `${t.title}${t.id === tabs.activeTabId ? ' (active)' : ''}`).join(', ');
+      return {
+        url: snap?.url ?? '',
+        title: snap?.title ?? '',
+        tabSummary,
+        pageText: snap ? formatSnapshot(snap) : '(no readable page)'
+      };
+    },
+    startAgentRun: (task: string) =>
+      startAgentRun(task, { win: win as BrowserWindow, tabs, store, emit: emitAgent, router: routerDeps }, { voice: true }),
+    emit: (e: BrainEvent) => win?.webContents.send('nt.brain.event', e)
+  });
 }
 
 function publicProvider(): ProviderConfigPublic {
@@ -168,6 +228,21 @@ function sendSnapshot() {
 
 function emitAgent(e: AgentEvent) {
   win?.webContents.send('nt.agent-event', e);
+}
+
+/** Adapter from brain intents to the same state setters the nt.ui.* handlers use. */
+function brainControlEnv(): ControlEnv {
+  return {
+    tabs,
+    store,
+    setSidebarCollapsed: (c) => { store.d.sidebarCollapsed = c; store.saveSoon(); sendSnapshot(); },
+    setAgentPanelOpen: (o) => { store.d.agentPanelOpen = o; store.saveSoon(); sendSnapshot(); },
+    setSettingsOpen: (o) => { settingsOpen = o; sendSnapshot(); },
+    openCommandBar: () => win?.webContents.send('nt.ui.command-bar'),
+    requestListen: (start) => win?.webContents.send('nt.voice.request-listen', start),
+    refreshSnapshot: () => sendSnapshot(),
+    saveSoon: () => store.saveSoon()
+  };
 }
 
 function ensureSpaceTab(spaceId: string) {
@@ -355,8 +430,9 @@ function registerIpc() {
     });
   });
   ipcMain.handle('nt.settings.voice.get', () => store.d.voice);
-  ipcMain.handle('nt.settings.voice.set', (_e, v: { enabled: boolean; speakReplies: boolean }) => {
-    store.d.voice = v; store.saveSoon();
+  ipcMain.handle('nt.settings.voice.set', (_e, v: { enabled: boolean; speakReplies: boolean; voiceControl?: boolean }) => {
+    store.d.voice = { enabled: !!v.enabled, speakReplies: !!v.speakReplies, voiceControl: !!v.voiceControl };
+    store.saveSoon();
   });
   ipcMain.handle('nt.settings.search-engine.get', () => store.d.searchEngine);
   ipcMain.handle('nt.settings.search-engine.set', (_e, url: string) => {
@@ -460,13 +536,53 @@ function registerIpc() {
   ipcMain.handle('nt.voice.audio-chunk', (_e, data: Uint8Array) => {
     voiceEngine.pushAudio(Buffer.from(data));
   });
-  ipcMain.handle('nt.voice.stop-listening', (): Promise<string> => voiceEngine.stopListening());
+  ipcMain.handle('nt.voice.stop-listening', async (): Promise<string> => {
+    const text = await voiceEngine.stopListening();
+    // Voice-control mode: route the transcript into the brain pipeline.
+    if (text && store.d.voice.voiceControl) {
+      void orchestrator.handleUtterance(text, 'voice');
+    }
+    return text;
+  });
   ipcMain.handle('nt.voice.cancel-listening', () => {
     voiceEngine.cancelListening();
   });
   ipcMain.handle('nt.voice.speak', async (_e, text: string): Promise<Uint8Array> => {
     const wav = await voiceEngine.speak(text);
     return new Uint8Array(wav);
+  });
+
+  // -- brain (Jev System-One orchestration) --------------------------------------
+  // The Jev API key lives in the OS keychain via JevCredentialStore and never
+  // leaves main: nt.brain.jev.get only reports whether one is configured.
+  ipcMain.handle('nt.brain.jev.get', (): JevConfigPublic =>
+    ({ configured: jevCreds.hasKey, baseUrl: store.d.brain.jevBaseUrl }));
+  ipcMain.handle('nt.brain.jev.set', (_e, input: JevConfigInput): JevConfigPublic => {
+    if (typeof input.baseUrl === 'string') {
+      store.d.brain.jevBaseUrl = input.baseUrl.trim();
+      store.saveSoon();
+    }
+    if (input.apiKey && input.apiKey.trim()) {
+      if (!jevCreds.saveKey(input.apiKey)) {
+        throw new Error('OS keychain unavailable — the Jev key was not stored.');
+      }
+    }
+    return { configured: jevCreds.hasKey, baseUrl: store.d.brain.jevBaseUrl };
+  });
+  ipcMain.handle('nt.brain.jev.test', async () => {
+    const r = await jevClient.booleanCheck('connectivity test', 'This is a connectivity test, not a real request');
+    return r.ok ? { ok: true, latencyMs: 0 } : { ok: false, error: r.message };
+  });
+  ipcMain.handle('nt.brain.jev.validate', async (_e, apiKey: string, baseUrl?: string) => {
+    // ONE lightweight call with a transient client. The key is never persisted
+    // here — the renderer only calls nt.brain.jev.set after explicit Save.
+    const probe = new JevClient({ apiKey, baseUrl: baseUrl?.trim() || undefined, timeoutMs: 4000 });
+    const r = await probe.booleanCheck('validation probe', 'Is this a validation probe?');
+    return r.ok ? { ok: true } : { ok: false, error: r.message };
+  });
+  ipcMain.handle('nt.brain.utterance', (_e, text: string, source: 'voice' | 'text') => {
+    void orchestrator.handleUtterance(text, source).catch((e) =>
+      win?.webContents.send('nt.brain.event', { kind: 'error', message: String(e) } satisfies BrainEvent));
   });
 }
 

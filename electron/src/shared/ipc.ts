@@ -319,6 +319,41 @@ export interface AppleFmStatus {
 
 export type VoiceEngineState = 'idle' | 'listening' | 'transcribing' | 'speaking';
 
+/** Voice settings. voiceControl routes STT transcripts into the brain (voice commands). */
+export interface VoiceSettings {
+  enabled: boolean;
+  speakReplies: boolean;
+  voiceControl: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Brain — Jev System-One orchestration + 100% voice control
+// ---------------------------------------------------------------------------
+
+/** What the renderer may see — the key itself never leaves main. */
+export interface JevConfigPublic {
+  configured: boolean;
+  baseUrl: string;
+}
+
+export interface JevConfigInput {
+  /** Empty = keep the existing stored key. */
+  apiKey: string;
+  baseUrl?: string;
+}
+
+/** Structured pipeline events emitted by the orchestrator (see src/main/brain/orchestrator.ts). */
+export type BrainEvent =
+  | { kind: 'heard'; text: string; source: 'voice' | 'text' }
+  | { kind: 'classified'; intent: string; confidence: number; via: 'jev' | 'local'; slots: Record<string, string> }
+  | { kind: 'gated'; outcome: 'execute' | 'confirm' | 'ask' | 'escalate'; reason: string }
+  | { kind: 'safety'; verdict: 'allow' | 'confirm' | 'deny'; checks: Array<{ name: string; passed: boolean; detail: string }> }
+  | { kind: 'dispatched'; specialist: string; via?: string }
+  | { kind: 'acted'; intent: string; summary: string }
+  | { kind: 'ask'; question: string }
+  | { kind: 'spoken'; text: string }
+  | { kind: 'error'; message: string };
+
 // ---------------------------------------------------------------------------
 // Skills — saved reusable prompts (slash commands + one-click chips)
 // ---------------------------------------------------------------------------
@@ -408,8 +443,8 @@ export interface NextTokenAPI {
   settingsGetProvider(): Promise<ProviderConfigPublic>;
   settingsSetProvider(input: ProviderConfigInput): Promise<ProviderConfigPublic>;
   settingsTestConnection(): Promise<{ ok: boolean; error?: string; model?: string }>;
-  settingsGetVoice(): Promise<{ enabled: boolean; speakReplies: boolean }>;
-  settingsSetVoice(v: { enabled: boolean; speakReplies: boolean }): Promise<void>;
+  settingsGetVoice(): Promise<VoiceSettings>;
+  settingsSetVoice(v: { enabled: boolean; speakReplies: boolean; voiceControl?: boolean }): Promise<void>;
   settingsGetSearchEngine(): Promise<string>;
   settingsSetSearchEngine(url: string): Promise<void>;
   // themes
@@ -434,6 +469,20 @@ export interface NextTokenAPI {
   voiceCancelListening(): Promise<void>;
   voiceSpeak(text: string): Promise<Uint8Array>;
   onVoiceEngineState(cb: (s: VoiceEngineState) => void): () => void;
+  /** Raw WAV bytes (number[]) for a brain TTS reply — renderer decodes and plays. */
+  onVoicePlayback(cb: (bytes: number[]) => void): () => void;
+  /** Brain asked the renderer to open its command bar. */
+  onCommandBar(cb: () => void): () => void;
+  /** Brain asked the renderer to start/stop microphone capture. */
+  onVoiceRequestListen(cb: (start: boolean) => void): () => void;
+  // brain — Jev System-One orchestration (key in OS keychain, never exposed)
+  brainGetJev(): Promise<JevConfigPublic>;
+  brainSetJev(input: JevConfigInput): Promise<JevConfigPublic>;
+  brainTestJev(): Promise<{ ok: boolean; error?: string; latencyMs?: number }>;
+  /** Validate a typed-but-unsaved key with one lightweight decide() call. */
+  brainValidateJev(apiKey: string, baseUrl?: string): Promise<{ ok: boolean; error?: string }>;
+  brainHandleUtterance(text: string, source: 'voice' | 'text'): Promise<void>;
+  onBrainEvent(cb: (e: BrainEvent) => void): () => void;
   // events
   onSnapshot(cb: (s: BrowserSnapshot) => void): () => void;
   snapshotGet(): Promise<BrowserSnapshot>;

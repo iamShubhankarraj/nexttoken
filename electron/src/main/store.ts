@@ -46,7 +46,7 @@ interface Persisted {
   agentPanelOpen: boolean;
   /** spaceId -> tokens. Seeded from DEFAULT_DARK_TOKENS + palette. */
   themes: Record<string, ThemeTokens>;
-  voice: { enabled: boolean; speakReplies: boolean };
+  voice: { enabled: boolean; speakReplies: boolean; voiceControl: boolean };
   searchEngine: string;
   provider: ProviderPersist;
   agentHistory: AgentMessage[];
@@ -61,6 +61,8 @@ interface Persisted {
     assignment: { chat: ModelRef; vision: ModelRef };
     appleFmAvailable: boolean | null;
   };
+  /** Brain / Jev config. The API key itself lives in the OS keychain via JevCredentialStore. */
+  brain: { jevBaseUrl: string };
   /** Saved reusable prompts (slash commands + one-click chips). */
   skills: SkillPersist[];
   /** Ephemeral chats — only the most recent few are kept. */
@@ -122,7 +124,7 @@ function defaults(): Persisted {
     sidebarCollapsed: false,
     agentPanelOpen: false,
     themes,
-    voice: { enabled: true, speakReplies: false },
+    voice: { enabled: true, speakReplies: false, voiceControl: false },
     searchEngine: 'https://www.google.com/search?q=',
     provider: { presetId: 'openai', baseUrl: 'https://api.openai.com/v1', model: 'gpt-5', api: 'openai' },
     agentHistory: [],
@@ -134,6 +136,7 @@ function defaults(): Persisted {
       assignment: { chat: 'apple-fm', vision: 'cloud' },
       appleFmAvailable: null
     },
+    brain: { jevBaseUrl: '' },
     skills: defaultSkills(),
     chatSessions: []
   };
@@ -159,6 +162,10 @@ export class Store {
       const parsed = { ...defaults(), ...JSON.parse(raw) };
       // Backfill the models shape for installs that predate it.
       if (!parsed.models) parsed.models = defaults().models;
+      // Backfill brain config + voice-control flag for installs that predate them.
+      if (!parsed.brain) parsed.brain = defaults().brain;
+      if (!parsed.voice) parsed.voice = defaults().voice;
+      else if (typeof parsed.voice.voiceControl !== 'boolean') parsed.voice.voiceControl = false;
       // Backfill skills + sessions for installs that predate them.
       if (!parsed.skills) parsed.skills = defaultSkills();
       if (!parsed.chatSessions) parsed.chatSessions = [];

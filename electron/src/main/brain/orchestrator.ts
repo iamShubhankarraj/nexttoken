@@ -32,6 +32,7 @@ import {
 } from './voice-commands';
 import { routeChat, type RouterDeps } from '../agent/router';
 import type { LlmMessage } from '../agent/llm';
+import type { BrainEvent } from '../../shared/ipc';
 
 // ---------------------------------------------------------------------------
 // Injected dependencies (side-effect boundaries)
@@ -98,16 +99,8 @@ export interface SafetyVerdict {
   confirmText?: string;
 }
 
-export type BrainEvent =
-  | { kind: 'heard'; text: string; source: UtteranceSource }
-  | { kind: 'classified'; intent: string; confidence: number; via: 'jev' | 'local'; slots: Record<string, string> }
-  | { kind: 'gated'; outcome: 'execute' | 'confirm' | 'ask' | 'escalate'; reason: string }
-  | { kind: 'safety'; verdict: SafetyVerdict['verdict']; checks: SafetyVerdict['checks'] }
-  | { kind: 'dispatched'; specialist: VoiceSpecialist; via?: string }
-  | { kind: 'acted'; intent: string; summary: string }
-  | { kind: 'ask'; question: string }
-  | { kind: 'spoken'; text: string }
-  | { kind: 'error'; message: string };
+// BrainEvent lives in src/shared/ipc.ts (single source of truth for the
+// main<->renderer contract); orchestrator.ts imports it as a type.
 
 // ---------------------------------------------------------------------------
 // Confidence gates (per-action cost, per the Jev confidence-gating pattern)
