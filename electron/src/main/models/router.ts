@@ -189,6 +189,47 @@ export class ModelRouter {
     throw new Error(`All models failed: ${errors.join(' | ')}`);
   }
 
+  /**
+   * Local-only completion: Apple Foundation Models, then the first
+   * downloaded GGUF chat model. NEVER touches cloud providers, provider
+   * keys, or the network beyond localhost — used for privacy-sensitive
+   * tasks like the AI tab tidy, where tab URLs must not leave the device.
+   */
+  async completeLocalOnly(opts: {
+    messages: LlmMessage[];
+    signal?: AbortSignal;
+  }): Promise<{ text: string; via: string; viaRef: string }> {
+    const errors: string[] = [];
+    const attempts: Attempt[] = [
+      {
+        label: 'Apple Foundation Models', viaRef: 'local-applefm',
+        run: () => this.appleFmTurn(opts.messages, [], opts.signal)
+      }
+    ];
+    const dl = this.firstDownloaded('chat');
+    if (dl) {
+      attempts.push({
+        label: dl.name, viaRef: `local:${dl.id}`,
+        run: () => this.localTurn(dl, 'chat', opts.messages, [], opts.signal)
+      });
+    }
+    for (const a of attempts) {
+      try {
+        const r = await a.run();
+        return { text: r.text, via: a.label, viaRef: a.viaRef };
+      } catch (e) {
+        if (opts.signal?.aborted) throw e;
+        errors.push(`${a.label}: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+    throw new Error(
+      'No local model is available for this. ' +
+      (errors.length
+        ? `Tried ${errors.join(' · ')}.`
+        : 'Download a chat model in Settings → Models, or use a Mac with Apple Foundation Models.')
+    );
+  }
+
   /** Validate a saved provider or a set of unsaved fields (Test button). */
   async validateProvider(input: ProviderValidateInput): Promise<{ ok: boolean; message: string }> {
     const store = this.deps.store;

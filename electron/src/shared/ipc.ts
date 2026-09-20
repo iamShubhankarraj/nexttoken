@@ -19,6 +19,24 @@ export interface TabState {
   pinned: boolean;
   canGoBack: boolean;
   canGoForward: boolean;
+  /** Favicon captured from the page (page-favicon-updated), cached per host. data: URL. */
+  favicon?: string;
+  /** Folder this tab is filed into; null = ungrouped. */
+  folderId: string | null;
+}
+
+/** A tab folder inside one Bit (user-facing name for spaces is "Bits"). */
+export interface BitFolder {
+  id: string;
+  name: string;
+}
+
+export interface BookmarkState {
+  id: string;
+  name: string;
+  url: string;
+  favicon?: string;
+  createdAt: number;
 }
 
 export interface SpaceState {
@@ -29,6 +47,8 @@ export interface SpaceState {
   tabs: TabState[];
   activeTabId: string | null;
   favorites: FavoriteState[];
+  folders: BitFolder[];
+  bookmarks: BookmarkState[];
 }
 
 export interface FavoriteState {
@@ -73,10 +93,40 @@ export interface SiteBoost {
 /** Live per-tab updates pushed from main. */
 export interface TabDelta {
   tabId: string;
-  type: 'title' | 'url' | 'loading' | 'nav-state';
-  value: string | boolean;
+  type: 'title' | 'url' | 'loading' | 'nav-state' | 'favicon' | 'folder';
+  value: string | boolean | null;
   canGoBack?: boolean;
   canGoForward?: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// AI tab tidy — local models only (tab URLs never leave the device)
+// ---------------------------------------------------------------------------
+
+/** One proposed folder grouping from the tidy pass. */
+export interface TidyGroupProposal {
+  name: string;
+  tabIds: string[];
+}
+
+/** One proposed tab closure, with the model's reasoning. */
+export interface TidyCloseProposal {
+  tabId: string;
+  reason: string;
+}
+
+/** The reviewable plan produced by the local model. Nothing is applied until the user confirms. */
+export interface TidyPlan {
+  groups: TidyGroupProposal[];
+  close: TidyCloseProposal[];
+  /** Which local model produced the plan, e.g. "Apple Foundation Models". */
+  via: string;
+}
+
+/** The user's confirmed actions — built from the reviewed plan in the renderer. */
+export interface TidyActions {
+  newFolders: { name: string; tabIds: string[] }[];
+  closeTabIds: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -495,6 +545,10 @@ export interface NextTokenAPI {
   tabsActivate(tabId: string): Promise<void>;
   tabsPin(tabId: string, pinned: boolean): Promise<void>;
   tabsMove(tabId: string, spaceId: string): Promise<void>;
+  /** Reorder a tab: move it before `beforeTabId` (null = end of its folder/section). */
+  tabsReorder(tabId: string, beforeTabId: string | null, folderId: string | null): Promise<void>;
+  /** File a tab into a folder (null = ungrouped). */
+  tabsSetFolder(tabId: string, folderId: string | null): Promise<void>;
   /** webview guest calls this once its webContents exists. */
   tabsAttach(tabId: string, webContentsId: number): Promise<void>;
   tabsArchive(tabId: string): Promise<void>;
@@ -505,13 +559,28 @@ export interface NextTokenAPI {
   navForward(): Promise<void>;
   navReload(): Promise<void>;
   navStop(): Promise<void>;
-  // spaces
+  // spaces (user-facing name: Bits)
   spacesCreate(name: string): Promise<string>;
   spacesSwitch(id: string): Promise<void>;
   spacesRename(id: string, name: string): Promise<void>;
+  /** Delete a Bit after user confirmation — its tabs are moved to Archive, never lost. */
+  spacesDelete(id: string): Promise<void>;
   spacesSetAccent(id: string, accent: string): Promise<void>;
   spacesAddFavorite(spaceId: string, name: string, url: string): Promise<void>;
   spacesRemoveFavorite(spaceId: string, favId: string): Promise<void>;
+  // folders (per Bit)
+  foldersCreate(spaceId: string, name: string): Promise<BitFolder>;
+  foldersRename(spaceId: string, folderId: string, name: string): Promise<void>;
+  foldersRemove(spaceId: string, folderId: string): Promise<void>;
+  // bookmarks (per Bit)
+  bookmarksAdd(spaceId: string, name: string, url: string): Promise<BookmarkState[]>;
+  bookmarksRename(spaceId: string, id: string, name: string): Promise<BookmarkState[]>;
+  bookmarksRemove(spaceId: string, id: string): Promise<BookmarkState[]>;
+  // AI tidy — local models only; tab URLs never leave the device
+  /** Produce a reviewable tidy plan. Nothing is applied until tidyApply is called. */
+  tidyPlan(spaceId: string): Promise<TidyPlan>;
+  /** Apply the user's confirmed tidy actions. Closed tabs go to Archive (restorable). */
+  tidyApply(spaceId: string, actions: TidyActions): Promise<void>;
   // ui
   uiSetSidebarCollapsed(collapsed: boolean): Promise<void>;
   uiSetAgentPanelOpen(open: boolean): Promise<void>;

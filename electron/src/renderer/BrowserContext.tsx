@@ -44,6 +44,12 @@ function applyDeltaToTab(tab: TabState, d: TabDelta): TabState {
         canGoBack: d.canGoBack ?? tab.canGoBack,
         canGoForward: d.canGoForward ?? tab.canGoForward,
       };
+    case "favicon":
+      return typeof d.value === "string" ? { ...tab, favicon: d.value } : tab;
+    case "folder":
+      return d.value === null || typeof d.value === "string"
+        ? { ...tab, folderId: d.value }
+        : tab;
     default:
       return tab;
   }

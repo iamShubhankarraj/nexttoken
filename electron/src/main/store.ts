@@ -9,11 +9,19 @@ import type {
 import type { ModelRef } from './models/types';
 
 export interface FavoritePersist { id: string; name: string; url: string }
+export interface FolderPersist { id: string; name: string }
+export interface BookmarkPersist { id: string; name: string; url: string; createdAt: number }
+/** One open (non-pinned) tab, in sidebar order — restored on launch. */
+export interface SessionTabPersist { url: string; title: string; folderId: string | null; favicon?: string | null }
 export interface SpacePersist {
   id: string;
   name: string;
   favorites: FavoritePersist[];
   pinned: { url: string; title: string }[];
+  folders: FolderPersist[];
+  bookmarks: BookmarkPersist[];
+  sessionTabs: SessionTabPersist[];
+  sessionActiveUrl: string | null;
 }
 export interface ProviderPersist {
   /** Stable uuid — the keychain file for this provider's key is keyed by it. */
@@ -119,17 +127,18 @@ function defaultSkills(): SkillPersist[] {
 }
 
 function defaultSpaces(): SpacePersist[] {
-  const defs = [
-    { name: 'Research', favorites: [{ name: 'GitHub', url: 'https://github.com' }] },
-    { name: 'Build', favorites: [{ name: 'MDN', url: 'https://developer.mozilla.org' }] },
-    { name: 'Chill', favorites: [{ name: 'YouTube', url: 'https://www.youtube.com' }] }
-  ];
-  return defs.map((d, i) => ({
+  // One default Bit ships with the app ("Bits" is the user-facing name for spaces).
+  const s: SpacePersist = {
     id: randomUUID(),
-    name: d.name,
-    favorites: d.favorites.map((f) => ({ id: randomUUID(), ...f })),
-    pinned: []
-  }));
+    name: 'Personal',
+    favorites: [{ id: randomUUID(), name: 'GitHub', url: 'https://github.com' }],
+    pinned: [],
+    folders: [],
+    bookmarks: [],
+    sessionTabs: [],
+    sessionActiveUrl: null
+  };
+  return [s];
 }
 
 function defaults(): Persisted {
@@ -255,6 +264,11 @@ export class Store {
             spaceColor: SPACE_PALETTE[parsed.spaces.indexOf(s) % SPACE_PALETTE.length].value
           };
         }
+        // Backfill folders/bookmarks/session for installs that predate them.
+        if (!Array.isArray(s.folders)) s.folders = [];
+        if (!Array.isArray(s.bookmarks)) s.bookmarks = [];
+        if (!Array.isArray(s.sessionTabs)) s.sessionTabs = [];
+        if (typeof s.sessionActiveUrl === 'undefined') s.sessionActiveUrl = null;
       }
       return parsed;
     } catch {
@@ -282,7 +296,10 @@ export class Store {
 
   // -- spaces ---------------------------------------------------------------
   addSpace(name: string): SpacePersist {
-    const s: SpacePersist = { id: randomUUID(), name, favorites: [], pinned: [] };
+    const s: SpacePersist = {
+      id: randomUUID(), name, favorites: [], pinned: [],
+      folders: [], bookmarks: [], sessionTabs: [], sessionActiveUrl: null
+    };
     this.data.spaces.push(s);
     this.data.themes[s.id] = {
       ...DEFAULT_DARK_TOKENS,
@@ -292,8 +309,87 @@ export class Store {
     return s;
   }
 
+  /** Remove a Bit and its theme. The caller archives the Bit's tabs first. */
+  deleteSpace(id: string): void {
+    this.data.spaces = this.data.spaces.filter((s) => s.id !== id);
+    delete this.data.themes[id];
+    if (this.data.activeSpaceId === id) {
+      this.data.activeSpaceId = this.data.spaces[0]?.id ?? '';
+    }
+    this.saveSoon();
+  }
+
   themeFor(spaceId: string): ThemeTokens {
     return this.data.themes[spaceId] ?? { ...DEFAULT_DARK_TOKENS };
+  }
+
+  // -- folders (per Bit) -----------------------------------------------------
+  addFolder(spaceId: string, name: string): FolderPersist {
+    const s = this.data.spaces.find((x) => x.id === spaceId);
+    if (!s) throw new Error('Bit not found.');
+    const clean = String(name ?? '').trim().slice(0, 40);
+    if (!clean) throw new Error('Folder needs a name.');
+    const f: FolderPersist = { id: randomUUID(), name: clean };
+    s.folders.push(f);
+    this.saveSoon();
+    return f;
+  }
+
+  renameFolder(spaceId: string, folderId: string, name: string): void {
+    const s = this.data.spaces.find((x) => x.id === spaceId);
+    const f = s?.folders.find((x) => x.id === folderId);
+    if (!f) throw new Error('Folder not found.');
+    const clean = String(name ?? '').trim().slice(0, 40);
+    if (!clean) throw new Error('Folder needs a name.');
+    f.name = clean;
+    this.saveSoon();
+  }
+
+  removeFolder(spaceId: string, folderId: string): void {
+    const s = this.data.spaces.find((x) => x.id === spaceId);
+    if (!s) return;
+    s.folders = s.folders.filter((x) => x.id !== folderId);
+    for (const t of s.sessionTabs) {
+      if (t.folderId === folderId) t.folderId = null;
+    }
+    this.saveSoon();
+  }
+
+  // -- bookmarks (per Bit) ----------------------------------------------------
+  listBookmarks(spaceId: string): BookmarkPersist[] {
+    return this.data.spaces.find((x) => x.id === spaceId)?.bookmarks.map((b) => ({ ...b })) ?? [];
+  }
+
+  addBookmark(spaceId: string, name: string, url: string): BookmarkPersist[] {
+    const s = this.data.spaces.find((x) => x.id === spaceId);
+    if (!s) throw new Error('Bit not found.');
+    const cleanUrl = String(url ?? '').trim();
+    if (!cleanUrl || !/^https?:\/\//i.test(cleanUrl)) throw new Error('Only web pages can be bookmarked.');
+    if (s.bookmarks.some((b) => b.url === cleanUrl)) return this.listBookmarks(spaceId);
+    const cleanName = String(name ?? '').trim().slice(0, 80) || cleanUrl;
+    s.bookmarks.unshift({ id: randomUUID(), name: cleanName, url: cleanUrl, createdAt: Date.now() });
+    this.saveSoon();
+    return this.listBookmarks(spaceId);
+  }
+
+  renameBookmark(spaceId: string, id: string, name: string): BookmarkPersist[] {
+    const s = this.data.spaces.find((x) => x.id === spaceId);
+    const b = s?.bookmarks.find((x) => x.id === id);
+    if (!b) throw new Error('Bookmark not found.');
+    const clean = String(name ?? '').trim().slice(0, 80);
+    if (!clean) throw new Error('Bookmark needs a name.');
+    b.name = clean;
+    this.saveSoon();
+    return this.listBookmarks(spaceId);
+  }
+
+  removeBookmark(spaceId: string, id: string): BookmarkPersist[] {
+    const s = this.data.spaces.find((x) => x.id === spaceId);
+    if (s) {
+      s.bookmarks = s.bookmarks.filter((x) => x.id !== id);
+      this.saveSoon();
+    }
+    return this.listBookmarks(spaceId);
   }
 
   // -- BYOK provider keys (one per provider, OS keychain via safeStorage; never in the JSON) --

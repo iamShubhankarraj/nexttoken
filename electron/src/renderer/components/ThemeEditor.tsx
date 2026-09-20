@@ -1,5 +1,5 @@
 /**
- * Arc-style per-Space theme editor — the star feature.
+ * Arc-style per-Bit theme editor — the star feature.
  *
  * Fields are driven by TOKEN_FIELDS (src/shared/ipc.ts):
  * - Space color: swatches from SPACE_PALETTE + a custom color input.
@@ -128,8 +128,8 @@ export function ThemeEditor({ spaceId }: { spaceId: string }) {
         </button>
       </div>
 
-      {/* Space color — swatches + custom */}
-      <FieldBlock label="Space color" hint="Active-tab bar · space icon · sidebar wash">
+      {/* Bit color — swatches + custom */}
+      <FieldBlock label="Bit color" hint="Active-tab bar · Bit icon · sidebar wash">
         <div className="flex items-center gap-2">
           {SPACE_PALETTE.map((s) => {
             const active = tokens.spaceColor.toLowerCase() === s.value.toLowerCase();
@@ -292,7 +292,7 @@ export function ThemeEditor({ spaceId }: { spaceId: string }) {
           </span>
           <span className="flex items-center gap-1.5 text-[12.5px]" style={{ color: "var(--nt-text-2)" }}>
             <span className="nt-r-full inline-block h-2.5 w-2.5" style={{ background: "var(--nt-space)" }} />
-            Space identity
+            Bit identity
           </span>
         </div>
       </div>

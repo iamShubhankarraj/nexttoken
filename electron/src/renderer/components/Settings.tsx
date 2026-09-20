@@ -1,7 +1,7 @@
 /**
  * Settings overlay (nt.uiSetSettingsOpen) on the new design system:
  * BYOK provider, local models, saved skills, voice & search, and the
- * per-space theme editor.
+ * per-Bit theme editor.
  *
  * The stored API key is never displayed — settingsGetProvider() only
  * reports keyConfigured, and the key field submits empty to keep the
@@ -131,7 +131,7 @@ export function Settings({ onClose }: { onClose: () => void }) {
                 <ThemeEditor spaceId={activeSpace.id} />
               ) : (
                 <p className="text-[13px]" style={{ color: "var(--nt-text-3)" }}>
-                  No active space.
+                  No active Bit.
                 </p>
               ))}
           </div>
@@ -894,7 +894,7 @@ function VoiceSearchSection() {
             "“go back” / “go forward”",
             "“reload”",
             "“summarize this page”",
-            "“switch to <space>”",
+            "“switch to <Bit>”",
             "“open settings”",
             "“toggle sidebar”",
           ].map((c) => (

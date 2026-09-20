@@ -21,13 +21,14 @@ import { AppleFmClient } from './models/applefm';
 import { VoiceEngine, type CleanupPrompt } from './voice';
 import { VoicePillOverlay } from './voice/overlay';
 import { wrapWithActing, dictateUndoJs, type LastDictation } from './voice/acting';
+import { buildTidyPlan, applyTidy } from './tidy';
 import {
   PROVIDER_PRESETS, DEFAULT_DARK_TOKENS
 } from '../shared/ipc';
 import type {
-  ActiveModelRef, AdBlockState, AdBlockStats, AgentEvent, BrainEvent, BrowserSnapshot, ChatSession, JevConfigInput, JevConfigPublic, ModelAssignment,
+  ActiveModelRef, AdBlockState, AdBlockStats, AgentEvent, BookmarkState, BrainEvent, BrowserSnapshot, ChatSession, JevConfigInput, JevConfigPublic, ModelAssignment,
   ModelChoice, ModelEntryPublic, ModelEvent, ProviderId, ProviderInput, ProviderPublic, ProviderValidateInput, SkillDef, SkillInput, SpaceState,
-  TabDelta, ThemeTokens, VoiceEngineState, VoiceSettings, VoiceTranscript
+  TabDelta, ThemeTokens, TidyActions, TidyPlan, VoiceEngineState, VoiceSettings, VoiceTranscript
 } from '../shared/ipc';
 
 let win: BrowserWindow | null = null;
@@ -308,17 +309,25 @@ function publicProviders(): ProviderPublic[] {
 function snapshot(): BrowserSnapshot {
   const d = store.d;
   const spaces: SpaceState[] = d.spaces.map((s) => {
-    const stabs = [...tabs.tabs.values()].filter((t) => t.spaceId === s.id);
-    const activeInSpace = tabs.activeTabId && stabs.some((t) => t.id === tabs.activeTabId)
-      ? tabs.activeTabId
-      : stabs[0]?.id ?? null;
+    const stabs = tabs.orderedTabs(s.id);
+    // Per-Bit last-active tab (falls back to the first tab).
+    const activeInSpace = tabs.lastActiveTabId(s.id);
     return {
       id: s.id,
       name: s.name,
       accent: store.themeFor(s.id).spaceColor,
       tabs: stabs.map((t) => tabs.toState(t)),
       activeTabId: activeInSpace,
-      favorites: s.favorites
+      favorites: s.favorites,
+      folders: s.folders.map((f) => ({ id: f.id, name: f.name })),
+      bookmarks: s.bookmarks.map((b) => ({
+        id: b.id,
+        name: b.name,
+        url: b.url,
+        // Refresh from the favicon cache so bookmarks pick up icons seen since they were saved.
+        favicon: tabs.faviconFor(b.url),
+        createdAt: b.createdAt
+      }))
     };
   });
   return {
@@ -451,9 +460,16 @@ function registerIpc() {
     const t = tabs.tabs.get(tabId);
     if (t) { t.pinned = pinned; tabs.persistPinned(); sendSnapshot(); }
   });
+  ipcMain.handle('nt.tabs.reorder', (_e, tabId: string, beforeTabId: string | null, folderId: string | null) => {
+    tabs.reorder(tabId, beforeTabId, folderId);
+  });
+  ipcMain.handle('nt.tabs.set-folder', (_e, tabId: string, folderId: string | null) => {
+    tabs.setFolder(tabId, folderId);
+    sendSnapshot();
+  });
   ipcMain.handle('nt.tabs.move', (_e, tabId: string, spaceId: string) => {
-    const t = tabs.tabs.get(tabId);
-    if (t && store.d.spaces.some((s) => s.id === spaceId)) { t.spaceId = spaceId; sendSnapshot(); }
+    tabs.moveToSpace(tabId, spaceId);
+    sendSnapshot();
   });
   ipcMain.handle('nt.tabs.attach', (_e, tabId: string, wcId: number) => {
     const tab = tabs.attach(tabId, wcId);
@@ -472,9 +488,9 @@ function registerIpc() {
   ipcMain.handle('nt.nav.reload', () => tabs.reload());
   ipcMain.handle('nt.nav.stop', () => tabs.stop());
 
-  // -- spaces ---------------------------------------------------------------
+  // -- spaces (user-facing name: Bits) ------------------------------------------
   ipcMain.handle('nt.spaces.create', (_e, name: string) => {
-    const s = store.addSpace(name || 'New Space');
+    const s = store.addSpace(name || 'New Bit');
     ensureSpaceTab(s.id);
     return s.id;
   });
@@ -483,8 +499,9 @@ function registerIpc() {
     store.d.activeSpaceId = id;
     store.saveSoon();
     ensureSpaceTab(id);
-    const first = [...tabs.tabs.values()].find((t) => t.spaceId === id);
-    if (first) tabs.activate(first.id);
+    // Restore the tab that was active last time this Bit was open.
+    const lastId = tabs.lastActiveTabId(id);
+    if (lastId) tabs.activate(lastId);
     else sendSnapshot();
   });
   ipcMain.handle('nt.spaces.rename', (_e, id: string, name: string) => {
@@ -514,6 +531,59 @@ function registerIpc() {
       store.saveSoon();
       sendSnapshot();
     }
+  });
+  ipcMain.handle('nt.spaces.delete', (_e, id: string) => {
+    if (!store.d.spaces.some((s) => s.id === id)) return;
+    if (store.d.spaces.length <= 1) throw new Error('You need at least one Bit.');
+    // Every tab goes to the Archive first — deleting a Bit never loses tabs.
+    tabs.archiveSpaceTabs(id);
+    store.deleteSpace(id);
+    ensureSpaceTab(store.d.activeSpaceId);
+    const first = [...tabs.tabs.values()].find((t) => t.spaceId === store.d.activeSpaceId);
+    if (first) tabs.activate(first.id);
+    else sendSnapshot();
+  });
+
+  // -- folders (per Bit) -------------------------------------------------------
+  ipcMain.handle('nt.folders.create', (_e, spaceId: string, name: string) => {
+    const f = store.addFolder(spaceId, name);
+    sendSnapshot();
+    return { id: f.id, name: f.name };
+  });
+  ipcMain.handle('nt.folders.rename', (_e, spaceId: string, folderId: string, name: string) => {
+    store.renameFolder(spaceId, folderId, name);
+    sendSnapshot();
+  });
+  ipcMain.handle('nt.folders.remove', (_e, spaceId: string, folderId: string) => {
+    store.removeFolder(spaceId, folderId);
+    tabs.clearFolder(spaceId, folderId);
+    sendSnapshot();
+  });
+
+  // -- bookmarks (per Bit) ------------------------------------------------------
+  ipcMain.handle('nt.bookmarks.add', (_e, spaceId: string, name: string, url: string): BookmarkState[] => {
+    const list = store.addBookmark(spaceId, name, url);
+    sendSnapshot();
+    return list;
+  });
+  ipcMain.handle('nt.bookmarks.rename', (_e, spaceId: string, id: string, name: string): BookmarkState[] => {
+    const list = store.renameBookmark(spaceId, id, name);
+    sendSnapshot();
+    return list;
+  });
+  ipcMain.handle('nt.bookmarks.remove', (_e, spaceId: string, id: string): BookmarkState[] => {
+    const list = store.removeBookmark(spaceId, id);
+    sendSnapshot();
+    return list;
+  });
+
+  // -- AI tidy (local models only — tab URLs never leave the device) -------------
+  ipcMain.handle('nt.tidy.plan', async (_e, spaceId: string): Promise<TidyPlan> => {
+    return buildTidyPlan(store, tabs, modelRouter, spaceId);
+  });
+  ipcMain.handle('nt.tidy.apply', (_e, spaceId: string, actions: TidyActions) => {
+    applyTidy(store, tabs, spaceId, actions);
+    sendSnapshot();
   });
 
   // -- ui --------------------------------------------------------------------
@@ -878,6 +948,8 @@ app.whenReady().then(() => {
     (d: TabDelta) => {
       // Keep the ad blocker's page context + per-page counter in sync.
       if (d.type === 'url') adblocker.noteNavigation(d.tabId, String(d.value));
+      // A navigation changes the restorable session — persist it (debounced).
+      if (d.type === 'url') tabs.persistSessionSoon();
       win?.webContents.send('nt.tab-delta', d);
     },
     {
@@ -911,11 +983,12 @@ app.whenReady().then(() => {
   registerIpc();
   createWindow();
 
-  // Restore pinned tabs; guarantee at least one tab in the active space.
+  // Restore pinned tabs + last session's open tabs; guarantee at least one tab in the active space.
   tabs.restorePinned();
+  tabs.restoreSessions();
   ensureSpaceTab(store.d.activeSpaceId);
-  const first = [...tabs.tabs.values()].find((t) => t.spaceId === store.d.activeSpaceId);
-  if (first) tabs.activate(first.id);
+  const firstId = tabs.lastActiveTabId(store.d.activeSpaceId);
+  if (firstId) tabs.activate(firstId);
   sendSnapshot();
 
   // Auto-archive sweep every minute.
@@ -928,13 +1001,19 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => {
   tabs.persistPinned();
+  tabs.persistSession();
+  tabs.saveFaviconCacheNow();
   store.saveNow();
   void llama?.stopAll().catch(() => { /* best effort */ });
   app.quit();
 });
 
 app.on('before-quit', () => {
+  // before-quit fires before windows close — the reliable place to capture
+  // the session (window-all-closed may not run on every quit path).
   tabs.persistPinned();
+  tabs.persistSession();
+  tabs.saveFaviconCacheNow();
   store.saveNow();
   void llama?.stopAll().catch(() => { /* best effort */ });
 });

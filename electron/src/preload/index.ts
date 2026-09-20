@@ -8,6 +8,8 @@ const api: NextTokenAPI = {
   tabsActivate: (tabId) => ipcRenderer.invoke('nt.tabs.activate', tabId),
   tabsPin: (tabId, pinned) => ipcRenderer.invoke('nt.tabs.pin', tabId, pinned),
   tabsMove: (tabId, spaceId) => ipcRenderer.invoke('nt.tabs.move', tabId, spaceId),
+  tabsReorder: (tabId, beforeTabId, folderId) => ipcRenderer.invoke('nt.tabs.reorder', tabId, beforeTabId, folderId),
+  tabsSetFolder: (tabId, folderId) => ipcRenderer.invoke('nt.tabs.set-folder', tabId, folderId),
   tabsAttach: (tabId, webContentsId) => ipcRenderer.invoke('nt.tabs.attach', tabId, webContentsId),
   tabsArchive: (tabId) => ipcRenderer.invoke('nt.tabs.archive', tabId),
   tabsRestore: (archivedId) => ipcRenderer.invoke('nt.tabs.restore', archivedId),
@@ -17,13 +19,25 @@ const api: NextTokenAPI = {
   navForward: () => ipcRenderer.invoke('nt.nav.forward'),
   navReload: () => ipcRenderer.invoke('nt.nav.reload'),
   navStop: () => ipcRenderer.invoke('nt.nav.stop'),
-  // spaces
+  // spaces (user-facing name: Bits)
   spacesCreate: (name) => ipcRenderer.invoke('nt.spaces.create', name),
   spacesSwitch: (id) => ipcRenderer.invoke('nt.spaces.switch', id),
   spacesRename: (id, name) => ipcRenderer.invoke('nt.spaces.rename', id, name),
+  spacesDelete: (id) => ipcRenderer.invoke('nt.spaces.delete', id),
   spacesSetAccent: (id, accent) => ipcRenderer.invoke('nt.spaces.set-accent', id, accent),
   spacesAddFavorite: (spaceId, name, url) => ipcRenderer.invoke('nt.spaces.add-favorite', spaceId, name, url),
   spacesRemoveFavorite: (spaceId, favId) => ipcRenderer.invoke('nt.spaces.remove-favorite', spaceId, favId),
+  // folders (per Bit)
+  foldersCreate: (spaceId, name) => ipcRenderer.invoke('nt.folders.create', spaceId, name),
+  foldersRename: (spaceId, folderId, name) => ipcRenderer.invoke('nt.folders.rename', spaceId, folderId, name),
+  foldersRemove: (spaceId, folderId) => ipcRenderer.invoke('nt.folders.remove', spaceId, folderId),
+  // bookmarks (per Bit)
+  bookmarksAdd: (spaceId, name, url) => ipcRenderer.invoke('nt.bookmarks.add', spaceId, name, url),
+  bookmarksRename: (spaceId, id, name) => ipcRenderer.invoke('nt.bookmarks.rename', spaceId, id, name),
+  bookmarksRemove: (spaceId, id) => ipcRenderer.invoke('nt.bookmarks.remove', spaceId, id),
+  // AI tidy — local models only
+  tidyPlan: (spaceId) => ipcRenderer.invoke('nt.tidy.plan', spaceId),
+  tidyApply: (spaceId, actions) => ipcRenderer.invoke('nt.tidy.apply', spaceId, actions),
   // ui
   uiSetSidebarCollapsed: (c) => ipcRenderer.invoke('nt.ui.sidebar-collapsed', c),
   uiSetAgentPanelOpen: (o) => ipcRenderer.invoke('nt.ui.agent-panel', o),

@@ -1,6 +1,10 @@
-import { webContents } from 'electron';
+import { app, webContents } from 'electron';
 import type { ContextMenuParams, WebContents } from 'electron';
 import { randomUUID } from 'node:crypto';
+import fs from 'node:fs';
+import { get as httpGet } from 'node:http';
+import { get as httpsGet } from 'node:https';
+import path from 'node:path';
 import type { ArchivedTab, TabDelta, TabState } from '../shared/ipc';
 import type { Store } from './store';
 
@@ -17,6 +21,10 @@ export interface TabRec {
   title: string;
   loading: boolean;
   pinned: boolean;
+  /** Folder this tab is filed into; null = ungrouped. */
+  folderId: string | null;
+  /** data: URL favicon captured from the page. */
+  favicon?: string;
   lastActive: number;
   wc: WebContents | null;
   canGoBack: boolean;
@@ -46,12 +54,31 @@ export class TabManager {
   tabs = new Map<string, TabRec>();
   activeTabId: string | null = null;
 
+  /** Last-active tab id per Bit — drives per-Bit sessionActiveUrl. */
+  private lastActiveBySpace = new Map<string, string>();
+
+  /** Most recently active tab in a Bit (falls back to any tab). */
+  lastActiveTabId(spaceId: string): string | null {
+    const id = this.lastActiveBySpace.get(spaceId);
+    const t = id ? this.tabs.get(id) : undefined;
+    if (t && t.spaceId === spaceId) return id as string;
+    return this.orderedTabs(spaceId)[0]?.id ?? null;
+  }
+  /** Sidebar order of tab ids (per space, filtered at read time). */
+  private order: string[] = [];
+  /** host -> data: URL favicon, persisted to disk. */
+  private faviconCache = new Map<string, string>();
+  private faviconSaveTimer: NodeJS.Timeout | null = null;
+  private sessionSaveTimer: NodeJS.Timeout | null = null;
+
   constructor(
     private store: Store,
     private onChange: () => void,
     private onDelta: (d: TabDelta) => void,
     private hooks?: TabHooks
-  ) {}
+  ) {
+    this.loadFaviconCache();
+  }
 
   // -- lifecycle -------------------------------------------------------------
   create(spaceId: string, rawUrl?: string, pinned = false): TabRec {
@@ -61,10 +88,14 @@ export class TabManager {
     const tab: TabRec = {
       id: randomUUID(), spaceId, url,
       title: 'New Tab', loading: true, pinned,
+      folderId: null,
+      favicon: this.faviconFor(url),
       lastActive: Date.now(), wc: null,
       canGoBack: false, canGoForward: false
     };
     this.tabs.set(tab.id, tab);
+    this.order.push(tab.id);
+    this.persistSessionSoon();
     this.onChange();
     return tab;
   }
@@ -105,11 +136,14 @@ export class TabManager {
         tabId: tab.id, type: 'loading', value: false,
         canGoBack: tab.canGoBack, canGoForward: tab.canGoForward
       });
+      // If the page never reported a favicon, try its own /favicon.ico.
+      if (!this.faviconFor(tab.url)) this.fetchOriginIcon(tab);
       this.maybeInjectBoost(wc, tab);
     });
     wc.on('page-title-updated', (_e, title) => {
       tab.title = title || tab.url;
       this.onDelta({ tabId: tab.id, type: 'title', value: tab.title });
+      this.persistSessionSoon(); // keep restored titles current
     });
     const onNav = (url: string) => {
       tab.url = url;
@@ -122,12 +156,250 @@ export class TabManager {
     };
     wc.on('did-navigate', (_e, url) => onNav(url));
     wc.on('did-navigate-in-page', (_e, url) => onNav(url));
+    // Site favicon for the sidebar — the page's own icon, cached per host.
+    // No extra network requests: Electron hands us the resolved favicon.
+    wc.on('page-favicon-updated', (_e, favicons) => this.onFavicon(tab, favicons));
     // Custom context menu for guest content — the app adds a
     // "Picture in picture" item when right-clicking a video element.
     wc.on('context-menu', (_e, params) => {
       try { this.hooks?.onContextMenu?.(wc, params); } catch { /* noop */ }
     });
     wc.once('destroyed', () => { tab.wc = null; });
+  }
+
+  // -- favicons ---------------------------------------------------------------
+  private faviconFile(): string {
+    return path.join(app.getPath('userData'), 'favicons.json');
+  }
+
+  private loadFaviconCache() {
+    try {
+      const raw = fs.readFileSync(this.faviconFile(), 'utf8');
+      const obj = JSON.parse(raw) as Record<string, string>;
+      for (const [host, icon] of Object.entries(obj)) {
+        if (typeof icon === 'string' && icon.startsWith('data:image')) {
+          this.faviconCache.set(host, icon);
+        }
+      }
+    } catch { /* no cache yet */ }
+  }
+
+  private saveFaviconCacheSoon() {
+    if (this.faviconSaveTimer) return;
+    this.faviconSaveTimer = setTimeout(() => {
+      this.faviconSaveTimer = null;
+      this.saveFaviconCacheNow();
+    }, 2000);
+  }
+
+  /** Synchronous favicon-cache write — call on quit so fresh icons survive. */
+  saveFaviconCacheNow() {
+    if (this.faviconSaveTimer) {
+      clearTimeout(this.faviconSaveTimer);
+      this.faviconSaveTimer = null;
+    }
+    try {
+      // Cap the cache so one bad actor can't bloat the file.
+      const entries = [...this.faviconCache.entries()].slice(-500);
+      fs.writeFileSync(this.faviconFile(), JSON.stringify(Object.fromEntries(entries)));
+    } catch { /* best effort */ }
+  }
+
+  private hostOf(url: string): string {
+    try { return new URL(url).hostname.toLowerCase(); } catch { return ''; }
+  }
+
+  /** Cached favicon for any URL (tabs, bookmarks), or undefined. */
+  faviconFor(url: string): string | undefined {
+    const host = this.hostOf(url);
+    return host ? this.faviconCache.get(host) : undefined;
+  }
+
+  private onFavicon(tab: TabRec, favicons: string[]) {
+    const dataUrl = favicons.find((f) => f.startsWith('data:image'));
+    if (dataUrl) {
+      if (dataUrl.length > 150_000) return; // sanity cap — skip giant icons
+      if (tab.favicon === dataUrl) return;
+      tab.favicon = dataUrl;
+      const host = this.hostOf(tab.url);
+      if (host) {
+        this.faviconCache.set(host, dataUrl);
+        this.saveFaviconCacheSoon();
+      }
+      this.onDelta({ tabId: tab.id, type: 'favicon', value: dataUrl });
+      return;
+    }
+    // Sites often hand us an http(s) favicon URL instead of a data URL.
+    // Download it ourselves (first-party origin only, no cookies, no
+    // third-party icon services) and cache it as a data URL.
+    const remote = favicons.find((f) => /^https?:\/\//i.test(f));
+    if (remote) this.downloadFavicon(this.hostOf(tab.url), remote);
+    else this.fetchOriginIcon(tab);
+  }
+
+  /** Hosts with an in-flight favicon download — one attempt per host. */
+  private faviconFetching = new Set<string>();
+
+  /** Download a first-party favicon URL (no cookies) and cache it as a data URL. */
+  private downloadFavicon(host: string, iconUrl: string) {
+    if (!host || this.faviconCache.has(host) || this.faviconFetching.has(host)) return;
+    let target: URL;
+    try {
+      target = new URL(iconUrl);
+      if (target.protocol !== 'http:' && target.protocol !== 'https:') return;
+      // Only ever fetch the site's own origin — never a third-party icon service.
+      if (target.hostname.toLowerCase() !== host) return;
+    } catch { return; }
+    this.faviconFetching.add(host);
+    const get = target.protocol === 'https:' ? httpsGet : httpGet;
+    const req = get(target, { timeout: 8000 }, (res) => {
+      const type = String(res.headers['content-type'] ?? '');
+      if (res.statusCode !== 200 || !type.startsWith('image/')) {
+        res.resume();
+        this.faviconFetching.delete(host);
+        return;
+      }
+      const chunks: Buffer[] = [];
+      let size = 0;
+      res.on('data', (c: Buffer) => {
+        size += c.length;
+        if (size > 200_000) { res.destroy(); this.faviconFetching.delete(host); return; }
+        chunks.push(c);
+      });
+      res.on('end', () => {
+        this.faviconFetching.delete(host);
+        if (size === 0 || size > 200_000) return;
+        const dataUrl = `data:${type.split(';')[0]};base64,${Buffer.concat(chunks).toString('base64')}`;
+        this.applyFavicon(host, dataUrl);
+      });
+      res.on('error', () => this.faviconFetching.delete(host));
+    });
+    req.on('timeout', () => { req.destroy(); this.faviconFetching.delete(host); });
+    req.on('error', () => this.faviconFetching.delete(host));
+  }
+
+  /** Last-resort: try the site origin's own /favicon.ico (no cookies). */
+  private fetchOriginIcon(tab: TabRec) {
+    const host = this.hostOf(tab.url);
+    if (!host || this.faviconCache.has(host) || this.faviconFetching.has(host)) return;
+    let origin: string;
+    try {
+      const u = new URL(tab.url);
+      if (u.protocol !== 'http:' && u.protocol !== 'https:') return;
+      origin = u.origin;
+    } catch { return; }
+    this.downloadFavicon(host, `${origin}/favicon.ico`);
+  }
+
+  /** Cache a fetched icon and push it to every tab currently on that host. */
+  private applyFavicon(host: string, dataUrl: string) {
+    this.faviconCache.set(host, dataUrl);
+    this.saveFaviconCacheSoon();
+    for (const tab of this.tabs.values()) {
+      if (this.hostOf(tab.url) === host && tab.favicon !== dataUrl) {
+        tab.favicon = dataUrl;
+        this.onDelta({ tabId: tab.id, type: 'favicon', value: dataUrl });
+      }
+    }
+  }
+
+  // -- folders & ordering ------------------------------------------------------
+  /** File a tab into a folder (null = ungrouped). Validates the folder belongs to the tab's Bit. */
+  setFolder(tabId: string, folderId: string | null): void {
+    const tab = this.tabs.get(tabId);
+    if (!tab) return;
+    if (folderId !== null) {
+      const space = this.store.d.spaces.find((s) => s.id === tab.spaceId);
+      if (!space?.folders.some((f) => f.id === folderId)) return;
+    }
+    if (tab.folderId === folderId) return;
+    tab.folderId = folderId;
+    this.persistSessionSoon();
+    this.onDelta({ tabId, type: 'folder', value: folderId });
+  }
+
+  /** Clear a deleted folder's id from every tab in that Bit. */
+  clearFolder(spaceId: string, folderId: string): void {
+    let changed = false;
+    for (const tab of this.tabs.values()) {
+      if (tab.spaceId === spaceId && tab.folderId === folderId) {
+        tab.folderId = null;
+        changed = true;
+        this.onDelta({ tabId: tab.id, type: 'folder', value: null });
+      }
+    }
+    if (changed) this.persistSessionSoon();
+  }
+
+  /**
+   * Drag-to-reorder: move `tabId` before `beforeTabId` (null = end of the
+   * target folder/section). Both tabs must be in the same Bit and share the
+   * same pinned/folder grouping; the caller passes the drop target's folder.
+   */
+  reorder(tabId: string, beforeTabId: string | null, folderId: string | null): void {
+    const tab = this.tabs.get(tabId);
+    if (!tab) return;
+    if (beforeTabId) {
+      const before = this.tabs.get(beforeTabId);
+      if (!before || before.spaceId !== tab.spaceId || before.id === tabId) return;
+      if (!!before.pinned !== !!tab.pinned) return;
+    }
+    // Keep the folder assignment consistent with the drop target.
+    if (!tab.pinned) this.setFolder(tabId, folderId);
+    const idx = this.order.indexOf(tabId);
+    if (idx !== -1) this.order.splice(idx, 1);
+    if (beforeTabId) {
+      const at = this.order.indexOf(beforeTabId);
+      this.order.splice(at === -1 ? this.order.length : at, 0, tabId);
+    } else {
+      // End of the target group: insert after the last tab of the same
+      // Bit + pinned/folder grouping.
+      let at = this.order.length;
+      for (let i = this.order.length - 1; i >= 0; i--) {
+        const t = this.tabs.get(this.order[i]);
+        if (t && t.spaceId === tab.spaceId && !!t.pinned === !!tab.pinned &&
+            (t.folderId ?? null) === (tab.folderId ?? null)) {
+          at = i + 1;
+          break;
+        }
+      }
+      this.order.splice(at, 0, tabId);
+    }
+    this.persistSessionSoon();
+    this.onChange();
+  }
+
+  /**
+   * Move a tab to another Bit. Clears the folder assignment when the folder
+   * doesn't exist in the target Bit, records per-Bit activity, and persists
+   * the session immediately (a move is a deliberate user action).
+   */
+  moveToSpace(tabId: string, spaceId: string): void {
+    const tab = this.tabs.get(tabId);
+    const space = this.store.d.spaces.find((s) => s.id === spaceId);
+    if (!tab || !space || tab.spaceId === spaceId) return;
+    const fromId = tab.spaceId;
+    tab.spaceId = spaceId;
+    if (tab.folderId && !space.folders.some((f) => f.id === tab.folderId)) {
+      tab.folderId = null;
+    }
+    this.lastActiveBySpace.set(spaceId, tabId);
+    // Repair the source Bit's pointer if it pointed at the moved tab.
+    if (this.lastActiveBySpace.get(fromId) === tabId) {
+      const sib = this.orderedTabs(fromId)[0];
+      if (sib) this.lastActiveBySpace.set(fromId, sib.id);
+      else this.lastActiveBySpace.delete(fromId);
+    }
+    this.persistSession();
+    this.onChange();
+  }
+
+  /** Tabs of one Bit, in sidebar order. */
+  orderedTabs(spaceId: string): TabRec[] {
+    const inSpace = [...this.tabs.values()].filter((t) => t.spaceId === spaceId);
+    const rank = new Map(this.order.map((id, i) => [id, i]));
+    // Any tab missing from the order (shouldn't happen) sorts last, stably.
+    return inSpace.sort((a, b) => (rank.get(a.id) ?? 1e9) - (rank.get(b.id) ?? 1e9));
   }
 
   /**
@@ -152,11 +424,16 @@ export class TabManager {
     if (!tab) return;
     try { tab.wc?.close(); } catch { /* already gone */ }
     this.tabs.delete(tabId);
+    const oi = this.order.indexOf(tabId);
+    if (oi !== -1) this.order.splice(oi, 1);
     if (this.activeTabId === tabId) {
       const sib = [...this.tabs.values()].find((t) => t.spaceId === tab.spaceId && !t.pinned)
         ?? [...this.tabs.values()].find((t) => t.spaceId === tab.spaceId);
       this.activeTabId = sib ? sib.id : null;
+      if (sib) this.lastActiveBySpace.set(tab.spaceId, sib.id);
+      else this.lastActiveBySpace.delete(tab.spaceId);
     }
+    this.persistSessionSoon();
     this.onChange();
   }
 
@@ -164,8 +441,10 @@ export class TabManager {
     const tab = this.tabs.get(tabId);
     if (!tab) return;
     this.activeTabId = tabId;
+    this.lastActiveBySpace.set(tab.spaceId, tabId);
     tab.lastActive = Date.now();
     try { tab.wc?.focus(); } catch { /* noop */ }
+    this.persistSessionSoon(); // crash-safe: remember the active tab per Bit
     this.onChange();
   }
 
@@ -199,7 +478,7 @@ export class TabManager {
     const space = this.store.d.spaces.find((s) => s.id === tab.spaceId);
     const entry: ArchivedTab = {
       id: randomUUID(), spaceId: tab.spaceId,
-      spaceName: space?.name ?? 'Space',
+      spaceName: space?.name ?? 'Bit',
       url: tab.url, title: tab.title, archivedAt: Date.now()
     };
     this.store.d.archived.unshift(entry);
@@ -236,6 +515,8 @@ export class TabManager {
     return {
       id: tab.id, spaceId: tab.spaceId, url: tab.url, title: tab.title,
       loading: tab.loading, pinned: tab.pinned,
+      favicon: tab.favicon ?? this.faviconFor(tab.url),
+      folderId: tab.folderId,
       canGoBack: tab.canGoBack, canGoForward: tab.canGoForward
     };
   }
@@ -243,8 +524,8 @@ export class TabManager {
   /** Persist pinned tabs so they survive restarts. */
   persistPinned() {
     for (const s of this.store.d.spaces) {
-      s.pinned = [...this.tabs.values()]
-        .filter((t) => t.spaceId === s.id && t.pinned)
+      s.pinned = this.orderedTabs(s.id)
+        .filter((t) => t.pinned)
         .map((t) => ({ url: t.url, title: t.title }));
     }
     this.store.saveSoon();
@@ -255,7 +536,89 @@ export class TabManager {
       for (const p of s.pinned) {
         const tab = this.create(s.id, p.url, true);
         tab.title = p.title || p.url;
+        tab.loading = false;
       }
     }
+  }
+
+  // -- open-tab sessions (per Bit, crash-safe) ---------------------------------
+  /** Blank new-tab pages carry no state worth restoring. */
+  private isRestorableUrl(url: string): boolean {
+    return !!url && !url.startsWith('data:') && url !== 'about:blank';
+  }
+
+  /** Debounced write of every Bit's open tabs (url/title/folder/order). */
+  persistSessionSoon() {
+    if (this.sessionSaveTimer) return;
+    this.sessionSaveTimer = setTimeout(() => {
+      this.sessionSaveTimer = null;
+      this.persistSession();
+    }, 500);
+  }
+
+  /** Synchronous session write — call before quit / destructive ops. */
+  persistSession() {
+    if (this.sessionSaveTimer) {
+      clearTimeout(this.sessionSaveTimer);
+      this.sessionSaveTimer = null;
+    }
+    for (const s of this.store.d.spaces) {
+      s.sessionTabs = this.orderedTabs(s.id)
+        .filter((t) => !t.pinned && this.isRestorableUrl(t.url))
+        .map((t) => ({ url: t.url, title: t.title, folderId: t.folderId, favicon: t.favicon ?? null }));
+      // True per-Bit last-active URL — never the globally active tab's.
+      const lastId = this.lastActiveBySpace.get(s.id);
+      s.sessionActiveUrl = lastId ? this.tabs.get(lastId)?.url ?? null : null;
+    }
+    this.store.saveSoon();
+  }
+
+  /** Recreate last session's open tabs. Webviews mount lazily on first activation. */
+  restoreSessions() {
+    for (const s of this.store.d.spaces) {
+      for (const st of s.sessionTabs) {
+        const tab = this.create(s.id, st.url);
+        tab.title = st.title || st.url;
+        tab.folderId = st.folderId;
+        tab.favicon = st.favicon ?? this.faviconFor(st.url) ?? undefined;
+        tab.loading = false; // nothing has loaded yet — the webview mounts on activation
+      }
+      // Remember which tab was active so Bit switches restore the right one.
+      const active = s.sessionActiveUrl
+        ? this.orderedTabs(s.id).find((t) => t.url === s.sessionActiveUrl)
+        : undefined;
+      if (active) this.lastActiveBySpace.set(s.id, active.id);
+    }
+    if (this.sessionSaveTimer) {
+      clearTimeout(this.sessionSaveTimer);
+      this.sessionSaveTimer = null;
+    }
+  }
+
+  /**
+   * Move EVERY tab of a Bit into the Archive (including pinned and blank
+   * start tabs) and destroy their guests. Used when deleting a Bit —
+   * nothing is silently lost.
+   */
+  archiveSpaceTabs(spaceId: string) {
+    const space = this.store.d.spaces.find((s) => s.id === spaceId);
+    for (const tab of this.orderedTabs(spaceId)) {
+      const entry: ArchivedTab = {
+        id: randomUUID(), spaceId: tab.spaceId,
+        spaceName: space?.name ?? 'Bit',
+        url: tab.url, title: tab.title, archivedAt: Date.now()
+      };
+      this.store.d.archived.unshift(entry);
+    }
+    if (this.store.d.archived.length > 200) this.store.d.archived.length = 200;
+    // Destroy the guests directly — close() would re-pick an active tab per tab.
+    for (const tab of [...this.tabs.values()].filter((t) => t.spaceId === spaceId)) {
+      try { tab.wc?.close(); } catch { /* already gone */ }
+      this.tabs.delete(tab.id);
+      const oi = this.order.indexOf(tab.id);
+      if (oi !== -1) this.order.splice(oi, 1);
+    }
+    if (this.activeTabId && !this.tabs.has(this.activeTabId)) this.activeTabId = null;
+    this.store.saveSoon();
   }
 }

@@ -16,10 +16,12 @@ import {
   Plus,
   RotateCw,
   Sparkles,
+  Star,
   X,
 } from "lucide-react";
+import { useEffect } from "react";
 import { useBrowser } from "../BrowserContext";
-import { nt } from "../nt";
+import { domainOf, nt } from "../nt";
 import { Omnibox } from "./Omnibox";
 import { ShieldButton } from "./ShieldButton";
 import { useVoiceSession } from "./VoiceSession";
@@ -72,11 +74,47 @@ function VoiceChip() {
 }
 
 export function TopStrip() {
-  const { snapshot, activeTab, split, setSplit, splitPick, setSplitPick } =
+  const { snapshot, activeSpace, activeTab, split, setSplit, splitPick, setSplitPick } =
     useBrowser();
 
   const iconBtn =
     "nt-r-sm p-2 transition-colors hover:bg-[var(--nt-bg-hover)] disabled:opacity-30 disabled:hover:bg-transparent";
+
+  const bookmarked = Boolean(
+    activeSpace &&
+      activeTab &&
+      activeSpace.bookmarks.some((b) => b.url === activeTab.url),
+  );
+
+  const toggleBookmark = () => {
+    if (!activeTab || !activeSpace) return;
+    const existing = activeSpace.bookmarks.find((b) => b.url === activeTab.url);
+    if (existing) void nt().bookmarksRemove(activeSpace.id, existing.id);
+    else
+      void nt().bookmarksAdd(
+        activeSpace.id,
+        activeTab.title || domainOf(activeTab.url),
+        activeTab.url,
+      );
+  };
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (
+        (e.metaKey || e.ctrlKey) &&
+        !e.shiftKey &&
+        !e.altKey &&
+        e.key.toLowerCase() === "d"
+      ) {
+        const tag = (document.activeElement as HTMLElement | null)?.tagName;
+        if (tag === "INPUT" || tag === "TEXTAREA") return;
+        e.preventDefault();
+        toggleBookmark();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
 
   return (
     <header
@@ -187,6 +225,23 @@ export function TopStrip() {
         style={{ color: "var(--nt-text-3)" }}
       >
         <Plus size={16} strokeWidth={1.75} />
+      </button>
+      <button
+        title={bookmarked ? "Remove bookmark" : "Bookmark this page (⌘D)"}
+        disabled={!activeTab || !activeSpace}
+        onClick={toggleBookmark}
+        className={iconBtn}
+        style={
+          bookmarked
+            ? { color: "var(--nt-accent)" }
+            : { color: "var(--nt-text-3)" }
+        }
+      >
+        <Star
+          size={16}
+          strokeWidth={1.75}
+          fill={bookmarked ? "currentColor" : "none"}
+        />
       </button>
       <button
         title="Toggle agent panel"

@@ -1,7 +1,7 @@
 /**
  * Spotlight-style command bar (⌘K / Ctrl+K) on the new design system.
  *
- * Fuzzy-searches open tabs (all spaces), favorites, spaces, and actions.
+ * Fuzzy-searches open tabs (all Bits), favorites, Bits, and actions.
  * Selection uses the ember accent wash (nt-selected). Popover motion:
  * fade + 4px rise, 150ms. Includes "Split view with…" (arms split-pick)
  * and "Close split view".
@@ -36,7 +36,7 @@ interface Item {
   run: () => void;
 }
 
-const GROUP_ORDER = ["Go to", "Tabs", "Favorites", "Spaces", "Actions"];
+const GROUP_ORDER = ["Go to", "Tabs", "Favorites", "Bits", "Actions"];
 
 export function CommandBar({ onClose }: { onClose: () => void }) {
   const { snapshot, activeTab, split, setSplit, setSplitPick } = useBrowser();
@@ -63,7 +63,7 @@ export function CommandBar({ onClose }: { onClose: () => void }) {
     };
     const api = nt();
 
-    // Tabs across every space.
+    // Tabs across every Bit.
     for (const space of s.spaces) {
       for (const t of space.tabs) {
         const Icon = iconForUrl(t.url);
@@ -84,7 +84,7 @@ export function CommandBar({ onClose }: { onClose: () => void }) {
       }
     }
 
-    // Favorites across every space.
+    // Favorites across every Bit.
     for (const space of s.spaces) {
       for (const f of space.favorites) {
         push(
@@ -101,18 +101,18 @@ export function CommandBar({ onClose }: { onClose: () => void }) {
       }
     }
 
-    // Spaces.
+    // Bits.
     s.spaces.forEach((space, i) => {
       push(
         {
           id: `space-${space.id}`,
-          group: "Spaces",
+          group: "Bits",
           title: `Switch to ${space.name}`,
           subtitle: `Ctrl/⌘+${i + 1} · ${space.tabs.length} tabs`,
           icon: LayoutGrid,
           run: run(() => api.spacesSwitch(space.id)),
         },
-        `${space.name} space switch`,
+        `${space.name} Bit switch`,
       );
     });
 
@@ -167,11 +167,11 @@ export function CommandBar({ onClose }: { onClose: () => void }) {
         () => api.uiSetSettingsOpen(true),
       ],
       [
-        "New space",
-        "Create a new space",
+        "New Bit",
+        "Create a new Bit",
         LayoutGrid,
         () => {
-          const name = window.prompt("Space name:");
+          const name = window.prompt("Bit name:");
           if (name?.trim()) return api.spacesCreate(name.trim());
         },
       ],
@@ -261,7 +261,7 @@ export function CommandBar({ onClose }: { onClose: () => void }) {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={onKey}
-            placeholder="Search tabs, favorites, spaces, actions…"
+            placeholder="Search tabs, favorites, Bits, actions…"
             spellCheck={false}
             className="w-full bg-transparent py-4 text-[15px] outline-none placeholder:text-[var(--nt-text-3)]"
             style={{ color: "var(--nt-text-1)" }}
