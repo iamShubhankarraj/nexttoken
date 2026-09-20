@@ -1,0 +1,6 @@
+node_modules/
+dist/
+dist-check-node/
+release/
+!release/*.md
+.DS_Store

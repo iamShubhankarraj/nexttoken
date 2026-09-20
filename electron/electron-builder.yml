@@ -1,0 +1,27 @@
+appId: com.nexttoken.app
+productName: Next Token
+directories:
+  output: release
+files:
+  - dist/**/*
+  - package.json
+mac:
+  target:
+    - dmg
+    - zip
+  icon: build/icon.icns
+  identity: null
+  hardenedRuntime: false
+  gatekeeperAssess: false
+  category: public.app-category.productivity
+  darkModeSupport: true
+dmg:
+  # backgroundColor (not background) so Linux builds don't need macOS `sips`.
+  backgroundColor: "#0B0B0D"
+  window:
+    width: 540
+    height: 380
+  contents:
+    - { x: 140, y: 180, type: link, path: /Applications }
+    - { x: 400, y: 180, type: file }
+npmRebuild: false
