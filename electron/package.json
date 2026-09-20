@@ -33,5 +33,5 @@
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "smoke": "node scripts/smoke.mjs"
   },
-  "version": "0.3.0"
+  "version": "0.4.0"
 }
