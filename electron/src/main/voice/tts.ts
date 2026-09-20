@@ -105,7 +105,7 @@ interface KokoroFiles {
   model: string;
   voices: string;
   tokens: string;
-  dataDir?: string;
+  dataDir: string;
   dictDir?: string;
   lexicons: string[];
 }
@@ -141,7 +141,22 @@ async function resolveKokoroFiles(dir: string): Promise<KokoroFiles> {
   const voices = pick(/(^|\/)voices[^/]*\.bin$/i, "Kokoro voices file (voices*.bin)");
   const tokens = pick(/(^|\/)tokens\.txt$/i, "Kokoro tokens file (tokens.txt)");
 
-  const dataDir = entries.find((e) => e.isDir && /(^|\/)espeak-ng-data$/.test(e.p))?.p;
+  // GAP (documented 2026-09-21): sherpa-onnx's Kokoro engine also needs the
+  // espeak-ng-data directory (phonemizer data), but the model downloader
+  // only fetches single files (kokoro-v1.0.onnx, voices-v1.0.bin,
+  // tokens.txt) — never this directory. Until the downloader ships it,
+  // fail here with a clear, human-readable error instead of letting the
+  // sidecar die cryptically on a missing --kokoro-data-dir.
+  const dataDirEntry = entries.find((e) => e.isDir && /(^|\/)espeak-ng-data$/.test(e.p));
+  if (!dataDirEntry) {
+    throw new Error(
+      `TTS: the espeak-ng-data directory is missing under ${dir}. ` +
+        `sherpa-onnx's Kokoro engine needs these phonemizer data files, and the model downloader does not fetch them yet. ` +
+        `To fix: download a Kokoro model tarball from the sherpa-onnx releases (k2-fsa/sherpa-onnx, tts-models tag), ` +
+        `copy its espeak-ng-data folder to ${path.join(dir, "espeak-ng-data")}, and try again.`,
+    );
+  }
+  const dataDir = dataDirEntry.p;
   const dictDir = entries.find((e) => e.isDir && /(^|\/)dict$/.test(e.p))?.p;
   const lexicons = files.filter((p) => /(^|\/)lexicon[^/]*\.txt$/i.test(p));
 
@@ -174,11 +189,11 @@ async function synthChunk(
     `--kokoro-model=${files.model}`,
     `--kokoro-voices=${files.voices}`,
     `--kokoro-tokens=${files.tokens}`,
+    `--kokoro-data-dir=${files.dataDir}`,
     "--num-threads=2",
     "--sid=0",
     `--output-filename=${outWav}`,
   ];
-  if (files.dataDir) args.push(`--kokoro-data-dir=${files.dataDir}`);
   if (files.dictDir) args.push(`--kokoro-dict-dir=${files.dictDir}`);
   if (files.lexicons.length > 0) args.push(`--kokoro-lexicon=${files.lexicons.join(",")}`);
   args.push(text);
