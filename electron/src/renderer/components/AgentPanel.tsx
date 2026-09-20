@@ -1,34 +1,47 @@
 /**
- * Agent panel (right side) on the new design system: page-aware chat
- * against the real agent runtime in the main process.
+ * Agent panel — the large right-docked AI chat (Dia pattern).
  *
- * - History loads from nt.agentHistory() (roles: user | assistant | tool).
- * - Send goes through nt.agentChat(); streaming chunks, tool calls,
- *   denials, errors, and completion arrive on nt.onAgentEvent.
- * - Tool activity is rendered as clearly labeled compact rows.
- * - Cancel stops the active run; Clear wipes history via nt.agentClearHistory().
- * - Mic button + Alt/V voice commands (see hooks/useVoice), dictation
- *   appends into the input. Assistant replies are spoken when
- *   voice.speakReplies is on.
+ * - Closable, toggled with ⌘/Ctrl+E, current-tab aware (context chip)
+ * - Ephemeral chats: one-click new chat (archives), recent sessions —
+ *   only the last few are kept (main caps at 5)
+ * - Skills: one-click chips + /-commands in the input
+ * - Tappable follow-up suggestions after each assistant reply
+ * - @-mentions pull open tabs into context; external ask/prefill arrives
+ *   via the agent bus (omnibox, new-tab hero, writing hint)
+ *
+ * The agent run itself is unchanged: same event protocol, tool rows,
+ * voice commands, dictation, cancellation, and spoken replies.
  */
 
 import {
   AlertTriangle,
+  ChevronRight,
+  Globe,
+  History,
   Keyboard,
   Loader2,
   Mic,
+  Plus,
   Send,
   Sparkles,
   Square,
-  Trash2,
   Wrench,
   X,
+  Zap,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { AgentEvent, AgentMessage, BrowserSnapshot } from "../../shared/ipc";
+import type {
+  AgentEvent,
+  AgentMessage,
+  BrowserSnapshot,
+  ChatSession,
+  SkillDef,
+} from "../../shared/ipc";
 import { useBrowser } from "../BrowserContext";
+import { registerAskHandler, registerPrefillHandler } from "../agentBus";
 import { useVoice, runVoiceCommand, speakLocal } from "../hooks/useVoice";
 import { domainOf, nt } from "../nt";
+import { SmartInput, type SmartTab } from "./SmartInput";
 
 type ChatRole = "user" | "assistant" | "tool" | "system";
 
@@ -50,11 +63,26 @@ function toChatMsg(m: AgentMessage): ChatMsg {
   return { id: m.id, role: m.role, text: m.text, at: m.at };
 }
 
-const SUGGESTIONS = [
-  "Summarize this page",
-  "Extract key points",
-  "Explain like I'm 5",
-];
+function timeAgo(ts: number): string {
+  const s = Math.max(1, Math.floor((Date.now() - ts) / 1000));
+  if (s < 60) return "just now";
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const d = Math.floor(h / 24);
+  return d === 1 ? "yesterday" : `${d}d ago`;
+}
+
+/** Tappable follow-ups derived from the last assistant reply. */
+function followUpsFor(text: string): string[] {
+  const out: string[] = [];
+  if (/```/.test(text)) out.push("Explain this code step by step");
+  if (text.length > 800) out.push("Make it shorter");
+  out.push("Summarize in one sentence");
+  out.push("What should I do next?");
+  return out.slice(0, 3);
+}
 
 export function AgentPanel() {
   const { snapshot, activeTab } = useBrowser();
@@ -62,6 +90,9 @@ export function AgentPanel() {
   const [streams, setStreams] = useState<Map<string, string>>(new Map());
   const [activeRun, setActiveRun] = useState<string | null>(null);
   const [input, setInput] = useState("");
+  const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const [showSessions, setShowSessions] = useState(false);
+  const [skills, setSkills] = useState<SkillDef[]>([]);
   const [voiceCfg, setVoiceCfg] = useState({ enabled: false, speakReplies: false });
   const [voiceFeedback, setVoiceFeedback] = useState<string | null>(null);
 
@@ -177,7 +208,15 @@ export function AgentPanel() {
     [pushMsg, speak],
   );
 
-  // History + voice config + event subscription.
+  const refreshSessions = useCallback(() => {
+    nt().agentSessions().then(setSessions).catch(() => {});
+  }, []);
+
+  const refreshSkills = useCallback(() => {
+    nt().skillsList().then(setSkills).catch(() => {});
+  }, []);
+
+  // History + voice config + sessions + skills + event subscription.
   useEffect(() => {
     let alive = true;
     nt()
@@ -192,12 +231,14 @@ export function AgentPanel() {
         if (alive) setVoiceCfg(v);
       })
       .catch(() => {});
+    refreshSessions();
+    refreshSkills();
     const off = nt().onAgentEvent(handleEvent);
     return () => {
       alive = false;
       off();
     };
-  }, [handleEvent]);
+  }, [handleEvent, refreshSessions, refreshSkills]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -212,6 +253,7 @@ export function AgentPanel() {
       pushMsg({ role: "user", text: q });
       setInput("");
       setVoiceFeedback(null);
+      setShowSessions(false);
       nt()
         .agentChat(q)
         .catch((err) =>
@@ -224,6 +266,24 @@ export function AgentPanel() {
     [activeRun, pushMsg],
   );
 
+  // External ask/prefill (omnibox, new-tab hero, writing hint) — via a
+  // ref so registration happens once.
+  const sendRef = useRef(send);
+  sendRef.current = send;
+  useEffect(() => {
+    registerAskHandler((text) => {
+      void sendRef.current(text);
+    });
+    registerPrefillHandler((text) => {
+      setInput(text);
+      inputRef.current?.focus();
+    });
+    return () => {
+      registerAskHandler(null);
+      registerPrefillHandler(null);
+    };
+  }, []);
+
   const cancel = useCallback(() => {
     if (!activeRun) return;
     nt()
@@ -231,12 +291,25 @@ export function AgentPanel() {
       .catch(() => {});
   }, [activeRun]);
 
-  const clear = useCallback(() => {
-    nt()
-      .agentClearHistory()
-      .then(() => setMsgs([]))
-      .catch(() => {});
-  }, []);
+  /** Archive the current chat and start fresh (one-click, Dia pattern). */
+  const newChat = useCallback(async () => {
+    cancel();
+    await nt().agentNewChat().catch(() => {});
+    setMsgs([]);
+    setShowSessions(false);
+    refreshSessions();
+  }, [cancel, refreshSessions]);
+
+  const openSession = useCallback(
+    async (id: string) => {
+      cancel();
+      await nt().agentOpenSession(id).catch(() => {});
+      const h = await nt().agentHistory().catch(() => []);
+      setMsgs(h.map(toChatMsg));
+      setShowSessions(false);
+    },
+    [cancel],
+  );
 
   /* --------------------------------- voice ------------------------------- */
 
@@ -277,14 +350,30 @@ export function AgentPanel() {
   const busy = activeRun !== null;
   const streamingText = activeRun ? (streams.get(activeRun) ?? "") : "";
 
+  const allTabs: SmartTab[] = (snapshot?.spaces ?? []).flatMap((s) =>
+    s.tabs.map((t) => ({
+      id: t.id,
+      title: t.title,
+      url: t.url,
+      spaceName: s.name,
+    })),
+  );
+
+  const lastAssistant = [...msgs]
+    .reverse()
+    .find((m) => m.role === "assistant" && m.text.trim().length > 0);
+  const followUps = !busy && lastAssistant ? followUpsFor(lastAssistant.text) : [];
+
+  const domain = activeTab ? domainOf(activeTab.url) : "";
+
   return (
     <aside
-      className="nt-fade-slide-in flex h-full w-[320px] shrink-0 flex-col border-l"
+      className="nt-fade-slide-in flex h-full w-[400px] shrink-0 flex-col border-l"
       style={{ background: "var(--nt-bg-subtle)", borderColor: "var(--nt-border)" }}
     >
       {/* header */}
       <div
-        className="flex items-center gap-2 border-b px-3.5 py-3"
+        className="flex items-center gap-1 border-b px-3.5 py-3"
         style={{ borderColor: "var(--nt-border)" }}
       >
         <span
@@ -296,45 +385,125 @@ export function AgentPanel() {
         <p className="text-[15px] font-semibold tracking-[-0.01em]" style={{ color: "var(--nt-text-1)" }}>
           Agent
         </p>
+        <span className="flex-1" />
         <button
-          title="Clear history"
-          onClick={clear}
+          title="New chat (archives this one)"
+          aria-label="New chat"
+          onClick={() => void newChat()}
           className="nt-r-sm p-1.5 transition-colors hover:bg-[var(--nt-bg-hover)]"
-          style={{ color: "var(--nt-text-3)" }}
+          style={{ color: "var(--nt-text-2)" }}
         >
-          <Trash2 size={14} strokeWidth={1.75} />
+          <Plus size={15} strokeWidth={1.75} />
         </button>
         <button
-          title="Close agent panel"
+          title="Recent chats"
+          aria-label="Recent chats"
+          aria-expanded={showSessions}
+          onClick={() => {
+            refreshSessions();
+            setShowSessions((s) => !s);
+          }}
+          className="nt-r-sm p-1.5 transition-colors hover:bg-[var(--nt-bg-hover)]"
+          style={{
+            color: showSessions ? "var(--nt-accent)" : "var(--nt-text-2)",
+            background: showSessions ? "var(--nt-accent-soft)" : undefined,
+          }}
+        >
+          <History size={15} strokeWidth={1.75} />
+        </button>
+        <button
+          title="Close agent panel (⌘E)"
+          aria-label="Close agent panel"
           onClick={() => void nt().uiSetAgentPanelOpen(false)}
-          className="nt-r-sm ml-auto p-1.5 transition-colors hover:bg-[var(--nt-bg-hover)]"
+          className="nt-r-sm p-1.5 transition-colors hover:bg-[var(--nt-bg-hover)]"
           style={{ color: "var(--nt-text-3)" }}
         >
           <X size={15} strokeWidth={1.75} />
         </button>
       </div>
 
-      {/* page-context indicator */}
-      <div
-        className="border-b px-3.5 py-2.5"
-        style={{ borderColor: "var(--nt-border)" }}
-      >
-        <p className="nt-micro">Reading</p>
-        <p className="mt-0.5 truncate text-[13px]" style={{ color: "var(--nt-text-1)" }}>
-          {activeTab ? activeTab.title || "New tab" : "No tab"}
-        </p>
-        <p className="nt-mono truncate text-[11px]" style={{ color: "var(--nt-text-3)" }}>
-          {activeTab ? domainOf(activeTab.url) : ""}
-        </p>
-      </div>
+      {/* recent sessions — ephemeral, only the last few are kept */}
+      {showSessions && (
+        <div
+          className="nt-fade-in border-b px-2 py-1.5"
+          style={{ borderColor: "var(--nt-border)" }}
+        >
+          <button
+            onClick={() => void newChat()}
+            className="nt-r-sm flex w-full items-center gap-2 px-2.5 py-2 text-[13px] font-medium transition-colors hover:bg-[var(--nt-bg-hover)]"
+            style={{ color: "var(--nt-accent)" }}
+          >
+            <Plus size={14} strokeWidth={1.75} /> Start new chat
+          </button>
+          {sessions.length === 0 && (
+            <p className="px-2.5 py-2 text-[12px]" style={{ color: "var(--nt-text-faint)" }}>
+              No recent chats yet.
+            </p>
+          )}
+          {sessions.map((s) => (
+            <button
+              key={s.id}
+              onClick={() => void openSession(s.id)}
+              className="nt-r-sm flex w-full items-center gap-2 px-2.5 py-2 text-left transition-colors hover:bg-[var(--nt-bg-hover)]"
+            >
+              <ChevronRight size={12} strokeWidth={1.75} style={{ color: "var(--nt-text-faint)" }} />
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-[13px]" style={{ color: "var(--nt-text-1)" }}>
+                  {s.title}
+                </span>
+                <span className="nt-micro block">{timeAgo(s.at)}</span>
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* current-tab context chip */}
+      {activeTab && (
+        <div className="px-3.5 pt-2.5">
+          <div
+            className="nt-r-full flex items-center gap-2 border px-3 py-1.5"
+            style={{ borderColor: "var(--nt-border)", background: "var(--nt-bg-raised)" }}
+            title={activeTab.title ? `${activeTab.title}\n${activeTab.url}` : activeTab.url}
+          >
+            <Globe size={12} strokeWidth={1.75} className="shrink-0" style={{ color: "var(--nt-accent)" }} />
+            <span className="min-w-0 flex-1 truncate text-[12px]" style={{ color: "var(--nt-text-2)" }}>
+              {activeTab.title || "New tab"}
+            </span>
+            {domain && (
+              <span className="nt-mono shrink-0 text-[11px]" style={{ color: "var(--nt-text-faint)" }}>
+                {domain}
+              </span>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* messages */}
       <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-3.5 py-3">
         {msgs.length === 0 && !busy && (
-          <p className="px-1 pt-6 text-center text-[13px]" style={{ color: "var(--nt-text-3)" }}>
-            Ask about the page you're reading, or tell me to do something
-            with it.
-          </p>
+          <div className="nt-fade-in px-1 pt-6 text-center">
+            <p className="text-[13px]" style={{ color: "var(--nt-text-3)" }}>
+              Ask about the page you're reading, or tell me to do something
+              with it.
+            </p>
+            {skills.length > 0 && (
+              <div className="mt-3 flex flex-wrap justify-center gap-1.5">
+                {skills.slice(0, 6).map((s) => (
+                  <button
+                    key={s.id}
+                    onClick={() => void send(s.prompt)}
+                    title={s.prompt}
+                    className="nt-r-full border px-2.5 py-1 text-[11px] transition-colors hover:border-[var(--nt-accent)]"
+                    style={{ borderColor: "var(--nt-border)", color: "var(--nt-text-2)" }}
+                  >
+                    <Zap size={10} strokeWidth={1.75} className="mr-1 inline" style={{ color: "var(--nt-accent)" }} />
+                    {s.name}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
         )}
         {msgs.map((m) => {
           if (m.role === "system") {
@@ -454,6 +623,22 @@ export function AgentPanel() {
             </div>
           </div>
         )}
+
+        {/* follow-up suggestions */}
+        {followUps.length > 0 && (
+          <div className="nt-fade-in flex flex-wrap gap-1.5">
+            {followUps.map((f) => (
+              <button
+                key={f}
+                onClick={() => void send(f)}
+                className="nt-r-full border px-2.5 py-1 text-[11px] transition-colors hover:border-[var(--nt-accent)]"
+                style={{ borderColor: "var(--nt-border)", color: "var(--nt-text-2)" }}
+              >
+                {f}
+              </button>
+            ))}
+          </div>
+        )}
         <div ref={bottomRef} />
       </div>
 
@@ -488,20 +673,6 @@ export function AgentPanel() {
 
       {/* input */}
       <div className="border-t p-3" style={{ borderColor: "var(--nt-border)" }}>
-        {!busy && msgs.length === 0 && (
-          <div className="mb-2 flex flex-wrap gap-1.5">
-            {SUGGESTIONS.map((s) => (
-              <button
-                key={s}
-                onClick={() => send(s)}
-                className="nt-r-full border px-2.5 py-1 text-[11px] transition-colors hover:border-[var(--nt-accent)]"
-                style={{ borderColor: "var(--nt-border)", color: "var(--nt-text-2)" }}
-              >
-                {s}
-              </button>
-            ))}
-          </div>
-        )}
         <div className="flex items-center gap-2">
           <button
             title={
@@ -543,19 +714,24 @@ export function AgentPanel() {
           >
             <Keyboard size={15} strokeWidth={1.75} />
           </button>
-          <input
-            ref={inputRef}
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !busy) send(input);
-            }}
-            placeholder={busy ? "Agent is working…" : "Ask about this page…"}
-            disabled={busy}
-            spellCheck={false}
-            className="nt-r-sm w-full border bg-[var(--nt-bg-raised)] px-3.5 py-2.5 text-[13px] outline-none transition-colors placeholder:text-[var(--nt-text-3)] focus:border-[var(--nt-accent)] disabled:opacity-50"
-            style={{ borderColor: "var(--nt-border)", color: "var(--nt-text-1)" }}
-          />
+          <div
+            className="nt-r-sm min-w-0 flex-1 border bg-[var(--nt-bg-raised)] px-3.5 py-2.5"
+            style={{ borderColor: "var(--nt-border)" }}
+          >
+            <SmartInput
+              value={input}
+              onChange={setInput}
+              onSubmit={() => send(input)}
+              onRunSkill={(s) => void send(s.prompt)}
+              tabs={allTabs}
+              skills={skills}
+              placeholder={busy ? "Agent is working…" : "Ask anything — @ for a tab, / for a skill"}
+              dropUp
+              inputRef={inputRef}
+              ariaLabel="Ask the agent"
+              disabled={busy}
+            />
+          </div>
           {busy ? (
             <button
               onClick={cancel}
@@ -576,6 +752,9 @@ export function AgentPanel() {
             </button>
           )}
         </div>
+        <p className="nt-micro mt-1.5 px-1">
+          Enter to send · @ mentions a tab · / runs a skill
+        </p>
       </div>
     </aside>
   );
