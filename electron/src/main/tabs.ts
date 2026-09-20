@@ -17,12 +17,18 @@ export interface TabRec {
   canGoForward: boolean;
 }
 
-const START_URL = 'https://www.google.com';
+/** Fresh tabs open a blank titled page — the renderer draws the large
+ * centered command bar over it (Dia pattern: no tile page). A data: URL
+ * keeps this offline and gives the guest a real title for the smoke test. */
+const START_URL =
+  'data:text/html,<html><head><title>New Tab</title></head><body></body></html>';
 
 /** Decide whether raw input is a URL or a search query. */
 export function resolveInput(raw: string, searchEngine: string): string {
   const t = raw.trim();
   if (!t) return START_URL;
+  // Already a full URL or an internal page — pass through untouched.
+  if (/^(data|about|file):/i.test(t)) return t;
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(t)) return t; // has a scheme
   if (/^localhost(:\d+)?(\/\S*)?$/i.test(t)) return 'http://' + t;
   // domain-like: no spaces, has a dot, plausible TLD-ish shape
@@ -42,7 +48,9 @@ export class TabManager {
 
   // -- lifecycle -------------------------------------------------------------
   create(spaceId: string, rawUrl?: string, pinned = false): TabRec {
-    const url = resolveInput(rawUrl || START_URL, this.store.d.searchEngine);
+    // Don't re-resolve the default: START_URL is a data: URL and must be
+    // passed through untouched, never search-routed.
+    const url = rawUrl ? resolveInput(rawUrl, this.store.d.searchEngine) : START_URL;
     const tab: TabRec = {
       id: randomUUID(), spaceId, url,
       title: 'New Tab', loading: true, pinned,
