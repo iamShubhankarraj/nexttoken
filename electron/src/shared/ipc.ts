@@ -365,13 +365,38 @@ export interface AppleFmStatus {
   reason?: string;
 }
 
-export type VoiceEngineState = 'idle' | 'listening' | 'transcribing' | 'speaking';
+export type VoiceEngineState = 'idle' | 'listening' | 'transcribing' | 'thinking' | 'speaking';
 
 /** Voice settings. voiceControl routes STT transcripts into the brain (voice commands). */
 export interface VoiceSettings {
   enabled: boolean;
   speakReplies: boolean;
   voiceControl: boolean;
+  /** Transcript cleanup pass (Flow quick-clean → LLM → vocab guard). */
+  cleanupEnabled: boolean;
+  /** Quick-clean eligibility: word counts >= this defer to the LLM pass. */
+  quickCleanMaxWords: number;
+  /** Preferred microphone deviceId ("" = system default). */
+  micDeviceId: string;
+}
+
+/** Result of one stop-listening turn (main → renderer). */
+export interface VoiceTranscript {
+  text: string;
+  rawText: string;
+  silent: boolean;
+  cleaned: boolean;
+  fillersRemoved: number;
+}
+
+/** One agent browser action, for the "in use by voice" overlay + Steps list. */
+export interface AgentActingEvent {
+  tabId: string | null;
+  action: 'click' | 'type' | 'navigate' | 'scroll' | 'tab' | 'other';
+  label: string;
+  targetRect?: { x: number; y: number; w: number; h: number };
+  summary?: string;
+  screenshot?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -507,7 +532,7 @@ export interface NextTokenAPI {
   skillsReset(): Promise<SkillDef[]>;
   // settings (voice, search)
   settingsGetVoice(): Promise<VoiceSettings>;
-  settingsSetVoice(v: { enabled: boolean; speakReplies: boolean; voiceControl?: boolean }): Promise<void>;
+  settingsSetVoice(v: Partial<VoiceSettings>): Promise<void>;
   settingsGetSearchEngine(): Promise<string>;
   settingsSetSearchEngine(url: string): Promise<void>;
   // BYOK providers — the provider manager (multiple API gateway providers)
@@ -540,10 +565,36 @@ export interface NextTokenAPI {
   voiceSttAvailable(): Promise<boolean>;
   voiceStartListening(): Promise<void>;
   voiceAudioChunk(data: Uint8Array): Promise<void>;
-  voiceStopListening(): Promise<string>;
+  voiceStopListening(): Promise<VoiceTranscript>;
   voiceCancelListening(): Promise<void>;
   voiceSpeak(text: string): Promise<Uint8Array>;
+  /** Barge-in: stop TTS at once so a new listen can start. */
+  voiceStopSpeaking(): Promise<void>;
+  /** Fire-and-forget mic amplitude (0..1) for the pill waveform, ~15 Hz. */
+  voiceAmplitude(level: number): void;
+  /** Renderer started/stopped TTS audio playback (drives the pill). */
+  voicePlaybackStarted(): void;
+  voicePlaybackEnded(): void;
+  /** Undo the last voice dictation inserted into the page. */
+  voiceDictateUndo(): Promise<boolean>;
+  /** User hit "Take over" — halt the voice-driven agent. */
+  voiceTakeover(): Promise<void>;
   onVoiceEngineState(cb: (s: VoiceEngineState) => void): () => void;
+  /** Plain-language voice error for the pill (never a stack trace). */
+  onVoiceError(cb: (message: string) => void): () => void;
+  /** Mic amplitude forwarded to the pill overlay window. */
+  onVoiceAmplitude(cb: (level: number) => void): () => void;
+  /** TTS playback started/ended in the renderer (drives the pill). */
+  onVoicePlaybackState(cb: (speaking: boolean) => void): () => void;
+  /** Agent is acting on a tab (before) / finished (after). */
+  onAgentActing(cb: (e: AgentActingEvent) => void): () => void;
+  onAgentActingDone(cb: (e: AgentActingEvent) => void): () => void;
+  /** Main asks the renderer to barge in: stop local speech, start listening. */
+  onVoiceBargeIn(cb: () => void): () => void;
+  /** "Take over" pressed in the viewport capsule — halt the voice agent. */
+  onVoiceTakeover(cb: () => void): () => void;
+  /** In-page voice dictation completed — drives the viewport toast. */
+  onVoiceDictated(cb: (d: { tabId: string; chars: number }) => void): () => void;
   /** Raw WAV bytes (number[]) for a brain TTS reply — renderer decodes and plays. */
   onVoicePlayback(cb: (bytes: number[]) => void): () => void;
   /** Brain asked the renderer to open its command bar. */

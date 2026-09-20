@@ -7,18 +7,20 @@
  * tabs into the AI's context; /-triggers run saved skills.
  */
 
-import { Globe, Sparkles, Zap } from "lucide-react";
+import { Globe, Mic, Sparkles, Zap } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { SkillDef } from "../../shared/ipc";
 import { useBrowser } from "../BrowserContext";
 import { detectIntent, domainOf, isNewTabUrl, nt } from "../nt";
 import { routeSubmit, type RouteOverride } from "../routing";
 import { SmartInput, type SmartTab } from "./SmartInput";
+import { useVoiceSession } from "./VoiceSession";
 
 const OVERRIDE_ORDER: RouteOverride[] = ["auto", "web", "ai"];
 
 export function Omnibox() {
   const { snapshot, activeTab } = useBrowser();
+  const voice = useVoiceSession();
   const [focused, setFocused] = useState(false);
   const [text, setText] = useState("");
   const [override, setOverride] = useState<RouteOverride>("auto");
@@ -159,6 +161,17 @@ export function Omnibox() {
       >
         esc
       </kbd>
+      <button
+        title={voice.listening ? "Stop listening" : "Voice command (Alt+V)"}
+        aria-label={voice.listening ? "Stop listening" : "Start voice command"}
+        onMouseDown={(e) => e.preventDefault()}
+        onClick={() => voice.toggleCommand()}
+        className="voice-mic-btn nt-r-full shrink-0 p-1.5 transition-colors hover:bg-[var(--nt-bg-hover)]"
+        data-active={voice.listening}
+        style={{ color: voice.listening ? "var(--nt-accent)" : "var(--nt-text-3)" }}
+      >
+        <Mic size={14} strokeWidth={1.75} />
+      </button>
     </div>
   );
 }

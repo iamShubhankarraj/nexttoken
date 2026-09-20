@@ -22,6 +22,54 @@ import { useBrowser } from "../BrowserContext";
 import { nt } from "../nt";
 import { Omnibox } from "./Omnibox";
 import { ShieldButton } from "./ShieldButton";
+import { useVoiceSession } from "./VoiceSession";
+import { VoiceOrb, type VoiceOrbMode } from "./VoiceOrb";
+
+/**
+ * Temporary toolbar chip, visible only while voice is active. Clicking it
+ * opens the agent panel to the live voice surface.
+ */
+function VoiceChip() {
+  const voice = useVoiceSession();
+  if (!voice.active) return null;
+  const label = voice.voiceError
+    ? "Voice error"
+    : voice.engine === "listening"
+      ? "Listening"
+      : voice.engine === "transcribing"
+        ? "Transcribing"
+        : voice.engine === "thinking"
+          ? (voice.acting ? voice.acting.label : "Working")
+          : voice.playbackSpeaking
+            ? "Speaking"
+            : "Voice";
+  const orbMode = (
+    voice.engine === "listening"
+      ? "listening"
+      : voice.engine === "transcribing" || voice.engine === "thinking"
+        ? "thinking"
+        : voice.playbackSpeaking || voice.engine === "speaking"
+          ? "speaking"
+          : "idle"
+  ) as VoiceOrbMode;
+  return (
+    <button
+      className="voice-chip nt-r-full flex shrink-0 items-center gap-1.5 border px-2.5 py-1 text-[11px] font-medium"
+      style={{
+        borderColor: "var(--nt-accent)",
+        color: "var(--nt-text-1)",
+        background: "var(--nt-accent-soft)",
+      }}
+      onClick={() => void nt().uiSetAgentPanelOpen(true)}
+      title="Voice is active — open the agent panel"
+      role="status"
+      aria-label={`Voice is active: ${label}. Open the agent panel.`}
+    >
+      <VoiceOrb mode={orbMode} amplitude={voice.amplitude} size={14} />
+      <span className="max-w-[200px] truncate">{label}</span>
+    </button>
+  );
+}
 
 export function TopStrip() {
   const { snapshot, activeTab, split, setSplit, splitPick, setSplitPick } =
@@ -90,6 +138,9 @@ export function TopStrip() {
 
       {/* Ad-block shield: live blocked count + per-site toggle */}
       <ShieldButton />
+
+      {/* Temporary voice chip — only while voice is active */}
+      <VoiceChip />
 
       {/* Omnibox: navigation + search + AI with visible intent routing */}
       <div className="flex flex-1 justify-center px-3">

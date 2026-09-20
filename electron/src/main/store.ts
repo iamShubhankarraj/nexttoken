@@ -53,7 +53,14 @@ interface Persisted {
   agentPanelOpen: boolean;
   /** spaceId -> tokens. Seeded from DEFAULT_DARK_TOKENS + palette. */
   themes: Record<string, ThemeTokens>;
-  voice: { enabled: boolean; speakReplies: boolean; voiceControl: boolean };
+  voice: {
+    enabled: boolean;
+    speakReplies: boolean;
+    voiceControl: boolean;
+    cleanupEnabled: boolean;
+    quickCleanMaxWords: number;
+    micDeviceId: string;
+  };
   searchEngine: string;
   /** BYOK providers (provider manager). Each provider's API key lives in the OS keychain. */
   providers: ProviderPersist[];
@@ -137,7 +144,14 @@ function defaults(): Persisted {
     sidebarCollapsed: false,
     agentPanelOpen: false,
     themes,
-    voice: { enabled: true, speakReplies: false, voiceControl: false },
+    voice: {
+      enabled: true,
+      speakReplies: false,
+      voiceControl: false,
+      cleanupEnabled: true,
+      quickCleanMaxWords: 12,
+      micDeviceId: "",
+    },
     searchEngine: 'https://www.google.com/search?q=',
     providers: [{
       id: randomUUID(),
@@ -187,7 +201,12 @@ export class Store {
       // Backfill brain config + voice-control flag for installs that predate them.
       if (!parsed.brain) parsed.brain = defaults().brain;
       if (!parsed.voice) parsed.voice = defaults().voice;
-      else if (typeof parsed.voice.voiceControl !== 'boolean') parsed.voice.voiceControl = false;
+      else {
+        if (typeof parsed.voice.voiceControl !== 'boolean') parsed.voice.voiceControl = false;
+        if (typeof parsed.voice.cleanupEnabled !== 'boolean') parsed.voice.cleanupEnabled = true;
+        if (typeof parsed.voice.quickCleanMaxWords !== 'number') parsed.voice.quickCleanMaxWords = 12;
+        if (typeof parsed.voice.micDeviceId !== 'string') parsed.voice.micDeviceId = "";
+      }
       // Backfill skills + sessions for installs that predate them.
       if (!parsed.skills) parsed.skills = defaultSkills();
       if (!parsed.chatSessions) parsed.chatSessions = [];

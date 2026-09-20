@@ -52,9 +52,16 @@ export class SttEngine {
    * Transcribe a 16 kHz mono WAV file with the given ggml model.
    * @param wavPath   absolute path to the input WAV
    * @param modelFile absolute path to the ggml .bin model
+   * @param opts.prompt optional vocabulary bias, passed as whisper-cli
+   *   `--prompt` (mirrors Flow's `initial_prompt`: dictionary terms the
+   *   speaker is likely to use, e.g. contact names, project words)
    * @returns trimmed transcript (may be "" when nothing was recognised)
    */
-  async transcribe(wavPath: string, modelFile: string): Promise<string> {
+  async transcribe(
+    wavPath: string,
+    modelFile: string,
+    opts?: { prompt?: string },
+  ): Promise<string> {
     try {
       const st = await fs.stat(wavPath);
       if (!st.isFile()) throw new Error(`not a file: ${wavPath}`);
@@ -86,17 +93,21 @@ export class SttEngine {
     const outTxt = `${outBase}.txt`;
     try {
       const threads = String(Math.max(1, Math.min(8, os.cpus().length)));
+      const args = [
+        "-m", modelFile,
+        "-f", wavPath,
+        "-otxt",
+        "-of", outBase,
+        "--no-timestamps",
+        "-np",
+        "-t", threads,
+      ];
+      // Vocabulary bias (Flow's initial_prompt idea): nudges the decoder
+      // toward the speaker's own terms without changing the model.
+      if (opts?.prompt?.trim()) args.push("--prompt", opts.prompt.trim().slice(0, 500));
       const { stdout } = await execFileAsync(
         bin,
-        [
-          "-m", modelFile,
-          "-f", wavPath,
-          "-otxt",
-          "-of", outBase,
-          "--no-timestamps",
-          "-np",
-          "-t", threads,
-        ],
+        args,
         { timeout: TRANSCRIBE_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024 },
       );
 

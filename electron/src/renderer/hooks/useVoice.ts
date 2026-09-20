@@ -27,13 +27,10 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { SpaceState } from "../../shared/ipc";
+import type { SpaceState, VoiceEngineState, VoiceTranscript } from "../../shared/ipc";
 import { fuzzy, nt } from "../nt";
 
 export type VoiceMode = "command" | "dictate";
-
-/** Mirrors the main-process VoiceEngineState (src/main/voice/index.ts). */
-export type VoiceEngineState = "idle" | "listening" | "transcribing" | "speaking";
 
 /**
  * Local voice IPC surface. Owned by the integrator (preload + main
@@ -43,9 +40,16 @@ interface NtVoice {
   voiceSttAvailable(): Promise<boolean>;
   voiceStartListening(): Promise<void>;
   voiceAudioChunk(data: Uint8Array): Promise<void>;
-  voiceStopListening(): Promise<string>;
+  voiceStopListening(): Promise<VoiceTranscript>;
   voiceCancelListening(): Promise<void>;
   voiceSpeak(text: string): Promise<Uint8Array>;
+  voiceStopSpeaking(): Promise<void>;
+  /** Fire-and-forget mic amplitude (0..1) for the pill waveform. */
+  voiceAmplitude(level: number): void;
+  /** Renderer started/stopped TTS audio playback (drives the pill). */
+  voicePlaybackStarted(): void;
+  voicePlaybackEnded(): void;
+  settingsGetVoice(): Promise<{ micDeviceId?: string }>;
   onVoiceEngineState(cb: (s: VoiceEngineState) => void): () => void;
 }
 
@@ -74,7 +78,40 @@ async function localSttAvailable(): Promise<boolean> {
  * Speak via the on-device Kokoro TTS engine. Plays the returned WAV and
  * resolves true on success; resolves false when the local engine is
  * unavailable or fails, so the caller can fall back to speechSynthesis.
+ *
+ * The active <audio> element is tracked so barge-in (Alt+V / tap the pill)
+ * can stop it instantly via stopLocalSpeech().
  */
+let activeSpeechEl: HTMLAudioElement | null = null;
+
+function playbackApi(): Pick<NtVoice, "voicePlaybackStarted" | "voicePlaybackEnded"> | null {
+  return voiceApi();
+}
+
+/** True while on-device TTS audio is playing. */
+export function isLocalSpeechPlaying(): boolean {
+  return activeSpeechEl !== null && !activeSpeechEl.paused && !activeSpeechEl.ended;
+}
+
+/** Barge-in: pause and discard any in-flight TTS playback at once. */
+export function stopLocalSpeech(): void {
+  const el = activeSpeechEl;
+  activeSpeechEl = null;
+  if (!el) return;
+  try {
+    el.pause();
+    el.removeAttribute("src");
+    el.load();
+  } catch {
+    /* already gone */
+  }
+  try {
+    playbackApi()?.voicePlaybackEnded();
+  } catch {
+    /* noop */
+  }
+}
+
 export async function speakLocal(text: string): Promise<boolean> {
   try {
     const api = voiceApi();
@@ -88,9 +125,32 @@ export async function speakLocal(text: string): Promise<boolean> {
     try {
       await new Promise<void>((resolve, reject) => {
         const el = new Audio(url);
-        el.onended = () => resolve();
-        el.onerror = () => reject(new Error("local TTS playback failed"));
-        el.play().catch(reject);
+        activeSpeechEl = el;
+        try {
+          playbackApi()?.voicePlaybackStarted();
+        } catch {
+          /* noop */
+        }
+        const done = () => {
+          if (activeSpeechEl === el) activeSpeechEl = null;
+          try {
+            playbackApi()?.voicePlaybackEnded();
+          } catch {
+            /* noop */
+          }
+        };
+        el.onended = () => {
+          done();
+          resolve();
+        };
+        el.onerror = () => {
+          done();
+          reject(new Error("local TTS playback failed"));
+        };
+        el.play().catch((e) => {
+          done();
+          reject(e);
+        });
       });
       return true;
     } finally {
@@ -109,6 +169,8 @@ interface LocalCapture {
   processor: ScriptProcessorNode;
   chunks: Int16Array[];
   pendingSamples: number;
+  /** Auto-finalize timer (90 s cap on a single utterance). */
+  capTimer?: ReturnType<typeof setTimeout>;
   /** Ordered sender — chunks never overtake each other. */
   send(bytes: Uint8Array): Promise<void>;
   drain(): Promise<void>;
@@ -154,6 +216,7 @@ function mergeInt16(parts: Int16Array[]): Int16Array {
 }
 
 function teardownLocalSession(s: LocalCapture): void {
+  if (s.capTimer) clearTimeout(s.capTimer);
   try {
     s.processor.onaudioprocess = null;
   } catch {
@@ -299,6 +362,9 @@ interface UseVoiceResult {
   clearNotice: () => void;
   toggleCommand: () => void;
   toggleDictate: () => void;
+  /** Start listening without toggling (barge-in entry point). */
+  beginCommand: () => void;
+  beginDictate: () => void;
   stop: () => void;
 }
 
@@ -309,6 +375,11 @@ export function useVoice(handlers: UseVoiceHandlers): UseVoiceResult {
   const recRef = useRef<SpeechRecognition | null>(null);
   const localRef = useRef<LocalCapture | null>(null);
   const toggleCommandRef = useRef<() => void>(() => {});
+  /** finalizeLocal lives below startLocal; the 90 s cap timer reaches it here. */
+  const finalizeLocalRef = useRef<(m: VoiceMode) => Promise<void>>(() => Promise.resolve());
+  /** Smoothed mic amplitude (0..1) + last send time for ~15 Hz throttling. */
+  const ampLevel = useRef(0);
+  const ampSentAt = useRef(0);
 
   const [listening, setListening] = useState(false);
   const [mode, setMode] = useState<VoiceMode | null>(null);
@@ -354,6 +425,7 @@ export function useVoice(handlers: UseVoiceHandlers): UseVoiceResult {
     setListening(false);
     setMode(null);
     setInterim("");
+    ampLevel.current = 0;
   }, []);
 
   /** The original Web Speech implementation, kept intact as the fallback. */
@@ -438,9 +510,24 @@ export function useVoice(handlers: UseVoiceHandlers): UseVoiceResult {
     const api = voiceApi();
     if (!api) throw new Error("local voice API unavailable");
 
+    // Preferred microphone from Settings → Voice ("" = system default).
+    let micDeviceId = "";
+    try {
+      micDeviceId = (await api.settingsGetVoice()).micDeviceId ?? "";
+    } catch {
+      /* default device */
+    }
+
     let stream: MediaStream;
     try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      try {
+        stream = await navigator.mediaDevices.getUserMedia(
+          micDeviceId ? { audio: { deviceId: { exact: micDeviceId } } } : { audio: true },
+        );
+      } catch {
+        // The saved device may be unplugged — fall back to the default mic.
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      }
     } catch {
       setNotice(
         "Microphone access was blocked. Allow it in the browser's site settings and try again.",
@@ -492,6 +579,20 @@ export function useVoice(handlers: UseVoiceHandlers): UseVoiceResult {
     processor.onaudioprocess = (e: AudioProcessingEvent) => {
       if (localRef.current !== session) return;
       const input = e.inputBuffer.getChannelData(0);
+      // Real mic amplitude: RMS of the raw input, smoothed, throttled to ~15 Hz.
+      let sum = 0;
+      for (let i = 0; i < input.length; i += 4) sum += input[i] * input[i];
+      const rms = Math.sqrt(sum / Math.ceil(input.length / 4));
+      ampLevel.current = ampLevel.current * 0.65 + Math.min(1, rms * 3) * 0.35;
+      const nowMs = performance.now();
+      if (nowMs - ampSentAt.current > 66) {
+        ampSentAt.current = nowMs;
+        try {
+          api.voiceAmplitude(ampLevel.current);
+        } catch {
+          /* fire-and-forget */
+        }
+      }
       const down = downsampleTo16k(input, e.inputBuffer.sampleRate);
       session.chunks.push(down);
       session.pendingSamples += down.length;
@@ -509,6 +610,11 @@ export function useVoice(handlers: UseVoiceHandlers): UseVoiceResult {
     processor.connect(sink);
     sink.connect(ctx.destination);
     localRef.current = session;
+
+    // 90 s cap on a single utterance: auto-finalize so the mic never runs away.
+    session.capTimer = setTimeout(() => {
+      if (localRef.current === session) void finalizeLocalRef.current(nextMode);
+    }, 90_000);
 
     try {
       await api.voiceStartListening();
@@ -549,20 +655,29 @@ export function useVoice(handlers: UseVoiceHandlers): UseVoiceResult {
     try {
       if (rest) await session.send(rest);
       await session.drain();
-      const transcript = (await api.voiceStopListening()).trim();
+      const result = await api.voiceStopListening();
+      const transcript = (result?.text ?? "").trim();
+      if (result?.cleaned && result.fillersRemoved > 0) {
+        // Flow-style cleanup feedback: "Cleaned up N filler words."
+        setNotice(
+          `Cleaned up ${result.fillersRemoved} filler word${result.fillersRemoved === 1 ? "" : "s"}.`,
+        );
+      }
       if (transcript) {
         if (nextMode === "command") {
           handlersRef.current.onCommand(transcript);
         } else {
           handlersRef.current.onDictation(`${transcript} `);
         }
-      } else {
+      } else if (!result?.silent) {
         setNotice("Didn't hear anything — try again.");
       }
     } catch {
       setNotice("On-device transcription failed. Try again.");
     }
   }, []);
+
+  finalizeLocalRef.current = finalizeLocal;
 
   const start = useCallback(
     async (nextMode: VoiceMode) => {
@@ -613,6 +728,16 @@ export function useVoice(handlers: UseVoiceHandlers): UseVoiceResult {
 
   const clearNotice = useCallback(() => setNotice(null), []);
 
+  // Barge-in entry points: start listening without toggling off first.
+  const beginCommand = useCallback(() => {
+    if (listening && mode === "command") return;
+    void start("command");
+  }, [listening, mode, start]);
+  const beginDictate = useCallback(() => {
+    if (listening && mode === "dictate") return;
+    void start("dictate");
+  }, [listening, mode, start]);
+
   return {
     supported,
     listening,
@@ -622,6 +747,8 @@ export function useVoice(handlers: UseVoiceHandlers): UseVoiceResult {
     clearNotice,
     toggleCommand,
     toggleDictate,
+    beginCommand,
+    beginDictate,
     stop,
   };
 }

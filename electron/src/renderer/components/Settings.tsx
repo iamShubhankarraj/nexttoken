@@ -31,6 +31,7 @@ import {
   type AdBlockState,
   type ProviderPublic,
   type ProviderId,
+  type VoiceSettings,
 } from "../../shared/ipc";
 import { useBrowser } from "../BrowserContext";
 import { nt } from "../nt";
@@ -683,14 +684,18 @@ function JevSection() {
 /* ---------------------------- voice & search ---------------------------- */
 
 function VoiceSearchSection() {
-  const [voice, setVoice] = useState({
+  const [voice, setVoice] = useState<VoiceSettings>({
     enabled: false,
     speakReplies: false,
     voiceControl: false,
+    cleanupEnabled: true,
+    quickCleanMaxWords: 12,
+    micDeviceId: "",
   });
   const [engine, setEngine] = useState("");
   const [loaded, setLoaded] = useState(false);
   const [savedTick, setSavedTick] = useState(false);
+  const [mics, setMics] = useState<{ deviceId: string; label: string }[]>([]);
   const supported =
     typeof window !== "undefined" &&
     (!!window.webkitSpeechRecognition || !!window.SpeechRecognition);
@@ -705,16 +710,26 @@ function VoiceSearchSection() {
         setLoaded(true);
       })
       .catch(() => setLoaded(true));
+    // Microphone picker (labels need mic permission; fall back to numbered names).
+    navigator.mediaDevices
+      ?.enumerateDevices()
+      .then((ds) => {
+        if (!alive) return;
+        const inputs = ds.filter((d) => d.kind === "audioinput");
+        setMics(
+          inputs.map((d, i) => ({
+            deviceId: d.deviceId,
+            label: d.label || `Microphone ${i + 1}`,
+          })),
+        );
+      })
+      .catch(() => {});
     return () => {
       alive = false;
     };
   }, []);
 
-  const setVoiceCfg = (next: {
-    enabled: boolean;
-    speakReplies: boolean;
-    voiceControl: boolean;
-  }) => {
+  const setVoiceCfg = (next: VoiceSettings) => {
     setVoice(next);
     nt().settingsSetVoice(next).catch(() => {});
   };
@@ -778,6 +793,56 @@ function VoiceSearchSection() {
             checked={voice.voiceControl}
             onChange={(v) => setVoiceCfg({ ...voice, voiceControl: v })}
           />
+          <ToggleRow
+            label="Clean up transcripts"
+            hint="Remove filler words and false starts before the agent acts (“um”, stutters, repeats)"
+            checked={voice.cleanupEnabled}
+            onChange={(v) => setVoiceCfg({ ...voice, cleanupEnabled: v })}
+          />
+        </div>
+
+        <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <label className="block">
+            <span className="mb-1 block text-[12px] font-medium" style={{ color: "var(--nt-text-2)" }}>
+              Quick-clean word limit
+            </span>
+            <input
+              type="number"
+              min={4}
+              max={40}
+              value={voice.quickCleanMaxWords}
+              onChange={(e) => {
+                const n = Math.max(4, Math.min(40, Number(e.target.value) || 12));
+                setVoiceCfg({ ...voice, quickCleanMaxWords: n });
+              }}
+              className="nt-r-sm w-full border bg-[var(--nt-bg-base)] px-3 py-2 text-[13px] outline-none focus:border-[var(--nt-accent)]"
+              style={{ borderColor: "var(--nt-border)", color: "var(--nt-text-1)" }}
+            />
+            <span className="mt-1 block text-[11px]" style={{ color: "var(--nt-text-3)" }}>
+              Short utterances are cleaned instantly; longer ones go through the model.
+            </span>
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-[12px] font-medium" style={{ color: "var(--nt-text-2)" }}>
+              Microphone
+            </span>
+            <select
+              value={voice.micDeviceId}
+              onChange={(e) => setVoiceCfg({ ...voice, micDeviceId: e.target.value })}
+              className="nt-r-sm w-full border bg-[var(--nt-bg-base)] px-3 py-2 text-[13px] outline-none focus:border-[var(--nt-accent)]"
+              style={{ borderColor: "var(--nt-border)", color: "var(--nt-text-1)" }}
+            >
+              <option value="">System default</option>
+              {mics.map((m) => (
+                <option key={m.deviceId} value={m.deviceId}>
+                  {m.label}
+                </option>
+              ))}
+            </select>
+            <span className="mt-1 block text-[11px]" style={{ color: "var(--nt-text-3)" }}>
+              Used for on-device voice capture.
+            </span>
+          </label>
         </div>
       </div>
 

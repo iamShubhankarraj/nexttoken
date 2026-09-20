@@ -18,14 +18,16 @@ import { MODEL_CATALOG, ModelDownloader, targetPathFor, type DownloadEvent } fro
 import { ensureSidecar } from './models/binaries';
 import { LlamaServer } from './models/runtime';
 import { AppleFmClient } from './models/applefm';
-import { VoiceEngine } from './voice';
+import { VoiceEngine, type CleanupPrompt } from './voice';
+import { VoicePillOverlay } from './voice/overlay';
+import { wrapWithActing, dictateUndoJs, type LastDictation } from './voice/acting';
 import {
   PROVIDER_PRESETS, DEFAULT_DARK_TOKENS
 } from '../shared/ipc';
 import type {
   ActiveModelRef, AdBlockState, AdBlockStats, AgentEvent, BrainEvent, BrowserSnapshot, ChatSession, JevConfigInput, JevConfigPublic, ModelAssignment,
   ModelChoice, ModelEntryPublic, ModelEvent, ProviderId, ProviderInput, ProviderPublic, ProviderValidateInput, SkillDef, SkillInput, SpaceState,
-  TabDelta, ThemeTokens, VoiceEngineState
+  TabDelta, ThemeTokens, VoiceEngineState, VoiceSettings, VoiceTranscript
 } from '../shared/ipc';
 
 let win: BrowserWindow | null = null;
@@ -41,6 +43,10 @@ let downloader: ModelDownloader;
 let llama: LlamaServer;
 let appleFm: AppleFmClient;
 let voiceEngine: VoiceEngine;
+/** Floating voice pill overlay (created lazily on first voice activity). */
+let pill: VoicePillOverlay | null = null;
+/** Last in-page voice dictation, for ⌘Z-style undo. */
+let lastDictation: LastDictation | null = null;
 let routerDeps: RouterDeps;
 /** The unified model router — every LLM call in the app goes through this. */
 let modelRouter: ModelRouter;
@@ -112,6 +118,46 @@ function whisperBinaryAvailable(): boolean {
   }
 }
 
+/** Lazily create the floating voice pill overlay window. */
+function ensurePill(): void {
+  if (pill) return;
+  pill = new VoicePillOverlay({
+    getPreload: () => path.join(__dirname, '../preload/index.js'),
+    getUrl: () =>
+      process.env.ELECTRON_RENDERER_URL
+        ? { url: process.env.ELECTRON_RENDERER_URL, isFile: false }
+        : { url: path.join(__dirname, '../renderer/index.html'), isFile: true },
+  });
+  pill.ensure();
+}
+
+/** Flow's dictation cleanup prompts (MIT — see THIRD-PARTY-NOTICES.md). Cached after first load. */
+let cleanupPrompts: CleanupPrompt | null | undefined;
+function loadCleanupPrompts(): CleanupPrompt | null {
+  if (cleanupPrompts !== undefined) return cleanupPrompts;
+  cleanupPrompts = null;
+  try {
+    const dir = app.isPackaged
+      ? path.join(process.resourcesPath, 'prompts')
+      : path.join(app.getAppPath(), 'resources', 'prompts');
+    const system = fs.readFileSync(path.join(dir, 'dictation-system.txt'), 'utf8').trim();
+    const fewShot = JSON.parse(
+      fs.readFileSync(path.join(dir, 'dictation-few-shot.json'), 'utf8'),
+    ) as Array<{ role: string; content: string }>;
+    if (system && Array.isArray(fewShot) && fewShot.length > 0) {
+      cleanupPrompts = {
+        system,
+        fewShot: fewShot
+          .filter((m) => (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string')
+          .map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content })),
+      };
+    }
+  } catch {
+    /* prompts unavailable — the cleanup pass falls back to quick-clean only */
+  }
+  return cleanupPrompts;
+}
+
 function initModelTier() {
   const userData = app.getPath('userData');
   modelsDir = path.join(userData, 'models');
@@ -131,13 +177,41 @@ function initModelTier() {
     modelsDir,
     ensureSidecar,
     events: {
-      onState: (s: VoiceEngineState) => win?.webContents.send('nt.voice-engine-state', s)
+      onState: (s: VoiceEngineState) => {
+        win?.webContents.send('nt.voice-engine-state', s);
+        // The pill owns its visibility policy (it stays up during TTS
+        // playback even after the engine returns to idle); main only
+        // forwards events and ensures the window exists while active.
+        if (s !== 'idle') {
+          ensurePill();
+          pill?.show();
+          pill?.setClickMode(s === 'speaking' ? 'interactive' : 'through');
+        }
+        pill?.send('nt.voice-engine-state', s);
+      },
+      onError: (message: string) => {
+        win?.webContents.send('nt.voice-error', message);
+        ensurePill();
+        pill?.show();
+        pill?.setClickMode('interactive');
+        pill?.send('nt.voice-error', message);
+      },
     },
     getSttModelFile: sttModelFile,
-    getTtsModelDir: ttsModelDir
+    getTtsModelDir: ttsModelDir,
+    getCleanupConfig: () => ({
+      enabled: store.d.voice.cleanupEnabled,
+      quickCleanMaxWords: store.d.voice.quickCleanMaxWords,
+      prompts: loadCleanupPrompts(),
+    }),
   });
   routerDeps = { store, appleFm, llama };
   modelRouter = new ModelRouter(routerDeps);
+  // The cleanup pass uses the active model (with the router's fallback chain).
+  voiceEngine.setCleanupComplete(async (messages) => {
+    const r = await modelRouter.complete({ messages, task: 'chat' });
+    return r.text;
+  });
 
   // -- brain: Jev System-One orchestration --------------------------------------
   jevCreds = new JevCredentialStore(userData);
@@ -149,7 +223,24 @@ function initModelTier() {
   });
   orchestrator = new Orchestrator({
     jev: jevClient,
-    control: { execute: (intent, slots) => executeControl(brainControlEnv(), intent, slots) },
+    control: {
+      execute: (() => {
+        const env = brainControlEnv();
+        return wrapWithActing(
+          env,
+          (intent, slots) => executeControl(env, intent, slots),
+          (channel, payload) => {
+            // The renderer's AgentActingOverlay + Steps list consume these.
+            win?.webContents.send(channel, payload);
+          },
+          (d) => {
+            lastDictation = d;
+            // Toast data for the viewport overlay ("N words dictated — ⌘Z to undo").
+            win?.webContents.send('nt:voice-dictated', { tabId: d.tabId, chars: d.chars });
+          },
+        );
+      })(),
+    },
     chat: createRouterChat(routerDeps),
     speak: {
       speak: async (text: string) => {
@@ -533,8 +624,18 @@ function registerIpc() {
     return saved;
   });
   ipcMain.handle('nt.settings.voice.get', () => store.d.voice);
-  ipcMain.handle('nt.settings.voice.set', (_e, v: { enabled: boolean; speakReplies: boolean; voiceControl?: boolean }) => {
-    store.d.voice = { enabled: !!v.enabled, speakReplies: !!v.speakReplies, voiceControl: !!v.voiceControl };
+  ipcMain.handle('nt.settings.voice.set', (_e, v: Partial<VoiceSettings>) => {
+    store.d.voice = {
+      enabled: v.enabled ?? store.d.voice.enabled,
+      speakReplies: v.speakReplies ?? store.d.voice.speakReplies,
+      voiceControl: v.voiceControl ?? store.d.voice.voiceControl,
+      cleanupEnabled: v.cleanupEnabled ?? store.d.voice.cleanupEnabled,
+      quickCleanMaxWords:
+        typeof v.quickCleanMaxWords === 'number' && v.quickCleanMaxWords > 0
+          ? Math.floor(v.quickCleanMaxWords)
+          : store.d.voice.quickCleanMaxWords,
+      micDeviceId: typeof v.micDeviceId === 'string' ? v.micDeviceId : store.d.voice.micDeviceId,
+    };
     store.saveSoon();
   });
   ipcMain.handle('nt.settings.search-engine.get', () => store.d.searchEngine);
@@ -662,13 +763,19 @@ function registerIpc() {
   ipcMain.handle('nt.voice.audio-chunk', (_e, data: Uint8Array) => {
     voiceEngine.pushAudio(Buffer.from(data));
   });
-  ipcMain.handle('nt.voice.stop-listening', async (): Promise<string> => {
-    const text = await voiceEngine.stopListening();
-    // Voice-control mode: route the transcript into the brain pipeline.
-    if (text && store.d.voice.voiceControl) {
-      void orchestrator.handleUtterance(text, 'voice');
+  ipcMain.handle('nt.voice.stop-listening', async (): Promise<VoiceTranscript> => {
+    const result = await voiceEngine.stopListening();
+    // Voice-control mode: route the transcript into the brain pipeline,
+    // with the "thinking" state driving the pill + panel while it works.
+    if (result.text && store.d.voice.voiceControl) {
+      voiceEngine.setThinking(true);
+      try {
+        await orchestrator.handleUtterance(result.text, 'voice');
+      } finally {
+        voiceEngine.setThinking(false);
+      }
     }
-    return text;
+    return result;
   });
   ipcMain.handle('nt.voice.cancel-listening', () => {
     voiceEngine.cancelListening();
@@ -676,6 +783,51 @@ function registerIpc() {
   ipcMain.handle('nt.voice.speak', async (_e, text: string): Promise<Uint8Array> => {
     const wav = await voiceEngine.speak(text);
     return new Uint8Array(wav);
+  });
+  // Barge-in: stop TTS at once so a new listen can start immediately.
+  ipcMain.handle('nt.voice.stop-speaking', () => {
+    voiceEngine.stopSpeaking();
+    // The renderer stops its own audio element; if it was mid-playback it
+    // also flips back to listening via the barge-in event below.
+    win?.webContents.send('nt:voice-barge-in');
+  });
+  // Mic amplitude (renderer → main → pill), fire-and-forget at ~15 Hz.
+  ipcMain.on('nt.voice.amplitude', (_e, level: number) => {
+    if (typeof level === 'number' && Number.isFinite(level)) {
+      pill?.send('nt:voice-amplitude', Math.max(0, Math.min(1, level)));
+    }
+  });
+  // Renderer TTS playback state (drives the pill's speaking UI).
+  ipcMain.on('nt.voice.playback-started', () => {
+    ensurePill();
+    pill?.show();
+    pill?.setClickMode('interactive');
+    pill?.send('nt:voice-playback-state', true);
+    win?.webContents.send('nt:voice-playback-state', true);
+  });
+  ipcMain.on('nt.voice.playback-ended', () => {
+    pill?.send('nt:voice-playback-state', false);
+    win?.webContents.send('nt:voice-playback-state', false);
+  });
+  // Undo the last in-page voice dictation (the renderer's "⌘Z to undo" toast).
+  ipcMain.handle('nt.voice.dictate-undo', async (): Promise<boolean> => {
+    const d = lastDictation;
+    if (!d || Date.now() - d.at > 5 * 60 * 1000) return false;
+    const tab = tabs.tabs.get(d.tabId);
+    if (!tab) return false;
+    const wc = tabs.activeWebContents();
+    if (!wc) return false;
+    try {
+      const ok = await wc.executeJavaScript(dictateUndoJs(d.chars));
+      if (ok) lastDictation = null;
+      return ok === true;
+    } catch {
+      return false;
+    }
+  });
+  // "Take over" — the user halts the voice-driven agent mid-action.
+  ipcMain.handle('nt.voice.takeover', async () => {
+    win?.webContents.send('nt:voice-takeover');
   });
 
   // -- brain (Jev System-One orchestration) --------------------------------------

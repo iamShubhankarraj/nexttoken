@@ -10,6 +10,9 @@ files:
 extraResources:
   - from: resources/sidecars
     to: sidecars
+  # Dictation cleanup prompt assets (Flow, MIT — see THIRD-PARTY-NOTICES.md).
+  - from: resources/prompts
+    to: prompts
 mac:
   target:
     - dmg

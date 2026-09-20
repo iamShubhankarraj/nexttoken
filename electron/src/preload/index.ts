@@ -85,10 +85,56 @@ const api: NextTokenAPI = {
   voiceStopListening: () => ipcRenderer.invoke('nt.voice.stop-listening'),
   voiceCancelListening: () => ipcRenderer.invoke('nt.voice.cancel-listening'),
   voiceSpeak: (text) => ipcRenderer.invoke('nt.voice.speak', text),
+  voiceStopSpeaking: () => ipcRenderer.invoke('nt.voice.stop-speaking'),
+  voiceAmplitude: (level) => ipcRenderer.send('nt.voice.amplitude', level),
+  voicePlaybackStarted: () => ipcRenderer.send('nt.voice.playback-started'),
+  voicePlaybackEnded: () => ipcRenderer.send('nt.voice.playback-ended'),
+  voiceDictateUndo: () => ipcRenderer.invoke('nt.voice.dictate-undo'),
+  voiceTakeover: () => ipcRenderer.invoke('nt.voice.takeover'),
   onVoiceEngineState: (cb) => {
     const l = (_e: unknown, s: Parameters<Parameters<NextTokenAPI['onVoiceEngineState']>[0]>[0]) => cb(s);
     ipcRenderer.on('nt.voice-engine-state', l);
     return () => ipcRenderer.removeListener('nt.voice-engine-state', l);
+  },
+  onVoiceError: (cb) => {
+    const l = (_e: unknown, m: string) => cb(m);
+    ipcRenderer.on('nt.voice-error', l);
+    return () => ipcRenderer.removeListener('nt.voice-error', l);
+  },
+  onVoiceAmplitude: (cb) => {
+    const l = (_e: unknown, level: number) => cb(level);
+    ipcRenderer.on('nt:voice-amplitude', l);
+    return () => ipcRenderer.removeListener('nt:voice-amplitude', l);
+  },
+  onVoicePlaybackState: (cb) => {
+    const l = (_e: unknown, speaking: boolean) => cb(speaking);
+    ipcRenderer.on('nt:voice-playback-state', l);
+    return () => ipcRenderer.removeListener('nt:voice-playback-state', l);
+  },
+  onAgentActing: (cb) => {
+    const l = (_e: unknown, e: Parameters<Parameters<NextTokenAPI['onAgentActing']>[0]>[0]) => cb(e);
+    ipcRenderer.on('nt:agent-acting', l);
+    return () => ipcRenderer.removeListener('nt:agent-acting', l);
+  },
+  onAgentActingDone: (cb) => {
+    const l = (_e: unknown, e: Parameters<Parameters<NextTokenAPI['onAgentActingDone']>[0]>[0]) => cb(e);
+    ipcRenderer.on('nt:agent-acting-done', l);
+    return () => ipcRenderer.removeListener('nt:agent-acting-done', l);
+  },
+  onVoiceBargeIn: (cb) => {
+    const l = () => cb();
+    ipcRenderer.on('nt:voice-barge-in', l);
+    return () => ipcRenderer.removeListener('nt:voice-barge-in', l);
+  },
+  onVoiceTakeover: (cb) => {
+    const l = () => cb();
+    ipcRenderer.on('nt:voice-takeover', l);
+    return () => ipcRenderer.removeListener('nt:voice-takeover', l);
+  },
+  onVoiceDictated: (cb) => {
+    const l = (_e: unknown, d: { tabId: string; chars: number }) => cb(d);
+    ipcRenderer.on('nt:voice-dictated', l);
+    return () => ipcRenderer.removeListener('nt:voice-dictated', l);
   },
   onVoicePlayback: (cb) => {
     const l = (_e: unknown, bytes: number[]) => cb(bytes);

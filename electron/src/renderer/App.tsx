@@ -23,11 +23,13 @@ import { Loader2, Plus } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { BrowserProvider, useBrowser } from "./BrowserContext";
 import { AgentPanel } from "./components/AgentPanel";
+import { AgentActingOverlay } from "./components/AgentActingOverlay";
 import { CommandBar } from "./components/CommandBar";
 import { NewTabHero } from "./components/NewTabHero";
 import { Settings } from "./components/Settings";
 import { Sidebar } from "./components/Sidebar";
 import { TabViews } from "./components/TabView";
+import { VoiceSession } from "./components/VoiceSession";
 import { TopStrip } from "./components/TopStrip";
 import { WritingHint } from "./components/WritingHint";
 import { useBrainAudio } from "./hooks/useBrainAudio";
@@ -178,6 +180,8 @@ function Shell() {
           style={{ background: "var(--nt-bg-base)" }}
         >
           <TabViews />
+          {/* Voice-agent browser indicators: target ring, AI cursor, capsule. */}
+          <AgentActingOverlay />
           {/* Fresh tabs get the large centered command bar (Dia pattern). */}
           {activeTab && isNewTabUrl(activeTab.url) && <NewTabHero />}
           <WritingHint />
@@ -223,7 +227,9 @@ function Shell() {
 export default function App() {
   return (
     <BrowserProvider>
-      <Shell />
+      <VoiceSession>
+        <Shell />
+      </VoiceSession>
     </BrowserProvider>
   );
 }

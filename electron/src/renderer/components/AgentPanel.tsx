@@ -19,7 +19,6 @@ import {
   Globe,
   History,
   Keyboard,
-  Loader2,
   Mic,
   Plus,
   Send,
@@ -40,7 +39,10 @@ import type {
 } from "../../shared/ipc";
 import { useBrowser } from "../BrowserContext";
 import { registerAskHandler, registerPrefillHandler } from "../agentBus";
-import { useVoice, runVoiceCommand, speakLocal } from "../hooks/useVoice";
+import { runVoiceCommand, speakLocal, stopLocalSpeech } from "../hooks/useVoice";
+import { useVoiceSession } from "./VoiceSession";
+import { VoiceOrb, type VoiceOrbMode } from "./VoiceOrb";
+import { VoiceSteps } from "./VoiceSteps";
 import { registerBrainVoiceControl } from "../hooks/useBrainAudio";
 import { domainOf, nt } from "../nt";
 import { ModelSwitcher } from "./ModelSwitcher";
@@ -137,6 +139,8 @@ export function AgentPanel() {
 
   const speak = useCallback((text: string) => {
     if (!voiceCfgRef.current.speakReplies) return;
+    // A new reply interrupts any in-flight TTS — no overlapping speech.
+    stopLocalSpeech();
     // Prefer the on-device Kokoro voice; fall back to system speech.
     void speakLocal(text).then((ok) => {
       if (ok) return;
@@ -373,28 +377,46 @@ export function AgentPanel() {
     if (fb) inputRef.current?.focus();
   }, []);
 
-  const voice = useVoice({
-    onCommand: handleVoiceCommand,
-    onDictation: (t) => {
+  // The always-on voice session (mic, TTS, pill, acting events) lives at App
+  // level; the panel registers its handlers and renders the voice surface.
+  const voice = useVoiceSession();
+
+  /** Last heard transcript — shown in the voice Steps list. */
+  const [voiceTranscript, setVoiceTranscript] = useState("");
+
+  useEffect(() => {
+    voice.registerCommandHandler((t) => {
+      setVoiceTranscript(t);
+      void handleVoiceCommand(t);
+    });
+    voice.registerDictationSink((t) => {
       setInput((v) => `${v}${t}`);
       inputRef.current?.focus();
-    },
-    isEnabled: () => voiceCfgRef.current.enabled,
-  });
+    });
+    voice.registerTakeoverHandler(() => cancel());
+    return () => {
+      voice.registerCommandHandler(null);
+      voice.registerDictationSink(null);
+      voice.registerTakeoverHandler(null);
+    };
+  }, [
+    voice.registerCommandHandler,
+    voice.registerDictationSink,
+    voice.registerTakeoverHandler,
+    handleVoiceCommand,
+    cancel,
+  ]);
 
   // Let the brain start/stop microphone capture (voice.listen.start/stop intents).
-  const voiceCtlRef = useRef(voice);
-  voiceCtlRef.current = voice;
   useEffect(() => {
     registerBrainVoiceControl({
       startListening: () => {
-        const v = voiceCtlRef.current;
-        if (!v.listening) v.toggleCommand();
+        if (!voice.listening) voice.toggleCommand();
       },
-      stopListening: () => voiceCtlRef.current.stop(),
+      stopListening: () => voice.stop(),
     });
     return () => registerBrainVoiceControl(null);
-  }, []);
+  }, [voice.listening, voice.toggleCommand, voice.stop]);
 
   // Brain pipeline trace — compact feed of heard → classified → acted events.
   useEffect(() => {
@@ -408,6 +430,28 @@ export function AgentPanel() {
   }, []);
 
   const busy = activeRun !== null;
+
+  /* ------------------------- voice status derivation --------------------- */
+  // Cross-fading status label — always a text equivalent, never color-only.
+  const voiceStatusLabel = voice.voiceError
+    ? `Voice error — ${voice.voiceError}`
+    : voice.engine === "listening"
+      ? voice.mode === "dictate"
+        ? "Listening — dictating into the input"
+        : "Listening — say a command"
+      : voice.engine === "transcribing"
+        ? "Transcribing…"
+        : voice.engine === "thinking"
+          ? (voice.acting ? voice.acting.label : "Working…")
+          : voice.playbackSpeaking || voice.engine === "speaking"
+            ? "Speaking — Alt+V to interrupt"
+            : "Voice";
+  // Key drives the cross-fade: per-action labels animate in as the agent acts.
+  const voiceStatusKey = voice.voiceError
+    ? "error"
+    : voice.engine === "thinking" && voice.acting
+      ? voice.acting.label
+      : `${voice.engine}${voice.playbackSpeaking ? "-speaking" : ""}`;
   const streamingText = activeRun ? (streams.get(activeRun) ?? "") : "";
 
   const allTabs: SmartTab[] = (snapshot?.spaces ?? []).flatMap((s) =>
@@ -436,12 +480,45 @@ export function AgentPanel() {
         className="flex items-center gap-1 border-b px-3.5 py-3"
         style={{ borderColor: "var(--nt-border)" }}
       >
-        <span
-          className="nt-r-sm flex h-7 w-7 items-center justify-center"
-          style={{ background: "var(--nt-accent-soft)" }}
-        >
-          <Sparkles size={15} strokeWidth={1.75} style={{ color: "var(--nt-accent)" }} />
-        </span>
+        {voice.active ? (
+          <span
+            className="voice-header-orb"
+            title={
+              voice.engine === "listening"
+                ? "Voice: listening"
+                : voice.engine === "transcribing"
+                  ? "Voice: transcribing"
+                  : voice.engine === "thinking"
+                    ? "Voice: working"
+                    : voice.playbackSpeaking
+                      ? "Voice: speaking"
+                      : "Voice active"
+            }
+          >
+            <VoiceOrb
+              mode={
+                (
+                  voice.engine === "listening"
+                    ? "listening"
+                    : voice.engine === "transcribing" || voice.engine === "thinking"
+                      ? "thinking"
+                      : voice.playbackSpeaking || voice.engine === "speaking"
+                        ? "speaking"
+                        : "idle"
+                ) as VoiceOrbMode
+              }
+              amplitude={voice.amplitude}
+              size={24}
+            />
+          </span>
+        ) : (
+          <span
+            className="nt-r-sm flex h-7 w-7 items-center justify-center"
+            style={{ background: "var(--nt-accent-soft)" }}
+          >
+            <Sparkles size={15} strokeWidth={1.75} style={{ color: "var(--nt-accent)" }} />
+          </span>
+        )}
         <p className="text-[15px] font-semibold tracking-[-0.01em]" style={{ color: "var(--nt-text-1)" }}>
           Agent
         </p>
@@ -632,7 +709,7 @@ export function AgentPanel() {
               <div
                 className={`nt-r-md max-w-[92%] whitespace-pre-wrap px-3.5 py-2.5 text-[13px] leading-relaxed ${
                   m.role === "user" ? "rounded-br-[4px]" : "rounded-bl-[4px] border"
-                }`}
+                }${m.role === "assistant" && voice.playbackSpeaking && m.id === lastAssistant?.id ? " voice-speaking-bubble" : ""}`}
                 style={
                   m.role === "user"
                     ? {
@@ -706,32 +783,70 @@ export function AgentPanel() {
         <div ref={bottomRef} />
       </div>
 
-      {/* voice status / feedback */}
-      {(voice.listening || voice.notice || voiceFeedback || voice.interim) && (
+      {/* voice mode surface — orb, cross-fading status, interim, steps */}
+      {(voice.active || voice.notice || voiceFeedback || voice.interim) && (
         <div
-          className="border-t px-3.5 py-2 text-[12px]"
-          style={{ borderColor: "var(--nt-border)", color: "var(--nt-text-2)" }}
+          className="voice-surface border-t px-3.5 py-2.5"
+          style={{ borderColor: "var(--nt-border)" }}
         >
-          {voice.listening && (
-            <p className="flex items-center gap-1.5">
-              <Loader2 size={12} strokeWidth={1.75} className="animate-spin" style={{ color: "var(--nt-accent)" }} />
-              Listening{voice.mode === "dictate" ? " — dictating into the input" : " — say a command"}
-              {voice.interim && (
-                <span className="truncate italic" style={{ color: "var(--nt-text-3)" }}>
+          <div className="flex items-center gap-2.5">
+            <VoiceOrb
+              mode={
+                (
+                  voice.engine === "listening"
+                    ? "listening"
+                    : voice.engine === "transcribing" || voice.engine === "thinking"
+                      ? "thinking"
+                      : voice.playbackSpeaking || voice.engine === "speaking"
+                        ? "speaking"
+                        : "idle"
+                ) as VoiceOrbMode
+              }
+              amplitude={voice.amplitude}
+              size={36}
+            />
+            <div className="min-w-0 flex-1">
+              <p
+                key={voiceStatusKey}
+                className="voice-status-label text-[12.5px] font-medium"
+                style={{ color: "var(--nt-text-1)" }}
+              >
+                {voiceStatusLabel}
+              </p>
+              {voice.interim ? (
+                <p className="truncate text-[12px] italic" style={{ color: "var(--nt-text-3)" }}>
                   “{voice.interim}”
-                </span>
-              )}
-            </p>
+                </p>
+              ) : null}
+            </div>
+            {(voice.listening || voice.playbackSpeaking) && (
+              <button
+                onClick={() => {
+                  if (voice.playbackSpeaking) void nt().voiceStopSpeaking();
+                  else voice.stop();
+                }}
+                className="nt-r-sm shrink-0 px-2 py-1 text-[11px] font-medium transition-colors hover:bg-[var(--nt-bg-hover)]"
+                style={{ color: "var(--nt-accent)" }}
+                aria-label={voice.playbackSpeaking ? "Interrupt speech" : "Stop listening"}
+              >
+                {voice.playbackSpeaking ? "Interrupt" : "Stop"}
+              </button>
+            )}
+          </div>
+          {(voice.engine === "thinking" || voice.actingSteps.length > 0) && (
+            <VoiceSteps transcript={voiceTranscript} steps={voice.actingSteps} />
           )}
           {voice.notice && (
-            <p className="flex items-start justify-between gap-2">
+            <p className="mt-1.5 flex items-start justify-between gap-2 text-[12px]" style={{ color: "var(--nt-text-2)" }}>
               <span>{voice.notice}</span>
               <button onClick={voice.clearNotice} className="shrink-0 underline">
                 dismiss
               </button>
             </p>
           )}
-          {voiceFeedback && !voice.listening && <p>{voiceFeedback}</p>}
+          {voiceFeedback && !voice.listening && (
+            <p className="mt-1.5 text-[12px]" style={{ color: "var(--nt-text-2)" }}>{voiceFeedback}</p>
+          )}
         </div>
       )}
 
@@ -776,7 +891,9 @@ export function AgentPanel() {
                 : "Voice input isn't available in this build"
             }
             onClick={voice.toggleCommand}
-            className={`nt-r-sm shrink-0 p-2.5 transition-colors hover:bg-[var(--nt-bg-hover)]`}
+            className={`voice-mic-btn nt-r-sm shrink-0 p-2.5 transition-colors hover:bg-[var(--nt-bg-hover)]`}
+            data-active={voice.listening && voice.mode === "command"}
+            aria-pressed={voice.listening && voice.mode === "command"}
             style={{
               color:
                 voice.listening && voice.mode === "command"
@@ -796,7 +913,9 @@ export function AgentPanel() {
                 : "Voice input isn't available in this build"
             }
             onClick={voice.toggleDictate}
-            className="nt-r-sm shrink-0 p-2.5 transition-colors hover:bg-[var(--nt-bg-hover)]"
+            className="voice-mic-btn nt-r-sm shrink-0 p-2.5 transition-colors hover:bg-[var(--nt-bg-hover)]"
+            data-active={voice.listening && voice.mode === "dictate"}
+            aria-pressed={voice.listening && voice.mode === "dictate"}
             style={{
               color:
                 voice.listening && voice.mode === "dictate"
