@@ -6,6 +6,7 @@ import { DEFAULT_DARK_TOKENS, SPACE_PALETTE } from '../shared/ipc';
 import type {
   AgentMessage, ArchivedTab, ProviderId, SiteBoost, ThemeTokens
 } from '../shared/ipc';
+import type { ModelRef } from './models/types';
 
 export interface FavoritePersist { id: string; name: string; url: string }
 export interface SpacePersist {
@@ -20,6 +21,9 @@ export interface ProviderPersist {
   model: string;
   api: 'openai' | 'anthropic';
 }
+
+/** One record per downloaded model file: bytes on disk + last download timestamp. */
+export interface ModelDownloadRecord { bytes: number; at: number; }
 
 interface Persisted {
   spaces: SpacePersist[];
@@ -37,6 +41,12 @@ interface Persisted {
   boosts: SiteBoost[];
   /** Auto-archive idle tabs after this long. Default 12h (Arc parity). */
   archiveAfterMs: number;
+  /** Local model state: downloaded files, per-task assignment, Apple FM probe. */
+  models: {
+    downloaded: Record<string, ModelDownloadRecord>;
+    assignment: { chat: ModelRef; vision: ModelRef };
+    appleFmAvailable: boolean | null;
+  };
 }
 
 const ARCHIVE_AFTER_DEFAULT = 12 * 3600 * 1000;
@@ -73,7 +83,12 @@ function defaults(): Persisted {
     agentHistory: [],
     archived: [],
     boosts: [],
-    archiveAfterMs: ARCHIVE_AFTER_DEFAULT
+    archiveAfterMs: ARCHIVE_AFTER_DEFAULT,
+    models: {
+      downloaded: {},
+      assignment: { chat: 'applefm', vision: 'cloud' },
+      appleFmAvailable: null
+    }
   };
 }
 
@@ -95,6 +110,8 @@ export class Store {
     try {
       const raw = fs.readFileSync(this.file, 'utf8');
       const parsed = { ...defaults(), ...JSON.parse(raw) };
+      // Backfill the models shape for installs that predate it.
+      if (!parsed.models) parsed.models = defaults().models;
       // Re-seed themes for spaces missing them (e.g. new spaces).
       for (const s of parsed.spaces) {
         if (!parsed.themes[s.id]) {

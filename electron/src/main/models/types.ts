@@ -1,0 +1,25 @@
+export type ModelTask = 'chat' | 'vision' | 'stt' | 'tts';
+
+export interface ModelEntry {
+  id: string;          // e.g. 'smollm3-3b-q4km'
+  name: string;        // 'SmolLM3 3B'
+  task: ModelTask;
+  params: string;      // '3B'
+  quant: string;       // 'Q4_K_M'
+  sizeBytes: number;   // approximate download size
+  url: string;         // DIRECT download URL (HuggingFace resolve URL)
+  sha256?: string;     // include when you can find a published checksum
+  description: string; // one line, what it's good for
+  license: string;     // e.g. 'Apache-2.0'
+  mmprojUrl?: string;  // vision models only: direct URL of the mmproj file
+  mmprojSha256?: string;
+}
+
+export type ModelRef = string; // 'applefm' | 'cloud' | a ModelEntry id
+
+export interface DownloadProgress { id: string; bytesDownloaded: number; totalBytes: number; }
+
+export type DownloadEvent =
+  | { kind: 'progress'; id: string; bytesDownloaded: number; totalBytes: number }
+  | { kind: 'done'; id: string }
+  | { kind: 'error'; id: string; error: string };
