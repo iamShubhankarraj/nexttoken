@@ -11,6 +11,7 @@
  *
  * Global shortcuts:
  *   ⌘/Ctrl+K ……… command bar
+ *   ⌘/Ctrl+E ……… toggle agent panel
  *   ⌘/Ctrl+T ……… new tab
  *   ⌘/Ctrl+1…9 …… switch space
  *   ⌘/Ctrl+S ……… toggle sidebar
@@ -23,11 +24,13 @@ import { useCallback, useEffect, useState } from "react";
 import { BrowserProvider, useBrowser } from "./BrowserContext";
 import { AgentPanel } from "./components/AgentPanel";
 import { CommandBar } from "./components/CommandBar";
+import { NewTabHero } from "./components/NewTabHero";
 import { Settings } from "./components/Settings";
 import { Sidebar } from "./components/Sidebar";
 import { TabViews } from "./components/TabView";
 import { TopStrip } from "./components/TopStrip";
-import { nt } from "./nt";
+import { WritingHint } from "./components/WritingHint";
+import { isNewTabUrl, nt } from "./nt";
 import { rootStyleProp } from "./theme";
 
 function Shell() {
@@ -88,6 +91,10 @@ function Shell() {
       if (k === "k") {
         e.preventDefault();
         setCommandOpen((o) => !o);
+      } else if (k === "e") {
+        e.preventDefault();
+        if (snapshot)
+          void nt().uiSetAgentPanelOpen(!snapshot.agentPanelOpen);
       } else if (k === "t") {
         e.preventDefault();
         void nt().tabsCreate({});
@@ -155,8 +162,15 @@ function Shell() {
       <div className="flex min-w-0 flex-1 flex-col">
         <TopStrip />
         {/* Real tab content: webview guests mounted by <TabViews/>. */}
-        <main className="relative min-h-0 flex-1" style={{ background: "var(--nt-bg-base)" }}>
+        <main
+          id="nt-content"
+          className="relative min-h-0 flex-1"
+          style={{ background: "var(--nt-bg-base)" }}
+        >
           <TabViews />
+          {/* Fresh tabs get the large centered command bar (Dia pattern). */}
+          {activeTab && isNewTabUrl(activeTab.url) && <NewTabHero />}
+          <WritingHint />
           {tabCount === 0 && (
             <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-3 p-8 text-center">
               <p className="text-[15px] font-semibold tracking-[-0.01em]" style={{ color: "var(--nt-text-1)" }}>

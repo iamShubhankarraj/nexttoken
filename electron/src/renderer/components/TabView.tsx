@@ -23,6 +23,11 @@ import {
 } from "react";
 import { useBrowser, type SplitState } from "../BrowserContext";
 import { nt } from "../nt";
+import {
+  CARET_HINT_PREFIX,
+  CARET_SCRIPT,
+  type CaretHintDetail,
+} from "../caretScript";
 import type { WebviewElement, WebviewNewWindowEvent } from "../webview";
 
 /** First-seen URL per tab id — captured once, used as webview `src` once. */
@@ -48,6 +53,40 @@ function attachWebview(el: WebviewElement, tabId: string): void {
       void nt().tabsAttach(tabId, wcId);
     } catch {
       /* main will retry on next snapshot if needed */
+    }
+    // Writing-hint caret watcher (Dia pattern). Re-injected per
+    // navigation; the script self-guards against double-install.
+    try {
+      void (el as unknown as { executeJavaScript(code: string): Promise<unknown> })
+        .executeJavaScript(CARET_SCRIPT);
+    } catch {
+      /* non-essential */
+    }
+  });
+
+  // The caret script reports via prefixed console messages — no guest
+  // preload file required.
+  el.addEventListener("console-message", (e: Event) => {
+    const message = (e as unknown as { message?: string }).message ?? "";
+    if (!message.startsWith(CARET_HINT_PREFIX)) return;
+    try {
+      const payload = JSON.parse(message.slice(CARET_HINT_PREFIX.length));
+      if (payload?.type === "blur") {
+        window.dispatchEvent(new CustomEvent("nt:writing-hint-blur"));
+        return;
+      }
+      if (payload?.type === "focus") {
+        const detail: CaretHintDetail = {
+          tabId,
+          tag: String(payload.tag ?? "field"),
+          rect: payload.rect,
+          text: String(payload.text ?? ""),
+          placeholder: String(payload.placeholder ?? ""),
+        };
+        window.dispatchEvent(new CustomEvent("nt:writing-hint", { detail }));
+      }
+    } catch {
+      /* ignore malformed payloads */
     }
   });
 
