@@ -103,7 +103,7 @@ const SPECS: Record<SidecarName, SidecarSpec> = {
   },
 };
 
-function githubGet<T>(url: string): Promise<T> {
+function githubGet<T>(url: string, redirectsLeft = MAX_REDIRECTS): Promise<T> {
   return new Promise((resolve, reject) => {
     const req = https.get(
       url,
@@ -114,14 +114,27 @@ function githubGet<T>(url: string): Promise<T> {
         },
       },
       (res) => {
+        const status = res.statusCode ?? 0;
+        // GitHub's API issues redirects (e.g. /repositories/<id>/... ->
+        // /repos/<owner>/<name>/...); follow them instead of failing.
+        // https://docs.github.com/rest/guides/best-practices-for-using-the-rest-api#follow-redirects
+        if (status >= 300 && status < 400 && res.headers.location) {
+          res.resume();
+          if (redirectsLeft <= 0) {
+            reject(new Error(`Too many redirects for GitHub API request: ${url}`));
+            return;
+          }
+          githubGet<T>(res.headers.location, redirectsLeft - 1).then(resolve, reject);
+          return;
+        }
         const chunks: Buffer[] = [];
         res.on('data', (d: Buffer) => chunks.push(d));
         res.on('end', () => {
           const body = Buffer.concat(chunks).toString('utf8');
-          if (res.statusCode !== 200) {
+          if (status !== 200) {
             reject(
               new Error(
-                `GitHub API request failed (HTTP ${res.statusCode}): ${body.slice(0, 300)}`
+                `GitHub API request failed (HTTP ${status}): ${body.slice(0, 300)}`
               )
             );
             return;

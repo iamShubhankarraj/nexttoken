@@ -27,7 +27,7 @@ import {
 } from "../../shared/ipc";
 import { useBrowser } from "../BrowserContext";
 import { nt } from "../nt";
-import { applyTokensToRoot, stampThemeTouched } from "../theme";
+import { applyTokensToRoot, mixHex, stampThemeTouched } from "../theme";
 
 /** Paint tokens straight onto documentElement (:root) for instant live preview. */
 function applyPreview(tokens: ThemeTokens): void {
@@ -216,6 +216,29 @@ export function ThemeEditor({ spaceId }: { spaceId: string }) {
         />
       </FieldBlock>
 
+      {/* Sidebar — the whole sidebar paints with this, Arc-style */}
+      <FieldBlock label="Sidebar" hint="The entire sidebar background">
+        <div className="flex items-center gap-3">
+          <ColorRow
+            value={tokens.sidebarBg}
+            onChange={(v) => update("sidebarBg", v)}
+          />
+          <button
+            onClick={() =>
+              update(
+                "sidebarBg",
+                mixHex(tokens.spaceColor, tokens.bgSubtle, 0.7),
+              )
+            }
+            title="Tint the sidebar with this Bit's color"
+            className="nt-r-sm border px-2.5 py-1.5 text-[12px] transition-colors hover:bg-[var(--nt-bg-hover)]"
+            style={{ borderColor: "var(--nt-border)", color: "var(--nt-text-2)" }}
+          >
+            Tint with Bit color
+          </button>
+        </div>
+      </FieldBlock>
+
       {/* Corner roundness */}
       <FieldBlock label="Corner roundness" hint="Multiplier over the 6 / 10 / 14px scale">
         <span className="flex w-56 items-center gap-2.5">
@@ -278,7 +301,7 @@ export function ThemeEditor({ spaceId }: { spaceId: string }) {
         )}
         <span className="nt-micro">Advanced surfaces</span>
         <span className="text-[11px]" style={{ color: "var(--nt-text-faint)" }}>
-          base · sidebar · cards · overlays
+          base · chrome · cards · overlays
         </span>
       </button>
       {advancedOpen && (
@@ -341,7 +364,7 @@ function surfaceHint(key: keyof ThemeTokens): string {
     case "bgBase":
       return "App base — deepest layer";
     case "bgSubtle":
-      return "Sidebar background";
+      return "Top strip, subtle chrome";
     case "bgRaised":
       return "Cards, panels";
     case "bgOverlay":

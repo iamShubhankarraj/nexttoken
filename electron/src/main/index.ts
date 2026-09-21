@@ -551,19 +551,48 @@ async function enterPictureInPicture(): Promise<{ ok: boolean; error?: string }>
   }
 }
 
+/**
+ * Create + (optionally) activate a tab. Rapid same-URL creates are
+ * deduped: a single click can reach main through both the
+ * setWindowOpenHandler path and the renderer's legacy `new-window`
+ * listener, and the link must not open twice.
+ */
+const recentCreates = new Map<string, number>();
+function createTabActivated(
+  spaceId: string,
+  url: string | undefined,
+  activate = true
+): string {
+  const key = `${spaceId}|${url ?? ''}`;
+  const now = Date.now();
+  const last = recentCreates.get(key);
+  if (last && now - last < 2500) {
+    const existing = tabs.orderedTabs(spaceId).find((t) => t.url === url);
+    if (existing) {
+      if (activate) tabs.activate(existing.id);
+      return existing.id;
+    }
+  }
+  recentCreates.set(key, now);
+  if (recentCreates.size > 64) {
+    const oldest = [...recentCreates.entries()].sort((a, b) => a[1] - b[1])[0];
+    if (oldest) recentCreates.delete(oldest[0]);
+  }
+  const t = tabs.create(spaceId, url);
+  if (activate) tabs.activate(t.id);
+  return t.id;
+}
+
 function registerIpc() {
   // Pull-based boot: the renderer's first subscription can miss main's
   // initial push, so it requests the snapshot explicitly on mount.
   ipcMain.handle('nt.snapshot.get', (): BrowserSnapshot => snapshot());
-
   // -- tabs ---------------------------------------------------------------
   ipcMain.handle('nt.tabs.create', (_e, opts?: { spaceId?: string; url?: string }) => {
     const spaceId = opts?.spaceId && store.d.spaces.some((s) => s.id === opts.spaceId)
       ? opts.spaceId
       : store.d.activeSpaceId;
-    const t = tabs.create(spaceId, opts?.url);
-    tabs.activate(t.id);
-    return t.id;
+    return createTabActivated(spaceId, opts?.url);
   });
   ipcMain.handle('nt.tabs.close', (_e, tabId: string) => {
     adblocker.noteDetach(tabId);
@@ -1327,6 +1356,12 @@ app.whenReady().then(() => {
       win?.webContents.send('nt.tab-delta', d);
     },
     {
+      // target=_blank / window.open / cmd+click from a guest page:
+      // open a real tab in the source tab's Bit (foreground unless the
+      // page asked for a background tab). Nothing is ever silently dropped.
+      onPopup: (sourceTab, url, disposition) => {
+        createTabActivated(sourceTab.spaceId, url, disposition !== 'background-tab');
+      },
       // Right-click on a video: video actions.
       onContextMenu: (wc: WebContents, params) => {
         if (params.mediaType !== 'video' || !params.srcURL) return;

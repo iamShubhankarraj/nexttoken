@@ -12,6 +12,12 @@ import type { Store } from './store';
 export interface TabHooks {
   /** Fired when a guest page shows a context menu (e.g. right-click on video). */
   onContextMenu?: (wc: WebContents, params: ContextMenuParams) => void;
+  /**
+   * Fired when the guest asks to open a URL in a new window/tab
+   * (target=_blank, window.open, cmd/middle-click). Main decides what to
+   * do with it (open a real tab); tabs.ts just routes the request.
+   */
+  onPopup?: (sourceTab: TabRec, url: string, disposition: string) => void;
 }
 
 export interface TabRec {
@@ -146,6 +152,7 @@ export class TabManager {
       this.persistSessionSoon(); // keep restored titles current
     });
     const onNav = (url: string) => {
+      const prevHost = this.hostOf(tab.url);
       tab.url = url;
       tab.canGoBack = wc.canGoBack();
       tab.canGoForward = wc.canGoForward();
@@ -153,9 +160,39 @@ export class TabManager {
         tabId: tab.id, type: 'url', value: url,
         canGoBack: tab.canGoBack, canGoForward: tab.canGoForward
       });
+      // The tab icon must track the CURRENT site: when the host changes
+      // (link click, redirect, typed navigation), drop the previous site's
+      // icon immediately and show the new host's cached icon (or nothing)
+      // until page-favicon-updated reports the real one. In-page SPA route
+      // changes keep the host, so the icon correctly stays put.
+      const nextHost = this.hostOf(url);
+      if (nextHost && nextHost !== prevHost) {
+        const cached = this.faviconFor(url);
+        if (tab.favicon !== cached) {
+          tab.favicon = cached;
+          this.onDelta({ tabId: tab.id, type: 'favicon', value: cached ?? '' });
+        }
+        if (!cached) this.fetchOriginIcon(tab);
+      }
     };
     wc.on('did-navigate', (_e, url) => onNav(url));
     wc.on('did-navigate-in-page', (_e, url) => onNav(url));
+    // target=_blank / window.open / cmd+click: the legacy webview
+    // `new-window` DOM event is unreliable on modern Electron, so route
+    // opens through the supported setWindowOpenHandler API instead.
+    // Same-tab link clicks never reach here — the guest navigates natively.
+    wc.setWindowOpenHandler(({ url, disposition }) => {
+      // Downloads (<a download>) must flow through, not become tabs. The
+      // disposition is cast because this Electron's typings omit it.
+      if ((disposition as string) === 'save-to-disk') return { action: 'allow' };
+      if (!url || url === 'about:blank') return { action: 'deny' };
+      try {
+        this.hooks?.onPopup?.(tab, url, disposition);
+      } catch {
+        /* never break the guest on a hook failure */
+      }
+      return { action: 'deny' };
+    });
     // Site favicon for the sidebar — the page's own icon, cached per host.
     // No extra network requests: Electron hands us the resolved favicon.
     wc.on('page-favicon-updated', (_e, favicons) => this.onFavicon(tab, favicons));

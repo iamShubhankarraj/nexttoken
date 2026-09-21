@@ -81,18 +81,45 @@ function luminance(hex: string): number {
  * and geometry (radiusScale). Returns the input unchanged when healthy.
  */
 export function repairLegacyTokens(t: ThemeTokens): ThemeTokens {
-  const bgLum = luminance(t.bgBase);
+  const filled = fillMissingSidebarBg(t);
+  const bgLum = luminance(filled.bgBase);
   const surfaceMatchesMode =
-    (t.mode === "light" && bgLum >= 0.4) ||
-    (t.mode === "dark" && bgLum < 0.4);
-  if (surfaceMatchesMode) return t;
-  const base = t.mode === "light" ? DEFAULT_LIGHT_TOKENS : DEFAULT_DARK_TOKENS;
+    (filled.mode === "light" && bgLum >= 0.4) ||
+    (filled.mode === "dark" && bgLum < 0.4);
+  if (surfaceMatchesMode) return filled;
+  const base = filled.mode === "light" ? DEFAULT_LIGHT_TOKENS : DEFAULT_DARK_TOKENS;
   return {
     ...base,
-    spaceColor: t.spaceColor,
-    radiusScale: t.radiusScale,
-    mode: t.mode,
+    spaceColor: filled.spaceColor,
+    radiusScale: filled.radiusScale,
+    mode: filled.mode,
   };
+}
+
+/**
+ * Backfill the whole-sidebar paint for themes saved before it existed
+ * (v0.5.5): missing/invalid sidebarBg falls back to the mode default, so
+ * old themes render exactly as before and the pristine-default migration
+ * keeps working.
+ */
+function fillMissingSidebarBg(t: ThemeTokens): ThemeTokens {
+  if (/^#[0-9a-f]{6}$/i.test(t.sidebarBg ?? "")) return t;
+  const base = t.mode === "light" ? DEFAULT_LIGHT_TOKENS : DEFAULT_DARK_TOKENS;
+  return { ...t, sidebarBg: base.sidebarBg };
+}
+
+/** Mix two #rrggbb colors: t=0 → a, t=1 → b. */
+export function mixHex(a: string, b: string, t: number): string {
+  const pa = /^#([0-9a-f]{6})$/i.exec(a)?.[1] ?? "808080";
+  const pb = /^#([0-9a-f]{6})$/i.exec(b)?.[1] ?? "808080";
+  const ch = (i: number) =>
+    Math.round(
+      parseInt(pa.slice(i, i + 2), 16) * (1 - t) +
+        parseInt(pb.slice(i, i + 2), 16) * t,
+    )
+      .toString(16)
+      .padStart(2, "0");
+  return `#${ch(0)}${ch(2)}${ch(4)}`;
 }
 
 /** localStorage key: Bit ids whose themes were seen by the default migration. */
@@ -100,7 +127,7 @@ const THEME_TOUCHED_KEY = "nt.theme.touched.v1";
 
 /** Token fields compared when detecting the untouched legacy dark default. */
 const PRISTINE_COMPARE_KEYS: (keyof ThemeTokens)[] = [
-  "bgBase", "bgSubtle", "bgRaised", "bgOverlay", "bgHover",
+  "bgBase", "bgSubtle", "sidebarBg", "bgRaised", "bgOverlay", "bgHover",
   "border", "borderStrong",
   "text1", "text2", "text3", "textFaint",
   "accent", "accentSoft", "accentText",

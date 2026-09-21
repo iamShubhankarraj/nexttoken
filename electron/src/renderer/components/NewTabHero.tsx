@@ -11,6 +11,7 @@ import { useBrowser } from "../BrowserContext";
 import { nt } from "../nt";
 import { routeSubmit, type RouteOverride } from "../routing";
 import { openImportDialog } from "./ImportDialog";
+import { AppLogo } from "./AppLogo";
 import { SmartInput, type SmartTab } from "./SmartInput";
 
 export function NewTabHero() {
@@ -56,6 +57,9 @@ export function NewTabHero() {
   return (
     <div className="nt-fade-in pointer-events-auto absolute inset-0 flex flex-col items-center justify-center p-8">
       <div className="w-full max-w-2xl">
+        <div className="mb-5 flex justify-center">
+          <AppLogo size={56} />
+        </div>
         <p
           className="mb-5 text-center text-[22px] font-semibold tracking-[-0.02em]"
           style={{ color: "var(--nt-text-1)" }}

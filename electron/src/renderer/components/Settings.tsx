@@ -38,6 +38,7 @@ import { useBrowser } from "../BrowserContext";
 import { nt } from "../nt";
 import { openImportDialog } from "./ImportDialog";
 import { ModelsPanel } from "./ModelsPanel";
+import { AppLogo } from "./AppLogo";
 import { SkillsSection } from "./SettingsSkills";
 import { ThemeEditor } from "./ThemeEditor";
 
@@ -88,6 +89,7 @@ export function Settings({
           className="flex items-center gap-2 border-b px-5 py-4"
           style={{ borderColor: "var(--nt-border)" }}
         >
+          <AppLogo size={22} />
           <h2
             className="text-[15px] font-semibold tracking-[-0.01em]"
             style={{ color: "var(--nt-text-1)" }}

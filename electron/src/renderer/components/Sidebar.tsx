@@ -78,6 +78,7 @@ export function Sidebar() {
   /** Folder currently highlighted as a drop target (folder id, "pinned", "ungrouped"). */
   const [dropTarget, setDropTarget] = useState<string | null>(null);
   const [collapsedFolders, setCollapsedFolders] = useState<Set<string>>(new Set());
+  const [pinnedCollapsed, setPinnedCollapsed] = useState(false);
   const [bookmarksOpen, setBookmarksOpen] = useState(true);
 
   // Stable drag id readable inside memoized callbacks.
@@ -225,7 +226,7 @@ export function Sidebar() {
   return (
     <aside
       className="flex h-full w-[248px] shrink-0 select-none flex-col border-r"
-      style={{ background: "var(--nt-bg-subtle)", borderColor: "var(--nt-border)" }}
+      style={{ background: "var(--nt-sidebar-bg)", borderColor: "var(--nt-border)" }}
     >
       {/* 2px bit-identity wash on the top edge */}
       <div className="nt-space-wash shrink-0" />
@@ -259,7 +260,26 @@ export function Sidebar() {
               void nt().tabsPin(id, true);
             }}
           >
-            <SectionLabel label="Pinned" />
+            <button
+              onClick={() => setPinnedCollapsed((c) => !c)}
+              aria-expanded={!pinnedCollapsed}
+              className="nt-r-sm flex w-full items-center gap-1.5 px-1 py-1 text-left transition-colors hover:bg-[var(--nt-bg-hover)]"
+            >
+              {pinnedCollapsed ? (
+                <ChevronRight size={13} strokeWidth={1.75} style={{ color: "var(--nt-text-3)" }} />
+              ) : (
+                <ChevronDown size={13} strokeWidth={1.75} style={{ color: "var(--nt-text-3)" }} />
+              )}
+              <Pin size={13} strokeWidth={1.75} style={{ color: "var(--nt-text-3)" }} />
+              <span className="nt-micro">Pinned</span>
+              <span
+                className="nt-num ml-auto pr-1 text-[11px]"
+                style={{ color: "var(--nt-text-faint)" }}
+              >
+                {pinned.length}
+              </span>
+            </button>
+            {!pinnedCollapsed && (
             <div
               className="nt-r-sm space-y-1 p-0.5 transition-colors"
               style={
@@ -281,6 +301,7 @@ export function Sidebar() {
                 />
               ))}
             </div>
+            )}
           </section>
         )}
 

@@ -173,6 +173,8 @@ export interface ThemeTokens {
   // Layered warm-charcoal surfaces (never flat black)
   bgBase: string; // #0B0B0D — app base, deepest layer
   bgSubtle: string; // #101013 — sidebar background
+  /** Whole-sidebar paint, Theme section → Sidebar. Defaults to bgSubtle. */
+  sidebarBg: string;
   bgRaised: string; // #16161A — cards, panels
   bgOverlay: string; // #1E1E24 — popovers, command bar, modals
   bgHover: string; // #232329 — hover states
@@ -226,6 +228,7 @@ export const MOTION = {
 export const DEFAULT_DARK_TOKENS: ThemeTokens = {
   bgBase: '#0B0B0D',
   bgSubtle: '#101013',
+  sidebarBg: '#101013',
   bgRaised: '#16161A',
   bgOverlay: '#1E1E24',
   bgHover: '#232329',
@@ -249,6 +252,7 @@ export const DEFAULT_LIGHT_TOKENS: ThemeTokens = {
   // (brand); text on accent fills goes dark for contrast.
   bgBase: '#FAF9F6',
   bgSubtle: '#F1EFE9',
+  sidebarBg: '#F1EFE9',
   bgRaised: '#FFFFFF',
   bgOverlay: '#FFFFFF',
   bgHover: '#ECE9E1',
@@ -270,7 +274,7 @@ export const TOKEN_FIELDS: { key: keyof ThemeTokens; label: string; kind: 'color
   { key: 'spaceColor', label: 'Space color', kind: 'color' },
   { key: 'accent', label: 'Accent', kind: 'color' },
   { key: 'bgBase', label: 'Base', kind: 'color', advanced: true },
-  { key: 'bgSubtle', label: 'Sidebar', kind: 'color', advanced: true },
+  { key: 'bgSubtle', label: 'Subtle chrome', kind: 'color', advanced: true },
   { key: 'bgRaised', label: 'Cards', kind: 'color', advanced: true },
   { key: 'bgOverlay', label: 'Overlays', kind: 'color', advanced: true },
   { key: 'radiusScale', label: 'Corner roundness', kind: 'slider' },
@@ -284,7 +288,8 @@ export const TOKEN_FIELDS: { key: keyof ThemeTokens; label: string; kind: 'color
 export function tokensToCssVars(t: ThemeTokens): Record<string, string> {
   const v: Record<string, string> = {};
   const map: [keyof ThemeTokens, string][] = [
-    ['bgBase', '--nt-bg-base'], ['bgSubtle', '--nt-bg-subtle'], ['bgRaised', '--nt-bg-raised'],
+    ['bgBase', '--nt-bg-base'], ['bgSubtle', '--nt-bg-subtle'], ['sidebarBg', '--nt-sidebar-bg'],
+    ['bgRaised', '--nt-bg-raised'],
     ['bgOverlay', '--nt-bg-overlay'], ['bgHover', '--nt-bg-hover'],
     ['border', '--nt-border'], ['borderStrong', '--nt-border-strong'],
     ['text1', '--nt-text-1'], ['text2', '--nt-text-2'], ['text3', '--nt-text-3'], ['textFaint', '--nt-text-faint'],

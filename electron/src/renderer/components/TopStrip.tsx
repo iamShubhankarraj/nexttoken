@@ -22,6 +22,7 @@ import {
 import { useEffect } from "react";
 import { useBrowser } from "../BrowserContext";
 import { domainOf, nt } from "../nt";
+import { AppLogo } from "./AppLogo";
 import { Omnibox } from "./Omnibox";
 import { ShieldButton } from "./ShieldButton";
 import { useVoiceSession } from "./VoiceSession";
@@ -127,6 +128,9 @@ export function TopStrip() {
       className="relative flex h-11 shrink-0 items-center gap-1 border-b px-2"
       style={{ background: "var(--nt-bg-subtle)", borderColor: "var(--nt-border)" }}
     >
+      <div className="flex items-center pl-1 pr-0.5" title="Next Token">
+        <AppLogo size={20} />
+      </div>
       <button
         title="Toggle sidebar (⌘S)"
         onClick={() =>
