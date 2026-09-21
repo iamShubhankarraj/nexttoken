@@ -61,6 +61,9 @@ interface NtVoice {
   /** Granular STT readiness (wired in preload; may be absent in old builds). */
   voiceSttStatus?(): Promise<{ model: boolean; binary: boolean; binarySteps: string }>;
   voiceStartListening(): Promise<void>;
+  /** Ask the main process to ensure macOS mic permission (properly
+   *  attributed prompt). Resolves {granted:false} when denied. */
+  voiceEnsureMic?(): Promise<{ granted: boolean }>;
   voiceAudioChunk(data: Uint8Array): Promise<void>;
   voiceStopListening(): Promise<VoiceTranscript>;
   voiceCancelListening(): Promise<void>;
@@ -556,6 +559,23 @@ export function useVoice(handlers: UseVoiceHandlers): UseVoiceResult {
       /* default device */
     }
 
+    // Let the main process own the macOS mic permission prompt so it is
+    // attributed to Next Token (a renderer getUserMedia prompt can be
+    // misattributed when the app was launched from a terminal).
+    try {
+      const res = await api.voiceEnsureMic?.();
+      if (res && res.granted === false) throw new Error("mic-denied");
+    } catch (e) {
+      if (e instanceof Error && e.message === "mic-denied") {
+        setNotice(MIC_DENIED_NOTICE);
+        setGuide({ kind: "mic-denied" });
+        const err = new Error("mic-denied");
+        (err as { micDenied?: boolean }).micDenied = true;
+        throw err;
+      }
+      /* main-side check unavailable — fall through to getUserMedia */
+    }
+
     let stream: MediaStream;
     try {
       try {
@@ -709,8 +729,15 @@ export function useVoice(handlers: UseVoiceHandlers): UseVoiceResult {
       } else if (!result?.silent) {
         setNotice("Didn't hear anything — try again.");
       }
-    } catch {
-      setNotice("On-device transcription failed. Try again.");
+    } catch (e) {
+      // Surface the real engine error — a bare "failed, try again" made the
+      // STT pipeline undebuggable (the actual reason only exists in main).
+      const detail = e instanceof Error && e.message ? e.message : String(e ?? "");
+      setNotice(
+        detail
+          ? `On-device transcription failed: ${detail}`
+          : "On-device transcription failed. Try again.",
+      );
     }
   }, []);
 

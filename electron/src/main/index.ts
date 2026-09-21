@@ -53,6 +53,10 @@ let appleFm: AppleFmClient;
 let voiceEngine: VoiceEngine;
 /** Floating voice pill overlay (created lazily on first voice activity). */
 let pill: VoicePillOverlay | null = null;
+/** Last engine state + renderer TTS playback flag, so the pill can be
+ *  hidden when everything is truly idle (engine idle AND no playback). */
+let lastVoiceState: string = "idle";
+let pillPlaybackSpeaking = false;
 /** Last in-page voice dictation, for ⌘Z-style undo. */
 let lastDictation: LastDictation | null = null;
 let routerDeps: RouterDeps;
@@ -101,17 +105,79 @@ function sttModelFile(): string | null {
       return p;
     } catch { /* not on disk — keep looking */ }
   }
+  // Disk fallback: the file may have been placed manually (or by an older
+  // build) without the registry flag. A whisper ggml model is >50 MB —
+  // anything matching whisper*.bin at that size is a real model.
+  try {
+    const found = fs.readdirSync(modelsDir)
+      .filter((f) => /^whisper.*\.bin$/i.test(f))
+      .map((f) => path.join(modelsDir, f))
+      .filter((p) => { try { return fs.statSync(p).size > 50_000_000; } catch { return false; } })
+      .sort((a, b) => fs.statSync(a).size - fs.statSync(b).size)[0];
+    if (found) {
+      // Self-heal the registry so Settings and future lookups agree.
+      const id = path.basename(found, '.bin');
+      const entry = MODEL_CATALOG.find((e) => e.id === id);
+      if (entry && !store.d.models.downloaded[entry.id]) {
+        store.d.models.downloaded[entry.id] = { bytes: fs.statSync(found).size, at: Date.now() };
+        store.saveSoon();
+      }
+      return found;
+    }
+  } catch { /* models dir unreadable */ }
+  return null;
+}
+
+/** Recursively find the first dir under `root` containing a `.onnx` file. */
+function findOnnxDir(root: string, depth = 0): string | null {
+  if (depth > 3) return null;
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(root);
+  } catch {
+    return null;
+  }
+  if (entries.some((f) => f.endsWith('.onnx'))) return root;
+  for (const e of entries) {
+    const p = path.join(root, e);
+    try {
+      if (fs.statSync(p).isDirectory()) {
+        const hit = findOnnxDir(p, depth + 1);
+        if (hit) return hit;
+      }
+    } catch { /* skip */ }
+  }
   return null;
 }
 
 /** Absolute path of a downloaded TTS model dir, or null. */
 function ttsModelDir(): string | null {
-  const e = MODEL_CATALOG.find((x) => x.task === 'tts' && store.d.models.downloaded[x.id]);
-  if (!e) return null;
-  const dir = path.join(modelsDir, e.id);
+  // The kokoro release tarball extracts one level too deep
+  // (<id>/kokoro-en-v0_19/model.onnx), so search recursively.
+  const registered = MODEL_CATALOG.find((x) => x.task === 'tts' && store.d.models.downloaded[x.id]);
+  if (registered) {
+    const hit = findOnnxDir(path.join(modelsDir, registered.id));
+    if (hit) return hit;
+  }
+  // Disk fallback: any dir under models/ holding an .onnx + voices.bin looks
+  // like a manually placed Kokoro model — self-heal the registry.
   try {
-    if (fs.readdirSync(dir).some((f) => f.endsWith('.onnx'))) return dir;
-  } catch { /* missing */ }
+    for (const e of fs.readdirSync(modelsDir)) {
+      const dir = path.join(modelsDir, e);
+      try {
+        if (!fs.statSync(dir).isDirectory()) continue;
+      } catch { continue; }
+      const hit = findOnnxDir(dir);
+      if (hit) {
+        const entry = MODEL_CATALOG.find((x) => x.task === 'tts' && x.id === e);
+        if (entry && !store.d.models.downloaded[entry.id]) {
+          store.d.models.downloaded[entry.id] = { bytes: entry.sizeBytes, at: Date.now() };
+          store.saveSoon();
+        }
+        return hit;
+      }
+    }
+  } catch { /* models dir unreadable */ }
   return null;
 }
 
@@ -187,6 +253,7 @@ function initModelTier() {
     events: {
       onState: (s: VoiceEngineState) => {
         win?.webContents.send('nt.voice-engine-state', s);
+        lastVoiceState = s;
         // The pill owns its visibility policy (it stays up during TTS
         // playback even after the engine returns to idle); main only
         // forwards events and ensures the window exists while active.
@@ -194,6 +261,11 @@ function initModelTier() {
           ensurePill();
           pill?.show();
           pill?.setClickMode(s === 'speaking' ? 'interactive' : 'through');
+        } else if (!pillPlaybackSpeaking) {
+          // Engine idle and no TTS playback: hide the pill window outright.
+          // (The pill component also renders null when idle; hiding the
+          // window keeps it out of Mission Control / screen capture.)
+          pill?.hide();
         }
         pill?.send('nt.voice-engine-state', s);
       },
@@ -974,6 +1046,23 @@ function registerIpc() {
   ipcMain.handle('nt.voice.start-listening', () => {
     voiceEngine.startListening();
   });
+  // Own the macOS microphone permission prompt from the main process so it
+  // is attributed to Next Token. (A renderer getUserMedia prompt can be
+  // misattributed to the launching terminal for an unsigned app started
+  // from the command line.)
+  ipcMain.handle('nt.voice.ensure-mic', async (): Promise<{ granted: boolean }> => {
+    if (process.platform !== 'darwin') return { granted: true };
+    try {
+      const { systemPreferences } = await import('electron');
+      if (systemPreferences.getMediaAccessStatus('microphone') === 'granted') {
+        return { granted: true };
+      }
+      return { granted: await systemPreferences.askForMediaAccess('microphone') };
+    } catch {
+      // If the check itself fails, let the renderer's getUserMedia decide.
+      return { granted: true };
+    }
+  });
   ipcMain.handle('nt.voice.audio-chunk', (_e, data: Uint8Array) => {
     voiceEngine.pushAudio(Buffer.from(data));
   });
@@ -1013,6 +1102,7 @@ function registerIpc() {
   });
   // Renderer TTS playback state (drives the pill's speaking UI).
   ipcMain.on('nt.voice.playback-started', () => {
+    pillPlaybackSpeaking = true;
     ensurePill();
     pill?.show();
     pill?.setClickMode('interactive');
@@ -1020,8 +1110,12 @@ function registerIpc() {
     win?.webContents.send('nt:voice-playback-state', true);
   });
   ipcMain.on('nt.voice.playback-ended', () => {
+    pillPlaybackSpeaking = false;
     pill?.send('nt:voice-playback-state', false);
     win?.webContents.send('nt:voice-playback-state', false);
+    // Playback was keeping the pill up while the engine idled: with both
+    // quiet now, hide it.
+    if (lastVoiceState === 'idle') pill?.hide();
   });
   // Undo the last in-page voice dictation (the renderer's "⌘Z to undo" toast).
   ipcMain.handle('nt.voice.dictate-undo', async (): Promise<boolean> => {

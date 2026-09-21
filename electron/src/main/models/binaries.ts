@@ -39,6 +39,20 @@ interface SidecarSpec {
   binaryName: string;
   /** Human-readable description used in error messages. */
   describe: string;
+  /**
+   * Exact release asset to download instead of querying the GitHub releases
+   * API. Used when the latest release no longer ships a usable macOS
+   * desktop archive (sherpa-onnx stopped publishing one after v1.11.0).
+   * Verified 2026-09-21: the v1.11.0 universal2 tarball contains
+   * bin/sherpa-onnx-offline-tts plus its companion dylibs under lib/.
+   */
+  pinnedAsset?: {
+    url: string;
+    file: string;
+    binaryName: string;
+    /** Archive subdirs whose *.dylib files are installed next to the binary. */
+    libSubdirs?: string[];
+  };
 }
 
 const SPECS: Record<SidecarName, SidecarSpec> = {
@@ -65,10 +79,24 @@ const SPECS: Record<SidecarName, SidecarSpec> = {
   },
   'sherpa-tts': {
     repo: 'k2-fsa/sherpa-onnx',
-    // e.g. sherpa-onnx-v1.12.13-osx-arm64.tar.bz2 (contains bin/sherpa-onnx-offline-tts)
+    // Pinned: upstream stopped shipping a macOS desktop tarball after
+    // v1.11.0 (latest releases carry only win/linux/android + JVM jars),
+    // so the "latest release" lookup can never match. v1.11.0's
+    // osx-universal2-shared tarball is verified to contain
+    // bin/sherpa-onnx-offline-tts (Kokoro flags compatible with our tts.ts).
+    pinnedAsset: {
+      url: 'https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.11.0/sherpa-onnx-v1.11.0-osx-universal2-shared.tar.bz2',
+      file: 'sherpa-onnx-v1.11.0-osx-universal2-shared.tar.bz2',
+      binaryName: 'sherpa-onnx-offline-tts',
+      libSubdirs: ['lib'],
+    },
     assetPatterns: [
       /^sherpa-onnx-.*-(osx|macos)-arm64\.tar\.bz2$/i,
       /^sherpa-onnx-.*-(osx|macos)-arm64\.tar\.gz$/i,
+      // Universal2 desktop archives (e.g. v1.11.0's
+      // sherpa-onnx-v1.11.0-osx-universal2-shared.tar.bz2), excluding the
+      // -no-tts variants which lack the offline TTS binary.
+      /^sherpa-onnx-.*-osx-universal2-shared\.tar\.bz2$/i,
     ],
     binaryName: 'sherpa-onnx-offline-tts',
     describe: 'sherpa-onnx offline TTS binary (macOS arm64)',
@@ -288,14 +316,21 @@ async function isExecutable(filePath: string): Promise<boolean> {
 }
 
 export function whisperManualSteps(binDir: string): string {
+  const libDir = path.join(path.dirname(binDir), "lib");
   return (
     `No prebuilt macOS binary for whisper.cpp is published in its GitHub releases, ` +
     `so on-device speech-to-text needs a manual install:\n` +
     `  1. Install whisper.cpp via Homebrew:  brew install whisper-cpp\n` +
     `  2. Copy the whisper-cli binary into place, e.g.:\n` +
-    `       cp "$(brew --prefix)/bin/whisper-cli" "${path.join(binDir, 'whisper-cli')}"\n` +
-    `       chmod +x "${path.join(binDir, 'whisper-cli')}"\n` +
-    `  (Or build whisper.cpp from source and copy build/bin/whisper-cli there.)\n` +
+    `       cp "$(brew --prefix)/bin/whisper-cli" "${path.join(binDir, "whisper-cli")}"\n` +
+    `       chmod +x "${path.join(binDir, "whisper-cli")}"\n` +
+    `  3. Copy its companion libraries too — the binary is dynamically linked\n` +
+    `     and will not start without them (this was the old missing step):\n` +
+    `       mkdir -p "${libDir}"\n` +
+    `       cp "$(brew --prefix)"/lib/libwhisper*.dylib "${libDir}/"\n` +
+    `       cp "$(brew --prefix)"/lib/libggml*.dylib "${libDir}/"\n` +
+    `  (Or build whisper.cpp from source and copy build/bin/whisper-cli plus\n` +
+    `   the libwhisper*/libggml* dylibs there.)\n` +
     `Then retry — Next Token will pick the binary up automatically.`
   );
 }
@@ -378,7 +413,10 @@ async function downloadAndInstall(
   dest: string
 ): Promise<string> {
   const spec = SPECS[name];
-  const { url, assetName } = await resolveAssetUrl(spec);
+  const pinned = spec.pinnedAsset;
+  const { url, assetName } = pinned
+    ? { url: pinned.url, assetName: pinned.file }
+    : await resolveAssetUrl(spec);
 
   const workDir = await fsp.mkdtemp(path.join(os.tmpdir(), `nt-${name}-`));
   try {
@@ -401,16 +439,67 @@ async function downloadAndInstall(
       throw e;
     }
 
-    const found = await findFile(extractDir, spec.binaryName);
+    const binaryName = pinned?.binaryName ?? spec.binaryName;
+    const found = await findFile(extractDir, binaryName);
     if (!found) {
       throw new Error(
-        `Downloaded ${assetName} but could not find ${spec.binaryName} inside it. ` +
+        `Downloaded ${assetName} but could not find ${binaryName} inside it. ` +
           `The upstream release layout may have changed.`
       );
     }
     await installBinary(found, dest, name);
+    if (pinned?.libSubdirs?.length) {
+      // Companion dynamic libraries (e.g. sherpa's libonnxruntime): the
+      // binary resolves them via @rpath relative to its own dir, so they
+      // live in <userData>/lib next to whisper's dylibs.
+      await installCompanionLibs(extractDir, pinned.libSubdirs, binDir);
+    }
     return dest;
   } finally {
     await fsp.rm(workDir, { recursive: true, force: true });
   }
+}
+
+/** Copy *.dylib files from the archive's lib subdirs into <binDir>/../lib. */
+async function installCompanionLibs(
+  extractDir: string,
+  libSubdirs: string[],
+  binDir: string
+): Promise<void> {
+  const libDir = path.join(binDir, '..', 'lib');
+  await fsp.mkdir(libDir, { recursive: true });
+  for (const sub of libSubdirs) {
+    const dir = await findDir(extractDir, sub);
+    if (!dir) continue;
+    const entries = await fsp.readdir(dir).catch(() => [] as string[]);
+    for (const e of entries) {
+      if (!/\.dylib$/.test(e)) continue;
+      try {
+        await fsp.copyFile(path.join(dir, e), path.join(libDir, e));
+      } catch {
+        /* best effort — a missing companion lib surfaces at engine start */
+      }
+    }
+  }
+}
+
+/** Recursively find a directory named `name` under `dir`. */
+async function findDir(dir: string, name: string, depth = 0): Promise<string | null> {
+  if (depth > 6) return null;
+  let entries: fs.Dirent[];
+  try {
+    entries = await fsp.readdir(dir, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  for (const e of entries) {
+    if (e.isDirectory() && e.name === name) return path.join(dir, e.name);
+  }
+  for (const e of entries) {
+    if (e.isDirectory() && !e.isSymbolicLink()) {
+      const hit = await findDir(path.join(dir, e.name), name, depth + 1);
+      if (hit) return hit;
+    }
+  }
+  return null;
 }

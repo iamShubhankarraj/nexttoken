@@ -23,6 +23,15 @@ export class VoicePillOverlay {
   private clickMode: PillClickMode = "through";
   private getPreload: () => string;
   private getUrl: () => { url: string; isFile: boolean };
+  /**
+   * Events sent before the pill page finishes loading are lost
+   * (webContents.send to a not-yet-ready renderer goes nowhere), which
+   * used to leave the pill stuck blank on first voice use. So show() and
+   * send() queue until did-finish-load, then flush in order.
+   */
+  private loaded = false;
+  private pendingShow = false;
+  private pendingSends: Array<{ channel: string; args: unknown[] }> = [];
 
   /**
    * @param getPreload absolute path to the preload bundle
@@ -63,8 +72,29 @@ export class VoicePillOverlay {
     win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
     if (isFile) void win.loadFile(url, { hash: "voice-pill" });
     else void win.loadURL(`${url}#voice-pill`);
+    this.loaded = false;
+    this.pendingShow = false;
+    this.pendingSends = [];
+    win.webContents.once("did-finish-load", () => {
+      if (this.win !== win || win.isDestroyed()) return;
+      this.loaded = true;
+      for (const p of this.pendingSends) {
+        if (!win.isDestroyed()) win.webContents.send(p.channel, ...p.args);
+      }
+      this.pendingSends = [];
+      if (this.pendingShow) {
+        this.pendingShow = false;
+        this.position();
+        if (!win.isVisible()) win.showInactive();
+      }
+    });
     win.on("closed", () => {
-      if (this.win === win) this.win = null;
+      if (this.win === win) {
+        this.win = null;
+        this.loaded = false;
+        this.pendingShow = false;
+        this.pendingSends = [];
+      }
     });
     this.win = win;
     this.position();
@@ -86,11 +116,18 @@ export class VoicePillOverlay {
 
   show(): void {
     const w = this.ensure();
+    if (!this.loaded) {
+      // Page still loading: remember the request; the did-finish-load
+      // handler shows the window once the pill can actually render.
+      this.pendingShow = true;
+      return;
+    }
     this.position();
     if (!w.isVisible()) w.showInactive();
   }
 
   hide(): void {
+    this.pendingShow = false;
     this.win?.hide();
   }
 
@@ -105,10 +142,19 @@ export class VoicePillOverlay {
     this.win?.setIgnoreMouseEvents(mode === "through", { forward: true });
   }
 
-  /** Forward an event to the pill renderer. */
+  /** Forward an event to the pill renderer (queued until the page loads). */
   send(channel: string, ...args: unknown[]): void {
     const w = this.win;
-    if (w && !w.isDestroyed()) w.webContents.send(channel, ...args);
+    if (!w || w.isDestroyed()) return;
+    if (!this.loaded) {
+      // Amplitude is ephemeral — no point replaying a stale waveform.
+      if (channel === "nt:voice-amplitude") return;
+      // Keep the queue small: only the latest event per channel matters.
+      this.pendingSends = this.pendingSends.filter((p) => p.channel !== channel);
+      this.pendingSends.push({ channel, args });
+      return;
+    }
+    w.webContents.send(channel, ...args);
   }
 
   destroy(): void {

@@ -220,7 +220,13 @@ input[type="color"].nt-color::-webkit-color-swatch {
 
 /* ============================ voice mode ============================ */
 
-/* Floating pill overlay window: fully transparent stage. */
+/* Floating pill overlay window: fully transparent stage.
+   The pill window is frameless + transparent; when the pill has nothing to
+   show it renders null, so the page background must be transparent too —
+   otherwise the window appears as a blank box. */
+body.voice-pill-window {
+  background: transparent;
+}
 .voice-pill-root {
   position: fixed;
   inset: 0;

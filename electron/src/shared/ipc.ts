@@ -696,6 +696,8 @@ export interface NextTokenAPI {
   /** Granular STT readiness for the guided voice-setup card. */
   voiceSttStatus(): Promise<{ model: boolean; binary: boolean; binarySteps: string }>;
   voiceStartListening(): Promise<void>;
+  /** Main-process macOS mic permission check (properly attributed prompt). */
+  voiceEnsureMic(): Promise<{ granted: boolean }>;
   voiceAudioChunk(data: Uint8Array): Promise<void>;
   voiceStopListening(): Promise<VoiceTranscript>;
   voiceCancelListening(): Promise<void>;

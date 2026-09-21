@@ -105,6 +105,7 @@ const api: NextTokenAPI = {
   voiceSttAvailable: () => ipcRenderer.invoke('nt.voice.stt-available'),
   voiceSttStatus: () => ipcRenderer.invoke('nt.voice.stt-status'),
   voiceStartListening: () => ipcRenderer.invoke('nt.voice.start-listening'),
+  voiceEnsureMic: () => ipcRenderer.invoke('nt.voice.ensure-mic'),
   voiceAudioChunk: (data) => ipcRenderer.invoke('nt.voice.audio-chunk', data),
   voiceStopListening: () => ipcRenderer.invoke('nt.voice.stop-listening'),
   voiceCancelListening: () => ipcRenderer.invoke('nt.voice.cancel-listening'),
