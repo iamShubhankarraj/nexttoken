@@ -32,6 +32,11 @@ import {
   startMediaPolling,
   toggleMedia,
 } from './media';
+import {
+  setupGuestSession,
+  noteImageSave,
+  revealDownload,
+} from './webengine';
 import { VoiceEngine, type CleanupPrompt } from './voice';
 import { wrapWithActing, dictateUndoJs, type LastDictation } from './voice/acting';
 import { buildTidyPlan, applyTidy } from './tidy';
@@ -48,6 +53,8 @@ let win: BrowserWindow | null = null;
 let settingsOpen = false;
 let store: Store;
 let tabs: TabManager;
+/** Current find-in-page query for the active tab (for find-next). */
+let lastFindQuery = '';
 let adblocker: AdBlocker;
 
 // -- local-model tier ---------------------------------------------------------
@@ -473,6 +480,8 @@ function snapshot(): BrowserSnapshot {
     archived: d.archived,
     sidebarCollapsed: d.sidebarCollapsed,
     agentPanelOpen: d.agentPanelOpen,
+    sidebarWidth: d.sidebarWidth ?? null,
+    agentPanelWidth: d.agentPanelWidth ?? null,
     settingsOpen
   };
 }
@@ -512,6 +521,9 @@ async function saveImageAs(wc: WebContents, srcURL: string): Promise<void> {
   });
   if (canceled || !filePath) return;
   const ses = wc.session;
+  // Arm the download manager: this flow already chose its destination, so
+  // the global will-download handler must not show another save dialog.
+  noteImageSave(srcURL);
   const onDownload = (_e: Electron.Event, item: Electron.DownloadItem) => {
     try {
       item.setSavePath(filePath);
@@ -679,6 +691,60 @@ function registerIpc() {
   // Media notch: the sidebar's video controls for the active tab.
   ipcMain.handle('nt.media.seek', (_e, ratio: number) => seekMedia(tabs, Number(ratio)));
   ipcMain.handle('nt.media.toggle', () => toggleMedia(tabs));
+  // Blocked-popup "open anyway" (from the nt.popup.blocked indicator).
+  ipcMain.handle('nt.popup.open', (_e, url: string) => {
+    if (typeof url === 'string' && url)
+      createTabActivated(store.d.activeSpaceId, url, true);
+  });
+  // Guest zoom for the active tab (the app menu's zoom roles only affect
+  // the shell window). Returns the new zoom percentage.
+  ipcMain.handle('nt.tabs.zoom', (_e, mode: 'in' | 'out' | 'reset') => {
+    const wc = tabs.activeWebContents();
+    if (!wc || wc.isDestroyed()) return 100;
+    let level = mode === 'reset' ? 0 : wc.getZoomLevel() + (mode === 'in' ? 0.5 : -0.5);
+    level = Math.min(4, Math.max(-4, level));
+    try {
+      wc.setZoomLevel(level);
+    } catch {
+      /* noop */
+    }
+    return Math.round(Math.pow(1.2, level) * 100);
+  });
+  // Find in page for the active tab's guest.
+  ipcMain.handle('nt.tabs.find', (_e, query: string) => {
+    const wc = tabs.activeWebContents();
+    lastFindQuery = typeof query === 'string' ? query : '';
+    if (wc && !wc.isDestroyed() && lastFindQuery) {
+      try {
+        wc.findInPage(lastFindQuery);
+      } catch {
+        /* noop */
+      }
+    }
+  });
+  ipcMain.handle('nt.tabs.find-next', (_e, forward: boolean) => {
+    const wc = tabs.activeWebContents();
+    if (wc && !wc.isDestroyed() && lastFindQuery) {
+      try {
+        wc.findInPage(lastFindQuery, { findNext: true, forward: forward !== false });
+      } catch {
+        /* noop */
+      }
+    }
+  });
+  ipcMain.handle('nt.tabs.find-stop', () => {
+    lastFindQuery = '';
+    const wc = tabs.activeWebContents();
+    try {
+      wc?.stopFindInPage('clearSelection');
+    } catch {
+      /* noop */
+    }
+  });
+  // Reveal a finished download in Finder.
+  ipcMain.handle('nt.downloads.reveal', (_e, targetPath: string) => {
+    if (typeof targetPath === 'string') void revealDownload(targetPath);
+  });
   ipcMain.handle('nt.tabs.pin', (_e, tabId: string, pinned: boolean) => {
     const t = tabs.tabs.get(tabId);
     if (t) { t.pinned = pinned; tabs.persistPinned(); sendSnapshot(); }
@@ -968,6 +1034,20 @@ function registerIpc() {
   });
   ipcMain.handle('nt.ui.settings-open', (_e, o: boolean) => {
     settingsOpen = o; sendSnapshot();
+  });
+  ipcMain.handle('nt.ui.sidebar-width', (_e, w: unknown) => {
+    store.d.sidebarWidth =
+      typeof w === 'number' && Number.isFinite(w)
+        ? Math.min(320, Math.max(160, Math.round(w)))
+        : null;
+    store.saveSoon(); sendSnapshot();
+  });
+  ipcMain.handle('nt.ui.agent-panel-width', (_e, w: unknown) => {
+    store.d.agentPanelWidth =
+      typeof w === 'number' && Number.isFinite(w)
+        ? Math.min(560, Math.max(300, Math.round(w)))
+        : null;
+    store.saveSoon(); sendSnapshot();
   });
 
   // -- agent -------------------------------------------------------------------
@@ -1420,6 +1500,15 @@ app.whenReady().then(() => {
     win?.webContents.send('nt.adblock.stats', s);
   });
   adblocker.attach();
+  // Real-browser engine behavior for tab guests: Chrome UA (Google
+  // distrusts the Electron token), permission prompts, and a download
+  // manager with save dialog + progress.
+  setupGuestSession({
+    getWin: () => win,
+    send: (channel, payload) => {
+      if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
+    },
+  });
   tabs = new TabManager(
     store,
     () => sendSnapshot(),
@@ -1436,6 +1525,21 @@ app.whenReady().then(() => {
       // page asked for a background tab). Nothing is ever silently dropped.
       onPopup: (sourceTab, url, disposition) => {
         createTabActivated(sourceTab.spaceId, url, disposition !== 'background-tab');
+      },
+      // A denied popup (opener-scripted about:blank): show a small
+      // blocked indicator with an "open anyway" action.
+      onPopupBlocked: (_sourceTab, url) => {
+        if (win && !win.isDestroyed())
+          win.webContents.send('nt.popup.blocked', { url });
+      },
+      // find-in-page counts, only for the active tab's guest.
+      onFindResult: (wc, result) => {
+        const active = tabs.activeWebContents();
+        if (active && active.id === wc.id && win && !win.isDestroyed())
+          win.webContents.send('nt.find.result', {
+            matches: result.matches,
+            active: result.activeMatchOrdinal,
+          });
       },
       // Full right-click context menu for guest content. Electron gives
       // webviews no menu by default, so we build the standard one here:

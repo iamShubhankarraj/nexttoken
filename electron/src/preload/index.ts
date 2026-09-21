@@ -11,6 +11,31 @@ const api: NextTokenAPI = {
   /** Media notch: seek / play-pause the active tab's video. */
   mediaSeek: (ratio) => ipcRenderer.invoke('nt.media.seek', ratio),
   mediaToggle: () => ipcRenderer.invoke('nt.media.toggle'),
+  /** Guest zoom for the active tab. */
+  tabsZoom: (mode) => ipcRenderer.invoke('nt.tabs.zoom', mode),
+  /** Find in page for the active tab. */
+  findStart: (query) => ipcRenderer.invoke('nt.tabs.find', query),
+  findNext: (forward) => ipcRenderer.invoke('nt.tabs.find-next', forward),
+  findStop: () => ipcRenderer.invoke('nt.tabs.find-stop'),
+  /** Reveal a finished download in Finder. */
+  downloadsReveal: (path) => ipcRenderer.invoke('nt.downloads.reveal', path),
+  /** Open a blocked popup anyway. */
+  popupOpenBlocked: (url) => ipcRenderer.invoke('nt.popup.open', url),
+  onDownloadsEvent: (cb) => {
+    const l = (_e: unknown, e: Parameters<Parameters<NextTokenAPI['onDownloadsEvent']>[0]>[0]) => cb(e);
+    ipcRenderer.on('nt.downloads.event', l);
+    return () => ipcRenderer.removeListener('nt.downloads.event', l);
+  },
+  onFindResult: (cb) => {
+    const l = (_e: unknown, r: Parameters<Parameters<NextTokenAPI['onFindResult']>[0]>[0]) => cb(r);
+    ipcRenderer.on('nt.find.result', l);
+    return () => ipcRenderer.removeListener('nt.find.result', l);
+  },
+  onPopupBlocked: (cb) => {
+    const l = (_e: unknown, info: Parameters<Parameters<NextTokenAPI['onPopupBlocked']>[0]>[0]) => cb(info);
+    ipcRenderer.on('nt.popup.blocked', l);
+    return () => ipcRenderer.removeListener('nt.popup.blocked', l);
+  },
   onMediaState: (cb) => {
     const l = (_e: unknown, s: Parameters<Parameters<NextTokenAPI['onMediaState']>[0]>[0]) => cb(s);
     ipcRenderer.on('nt.media.state', l);
@@ -57,6 +82,8 @@ const api: NextTokenAPI = {
   uiSetSidebarCollapsed: (c) => ipcRenderer.invoke('nt.ui.sidebar-collapsed', c),
   uiSetAgentPanelOpen: (o) => ipcRenderer.invoke('nt.ui.agent-panel', o),
   uiSetSettingsOpen: (o) => ipcRenderer.invoke('nt.ui.settings-open', o),
+  uiSetSidebarWidth: (w) => ipcRenderer.invoke('nt.ui.sidebar-width', w),
+  uiSetAgentPanelWidth: (w) => ipcRenderer.invoke('nt.ui.agent-panel-width', w),
   // agent
   agentChat: (message, opts) => ipcRenderer.invoke('nt.agent.chat', message, opts),
   agentCancel: (runId) => ipcRenderer.invoke('nt.agent.cancel', runId),

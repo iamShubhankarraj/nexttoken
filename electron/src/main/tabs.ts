@@ -18,6 +18,20 @@ export interface TabHooks {
    * do with it (open a real tab); tabs.ts just routes the request.
    */
   onPopup?: (sourceTab: TabRec, url: string, disposition: string) => void;
+  /**
+   * Fired when a popup is denied (e.g. an opener-scripted about:blank
+   * window we can't host). Main shows a blocked-popup indicator with an
+   * "open anyway" action — nothing is ever silently dropped.
+   */
+  onPopupBlocked?: (sourceTab: TabRec, url: string) => void;
+  /**
+   * Fired when find-in-page reports match counts for a guest. Main
+   * forwards it to the renderer only when it's the active tab.
+   */
+  onFindResult?: (
+    wc: WebContents,
+    result: { matches: number; activeMatchOrdinal: number },
+  ) => void;
 }
 
 export interface TabRec {
@@ -185,13 +199,36 @@ export class TabManager {
       // Downloads (<a download>) must flow through, not become tabs. The
       // disposition is cast because this Electron's typings omit it.
       if ((disposition as string) === 'save-to-disk') return { action: 'allow' };
-      if (!url || url === 'about:blank') return { action: 'deny' };
+      // Opener-scripted about:blank windows (common in OAuth / sign-in
+      // flows: window.open('about:blank') then popup.location = url) can't
+      // be hosted as a tab with a live opener, so denying them used to
+      // make buttons look dead. Surface a blocked-popup indicator with an
+      // "open anyway" action instead of dropping the click silently.
+      if (!url || url === 'about:blank') {
+        try {
+          this.hooks?.onPopupBlocked?.(tab, url || 'about:blank');
+        } catch {
+          /* never break the guest on a hook failure */
+        }
+        return { action: 'deny' };
+      }
       try {
         this.hooks?.onPopup?.(tab, url, disposition);
       } catch {
         /* never break the guest on a hook failure */
       }
       return { action: 'deny' };
+    });
+    // find-in-page match counts, forwarded to the renderer for the find bar.
+    wc.on('found-in-page', (_e, result) => {
+      try {
+        this.hooks?.onFindResult?.(wc, {
+          matches: result.matches ?? 0,
+          activeMatchOrdinal: result.activeMatchOrdinal ?? 0,
+        });
+      } catch {
+        /* noop */
+      }
     });
     // Site favicon for the sidebar — the page's own icon, cached per host.
     // No extra network requests: Electron hands us the resolved favicon.

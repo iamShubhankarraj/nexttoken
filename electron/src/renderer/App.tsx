@@ -19,12 +19,14 @@
  *   Esc …………… close topmost overlay / cancel split-pick
  */
 
-import { Loader2, Plus } from "lucide-react";
+import { Loader2, Plus, ShieldAlert, X } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { BrowserProvider, useBrowser } from "./BrowserContext";
 import { AgentPanel } from "./components/AgentPanel";
 import { AgentActingOverlay } from "./components/AgentActingOverlay";
 import { CommandBar } from "./components/CommandBar";
+import { DownloadPill } from "./components/DownloadPill";
+import { FindBar } from "./components/FindBar";
 import { ImportDialog } from "./components/ImportDialog";
 import { NewTabHero } from "./components/NewTabHero";
 import { Settings } from "./components/Settings";
@@ -66,6 +68,12 @@ function Shell() {
   );
   // Delight moment: gentle overshoot when the space (and theme) changes.
   const [delight, setDelight] = useState(false);
+  // Find-in-page bar (⌘F) for the active tab.
+  const [findOpen, setFindOpen] = useState(false);
+  // Blocked-popup indicator (main denied an opener-scripted window).
+  const [popupBlocked, setPopupBlocked] = useState<{ url: string } | null>(
+    null,
+  );
   const activeSpaceId = snapshot?.activeSpaceId;
 
   useEffect(() => {
@@ -98,11 +106,35 @@ function Shell() {
     return () => off?.();
   }, []);
 
+  const closeFind = useCallback(() => {
+    setFindOpen(false);
+    void nt().findStop();
+  }, []);
+
   const closeOverlays = useCallback(() => {
-    if (commandOpen) setCommandOpen(false);
+    if (findOpen) closeFind();
+    else if (commandOpen) setCommandOpen(false);
     else if (splitPick) setSplitPick(false);
     else if (snapshot?.settingsOpen) void nt().uiSetSettingsOpen(false);
-  }, [commandOpen, splitPick, setSplitPick, snapshot?.settingsOpen]);
+  }, [commandOpen, splitPick, setSplitPick, snapshot?.settingsOpen, findOpen, closeFind]);
+
+  // Main denied an opener-scripted popup — show the blocked indicator.
+  useEffect(() => {
+    let off: (() => void) | undefined;
+    try {
+      off = nt().onPopupBlocked((info) => setPopupBlocked({ url: info.url }));
+    } catch {
+      /* bridge unavailable */
+    }
+    return () => off?.();
+  }, []);
+
+  // Auto-dismiss the blocked-popup indicator after a while.
+  useEffect(() => {
+    if (!popupBlocked) return;
+    const t = window.setTimeout(() => setPopupBlocked(null), 12000);
+    return () => window.clearTimeout(t);
+  }, [popupBlocked]);
 
   // Global shortcuts.
   useEffect(() => {
@@ -128,6 +160,31 @@ function Shell() {
       if (e.key === "Escape") {
         closeOverlays();
         return;
+      }
+      // Find in page (⌘F) and guest zoom (⌘= / ⌘- / ⌘0). Find is skipped
+      // while typing in our own inputs; zoom is harmless anywhere.
+      if (mod && !e.shiftKey && !e.altKey) {
+        const k2 = e.key.toLowerCase();
+        if (k2 === "f" && !typing) {
+          e.preventDefault();
+          setFindOpen(true);
+          return;
+        }
+        if (k2 === "=" || k2 === "+") {
+          e.preventDefault();
+          void nt().tabsZoom("in");
+          return;
+        }
+        if (k2 === "-" || k2 === "_") {
+          e.preventDefault();
+          void nt().tabsZoom("out");
+          return;
+        }
+        if (k2 === "0") {
+          e.preventDefault();
+          void nt().tabsZoom("reset");
+          return;
+        }
       }
       if (!mod || typing) return;
 
@@ -253,6 +310,35 @@ function Shell() {
 
       {snapshot.agentPanelOpen && <AgentPanel />}
       {commandOpen && <CommandBar onClose={() => setCommandOpen(false)} />}
+      {findOpen && <FindBar onClose={closeFind} />}
+      <DownloadPill />
+      {popupBlocked && (
+        <div className="nt-toast" role="alert">
+          <ShieldAlert size={15} strokeWidth={2} style={{ color: "var(--nt-accent)" }} />
+          <span className="nt-toast-text">
+            A popup was blocked. Some sign-in buttons open this way.
+          </span>
+          <button
+            type="button"
+            className="nt-toast-action"
+            onClick={() => {
+              const url = popupBlocked.url;
+              setPopupBlocked(null);
+              void nt().popupOpenBlocked(url);
+            }}
+          >
+            Open anyway
+          </button>
+          <button
+            type="button"
+            className="nt-toast-dismiss"
+            onClick={() => setPopupBlocked(null)}
+            aria-label="Dismiss"
+          >
+            <X size={13} strokeWidth={2} />
+          </button>
+        </div>
+      )}
       {snapshot.settingsOpen && (
         <Settings
           onClose={() => void nt().uiSetSettingsOpen(false)}

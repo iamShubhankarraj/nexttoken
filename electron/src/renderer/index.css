@@ -326,7 +326,7 @@ input[type="color"].nt-color::-webkit-color-swatch {
 }
 
 /* Toolbar voice chip (temporary, only while voice is active) */
-.voice-chip { animation: voice-pill-in 0.22s ease-out; }
+.voice-chip { position: relative; animation: voice-pill-in 0.22s ease-out; }
 
 /* Viewport acting overlay (above the webview) */
 .acting-overlay {
@@ -781,4 +781,519 @@ input[type="color"].nt-color::-webkit-color-swatch {
   .nt-more-pill {
     transition: none;
   }
+}
+
+/* ------------------------------------------------------------------
+ * Thinking agent button: glassy pill + ember orb core.
+ * States: idle (breathing) / thinking (border sweep + orbiting
+ * particles + glow + label shimmer) / web (radiating signal pings).
+ * ------------------------------------------------------------------ */
+@property --nt-sweep-a {
+  syntax: "<angle>";
+  initial-value: 0deg;
+  inherits: false;
+}
+
+.nt-agent-btn {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 13px 6px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--nt-border);
+  background: color-mix(in srgb, var(--nt-bg-subtle) 68%, transparent);
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+  cursor: pointer;
+  transition: border-color 0.25s ease, background 0.25s ease, box-shadow 0.25s ease;
+  font: inherit;
+  line-height: 1;
+}
+.nt-agent-btn:hover {
+  border-color: color-mix(in srgb, var(--nt-accent) 55%, var(--nt-border));
+  box-shadow: 0 0 12px rgba(232, 163, 61, 0.12);
+}
+.nt-agent-btn.is-open {
+  background: var(--nt-accent-soft);
+  border-color: color-mix(in srgb, var(--nt-accent) 60%, transparent);
+}
+.nt-agent-label {
+  font-size: 12.5px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  color: var(--nt-text-2);
+}
+.nt-agent-btn.is-open .nt-agent-label {
+  color: var(--nt-accent);
+}
+
+/* Rotating ember border sweep while the agent works. */
+.nt-agent-btn.is-working::before,
+.voice-chip.is-live::before {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  padding: 1.5px;
+  background: conic-gradient(
+    from var(--nt-sweep-a),
+    transparent 0deg,
+    transparent 245deg,
+    rgba(232, 163, 61, 0.18) 278deg,
+    #e8a33d 308deg,
+    #ffe3b0 328deg,
+    #e8a33d 348deg,
+    transparent 360deg
+  );
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+  animation: nt-sweep-rotate 1.8s linear infinite;
+}
+.nt-agent-btn.is-web::before {
+  animation-duration: 1.1s;
+}
+@keyframes nt-sweep-rotate {
+  to {
+    --nt-sweep-a: 360deg;
+  }
+}
+
+/* The ember orb. */
+.nt-agent-orb {
+  position: relative;
+  width: 18px;
+  height: 18px;
+  flex: none;
+  display: block;
+}
+.nt-agent-orb-core {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle at 35% 30%,
+    #ffe9c4 0%,
+    #e8a33d 48%,
+    #8a4d0e 100%
+  );
+  box-shadow:
+    0 0 7px rgba(232, 163, 61, 0.45),
+    inset 0 -1px 2px rgba(90, 45, 0, 0.45);
+  animation: nt-orb-breathe 3.4s ease-in-out infinite;
+}
+@keyframes nt-orb-breathe {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.08);
+  }
+}
+.is-working .nt-agent-orb-core {
+  animation: nt-orb-work 1.6s ease-in-out infinite;
+  box-shadow:
+    0 0 12px rgba(232, 163, 61, 0.8),
+    0 0 26px rgba(232, 163, 61, 0.35),
+    inset 0 -1px 3px rgba(90, 45, 0, 0.5);
+}
+@keyframes nt-orb-work {
+  0%,
+  100% {
+    transform: scale(1);
+    filter: saturate(1);
+  }
+  50% {
+    transform: scale(1.14);
+    filter: saturate(1.25);
+  }
+}
+
+/* Idle breathing ring — hidden while working. */
+.nt-agent-orb-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 1px solid rgba(232, 163, 61, 0.55);
+  pointer-events: none;
+  animation: nt-ring-breathe 3.4s ease-out infinite;
+}
+@keyframes nt-ring-breathe {
+  0% {
+    transform: scale(1);
+    opacity: 0.55;
+  }
+  70%,
+  100% {
+    transform: scale(1.9);
+    opacity: 0;
+  }
+}
+.is-working .nt-agent-orb-ring {
+  display: none;
+}
+
+/* Orbiting particles (thinking) — tilted gyroscope, counter-rotating. */
+.nt-agent-orb-orbit {
+  position: absolute;
+  inset: -4px;
+  transform: rotateX(64deg);
+  transform-style: preserve-3d;
+  opacity: 0;
+  transition: opacity 0.4s ease;
+  pointer-events: none;
+}
+.is-working .nt-agent-orb-orbit {
+  opacity: 1;
+}
+.nt-agent-orb-orbit i {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 3px;
+  height: 3px;
+  margin: -1.5px 0 0 -1.5px;
+  border-radius: 50%;
+  background: #ffd9a0;
+  box-shadow: 0 0 5px 1px rgba(232, 163, 61, 0.9);
+}
+.nt-agent-orb-orbit i:nth-child(1) {
+  animation: nt-orbit-a 1.15s linear infinite;
+}
+.nt-agent-orb-orbit i:nth-child(2) {
+  width: 2.5px;
+  height: 2.5px;
+  margin: -1.25px 0 0 -1.25px;
+  animation: nt-orbit-b 1.7s linear infinite reverse;
+}
+.nt-agent-orb-orbit i:nth-child(3) {
+  width: 2px;
+  height: 2px;
+  margin: -1px 0 0 -1px;
+  opacity: 0.85;
+  animation: nt-orbit-c 2.4s linear infinite;
+}
+@keyframes nt-orbit-a {
+  from {
+    transform: rotate(0deg) translateX(12px);
+  }
+  to {
+    transform: rotate(360deg) translateX(12px);
+  }
+}
+@keyframes nt-orbit-b {
+  from {
+    transform: rotate(120deg) translateX(12px);
+  }
+  to {
+    transform: rotate(480deg) translateX(12px);
+  }
+}
+@keyframes nt-orbit-c {
+  from {
+    transform: rotate(240deg) translateX(12px);
+  }
+  to {
+    transform: rotate(600deg) translateX(12px);
+  }
+}
+
+/* Radiating signal pings — the "internet use" state. */
+.nt-agent-orb-ping {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  transition: opacity 0.4s ease;
+  pointer-events: none;
+}
+.is-web .nt-agent-orb-ping {
+  opacity: 1;
+}
+.nt-agent-orb-ping::before,
+.nt-agent-orb-ping::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 1.5px solid rgba(232, 163, 61, 0.75);
+  animation: nt-ping 1.7s cubic-bezier(0.2, 0.6, 0.35, 1) infinite;
+}
+.nt-agent-orb-ping::after {
+  animation-delay: 0.85s;
+}
+@keyframes nt-ping {
+  0% {
+    transform: scale(1);
+    opacity: 0.9;
+  }
+  100% {
+    transform: scale(2.6);
+    opacity: 0;
+  }
+}
+
+/* Label shimmer while the agent works. */
+.nt-agent-btn.is-working .nt-agent-label {
+  background: linear-gradient(
+    100deg,
+    var(--nt-text-2) 35%,
+    #ffe3b0 50%,
+    var(--nt-text-2) 65%
+  );
+  background-size: 220% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: nt-label-shimmer 2.4s linear infinite;
+}
+@keyframes nt-label-shimmer {
+  to {
+    background-position: -220% 0;
+  }
+}
+
+/* ------------------------------------------------------------------
+ * Sidebar + agent-panel resize handles: slim ember affordance on the
+ * inner edge, ew-resize cursor, double-click resets to automatic.
+ * ------------------------------------------------------------------ */
+.nt-resize-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 10px;
+  z-index: 30;
+  cursor: ew-resize;
+  touch-action: none;
+  background: transparent;
+  border: 0;
+  padding: 0;
+}
+.nt-resize-handle::after {
+  content: "";
+  position: absolute;
+  top: 6px;
+  bottom: 6px;
+  left: 50%;
+  width: 2px;
+  transform: translateX(-50%);
+  border-radius: 2px;
+  background: var(--nt-accent);
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.nt-resize-handle:hover::after,
+.nt-resize-handle.nt-dragging::after,
+.nt-resize-handle:focus-visible::after {
+  opacity: 1;
+}
+.nt-resize-handle:focus-visible {
+  outline: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nt-agent-btn.is-working::before,
+  .voice-chip.is-live::before,
+  .nt-agent-orb-core,
+  .nt-agent-orb-ring,
+  .nt-agent-orb-orbit i,
+  .nt-agent-orb-ping::before,
+  .nt-agent-orb-ping::after,
+  .nt-agent-btn.is-working .nt-agent-label {
+    animation: none;
+  }
+  .is-working .nt-agent-orb-orbit,
+  .is-web .nt-agent-orb-ping {
+    opacity: 1;
+  }
+}
+
+/* ------------------------------------------------------------------
+ * Find bar (⌘F) — floats top-right under the toolbar.
+ * ------------------------------------------------------------------ */
+.nt-findbar {
+  position: fixed;
+  top: 52px;
+  right: 16px;
+  z-index: 80;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 6px 6px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--nt-border);
+  background: color-mix(in srgb, var(--nt-bg-subtle) 92%, transparent);
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+  animation: voice-pill-in 0.18s ease-out;
+}
+.nt-findbar input {
+  width: 180px;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--nt-text-1);
+  font-size: 13px;
+}
+.nt-findbar input::placeholder {
+  color: var(--nt-text-3);
+}
+.nt-findbar-count {
+  font-size: 11.5px;
+  color: var(--nt-text-3);
+  white-space: nowrap;
+  min-width: 8px;
+}
+.nt-findbar-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  border: 0;
+  background: transparent;
+  color: var(--nt-text-2);
+  cursor: pointer;
+}
+.nt-findbar-btn:hover {
+  background: var(--nt-bg-hover);
+  color: var(--nt-text-1);
+}
+
+/* ------------------------------------------------------------------
+ * Downloads pill — floating download manager, bottom-right.
+ * ------------------------------------------------------------------ */
+.nt-download-pill {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 80;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 300px;
+  padding: 8px;
+  border-radius: 14px;
+  border: 1px solid var(--nt-border);
+  background: color-mix(in srgb, var(--nt-bg-subtle) 94%, transparent);
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+  animation: voice-pill-in 0.18s ease-out;
+}
+.nt-download-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px;
+}
+.nt-download-icon {
+  display: flex;
+  flex-shrink: 0;
+}
+.nt-download-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.nt-download-name {
+  font-size: 12.5px;
+  color: var(--nt-text-1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.nt-download-sub {
+  font-size: 11px;
+  color: var(--nt-text-3);
+}
+.nt-download-bar {
+  display: block;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--nt-bg-hover);
+  overflow: hidden;
+}
+.nt-download-fill {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: linear-gradient(90deg, #c77f1f, var(--nt-accent));
+  transition: width 0.2s linear;
+}
+.nt-download-reveal {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  border: 1px solid var(--nt-border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--nt-text-2);
+  font-size: 11.5px;
+  padding: 4px 8px;
+  cursor: pointer;
+}
+.nt-download-reveal:hover {
+  border-color: var(--nt-accent);
+  color: var(--nt-accent);
+}
+
+/* ------------------------------------------------------------------
+ * Transient toast (blocked popup indicator), bottom-center.
+ * ------------------------------------------------------------------ */
+.nt-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 20px;
+  transform: translateX(-50%);
+  z-index: 90;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: min(520px, 80vw);
+  padding: 10px 10px 10px 14px;
+  border-radius: 14px;
+  border: 1px solid var(--nt-border);
+  background: color-mix(in srgb, var(--nt-bg-subtle) 94%, transparent);
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.4);
+  animation: voice-pill-in 0.2s ease-out;
+}
+.nt-toast-text {
+  font-size: 12.5px;
+  color: var(--nt-text-1);
+}
+.nt-toast-action {
+  flex-shrink: 0;
+  border: 0;
+  border-radius: 9px;
+  background: var(--nt-accent);
+  color: var(--nt-accent-text);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+.nt-toast-action:hover {
+  filter: brightness(1.08);
+}
+.nt-toast-dismiss {
+  flex-shrink: 0;
+  display: flex;
+  border: 0;
+  background: transparent;
+  color: var(--nt-text-3);
+  cursor: pointer;
+  padding: 4px;
+}
+.nt-toast-dismiss:hover {
+  color: var(--nt-text-1);
 }

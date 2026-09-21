@@ -15,10 +15,16 @@
  *
  * Respects prefers-reduced-motion (snaps instead of springing).
  */
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 
 export const SB_REST = 180;
 export const SB_MAX = 235;
+/** Drag-resize limits for the main sidebar (px). */
+export const SB_DRAG_MIN = 160;
+export const SB_DRAG_MAX = 320;
+/** Drag-resize limits for the agent panel (px). */
+export const AGENT_DRAG_MIN = 300;
+export const AGENT_DRAG_MAX = 560;
 /** Cursor distance (px) past the sidebar's right edge that still counts as "approaching". */
 const PROXIMITY = 130;
 /** Spring constants: slight overshoot, settles in ~0.8-1s. */
@@ -53,6 +59,10 @@ interface Engine {
   mt: number;
   mvv: number;
   mTarget: number;
+  /** Explicit user-set width (drag resize). When set, auto-breathing is off. */
+  dragW: number | null;
+  /** True while a drag-resize pointer is down (width follows the pointer). */
+  dragging: boolean;
   raf: number;
   running: boolean;
   h: number;
@@ -125,12 +135,27 @@ export function buildSeamPaths(
   };
 }
 
+/** Imperative controls for the sidebar's explicit (user-dragged) width. */
+export interface LiquidSidebarApi {
+  /** Begin a drag-resize gesture (pauses the auto-breathing spring). */
+  beginDrag: () => void;
+  /** Follow the pointer during a drag — width morphs the seam live. */
+  dragTo: (widthPx: number) => void;
+  /** End the drag. Returns the settled explicit width (px). */
+  endDrag: () => number | null;
+  /** Clear the explicit width and return to auto-breathing. */
+  resetWidth: () => void;
+  /** Whether an explicit width is currently set. */
+  isExplicit: () => boolean;
+}
+
 export function useLiquidSidebar(
   refs: LiquidSidebarRefs,
   activeTabId: string | undefined,
   enabled: boolean,
   mediaActive = false,
-): void {
+  initialWidth: number | null = null,
+): LiquidSidebarApi {
   const refsRef = useRef(refs);
   refsRef.current = refs;
   const activeTabIdRef = useRef(activeTabId);
@@ -150,6 +175,8 @@ export function useLiquidSidebar(
       mt: 0,
       mvv: 0,
       mTarget: 0,
+      dragW: null,
+      dragging: false,
       raf: 0,
       running: false,
       h: 0,
@@ -277,6 +304,65 @@ export function useLiquidSidebar(
     engineRef.current = s;
   }
 
+  // Imperative drag-resize API. All writes go straight to the engine (refs +
+  // direct DOM writes), so a drag never re-renders React — the seam path is
+  // rebuilt from the live width every frame at 60fps.
+  const api = useMemo<LiquidSidebarApi>(
+    () => ({
+      beginDrag: () => {
+        const s = engineRef.current;
+        if (!s) return;
+        s.dragging = true;
+        s.v = 0;
+      },
+      dragTo: (widthPx: number) => {
+        const s = engineRef.current;
+        if (!s || !s.dragging) return;
+        const c = Math.min(SB_DRAG_MAX, Math.max(SB_DRAG_MIN, widthPx));
+        s.dragW = c;
+        s.target = c;
+        s.w = c;
+        s.v = 0;
+        s.paint();
+      },
+      endDrag: () => {
+        const s = engineRef.current;
+        if (!s) return null;
+        s.dragging = false;
+        s.kick();
+        return s.dragW;
+      },
+      resetWidth: () => {
+        const s = engineRef.current;
+        if (!s) return;
+        s.dragging = false;
+        s.dragW = null;
+        s.target = SB_REST;
+        s.kick();
+      },
+      isExplicit: () => engineRef.current?.dragW != null,
+    }),
+    [],
+  );
+
+  // Apply the persisted explicit width once the engine is enabled. The
+  // persisted width survives the snapshot round-trip, so the guard here only
+  // prevents re-applying on re-renders — a drag that sets dragW itself is
+  // the source of truth while active.
+  const appliedInitialRef = useRef(false);
+  useEffect(() => {
+    if (!enabled || appliedInitialRef.current) return;
+    appliedInitialRef.current = true;
+    const s = engineRef.current;
+    if (!s || initialWidth == null) return;
+    const c = Math.min(SB_DRAG_MAX, Math.max(SB_DRAG_MIN, initialWidth));
+    s.dragW = c;
+    s.target = c;
+    s.w = c;
+    s.v = 0;
+    s.paint();
+  }, [enabled, initialWidth]);
+
   useEffect(() => {
     const s = engineRef.current;
     if (!s) return;
@@ -302,7 +388,9 @@ export function useLiquidSidebar(
 
     // Cursor proximity -> width target. The sidebar spans 0..w, so anything
     // within PROXIMITY px of its right edge counts as "approaching".
+    // An explicit (user-dragged) width wins over breathing entirely.
     const onMove = (e: MouseEvent) => {
+      if (s.dragging || s.dragW != null) return;
       const t = e.clientX < s.w + PROXIMITY ? SB_MAX : SB_REST;
       if (t !== s.target) {
         s.target = t;
@@ -310,6 +398,7 @@ export function useLiquidSidebar(
       }
     };
     const onLeave = () => {
+      if (s.dragW != null) return;
       if (s.target !== SB_REST) {
         s.target = SB_REST;
         s.kick();
@@ -317,6 +406,7 @@ export function useLiquidSidebar(
     };
     // Keyboard users: expand while focus is inside the sidebar.
     const onFocusIn = (e: FocusEvent) => {
+      if (s.dragW != null) return;
       if ((e.target as HTMLElement | null)?.closest?.("aside.nt-liquid-sidebar")) {
         if (s.target !== SB_MAX) {
           s.target = SB_MAX;
@@ -325,6 +415,7 @@ export function useLiquidSidebar(
       }
     };
     const onFocusOut = () => {
+      if (s.dragW != null) return;
       if (s.target !== SB_REST) {
         s.target = SB_REST;
         s.kick();
@@ -384,4 +475,6 @@ export function useLiquidSidebar(
     s.mTarget = mediaActive ? 1 : 0;
     s.kick();
   }, [mediaActive, enabled]);
+
+  return api;
 }

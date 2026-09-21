@@ -98,6 +98,9 @@ export interface BrowserSnapshot {
   sidebarCollapsed: boolean;
   agentPanelOpen: boolean;
   settingsOpen: boolean;
+  /** Explicit sidebar widths (px), null = automatic. */
+  sidebarWidth: number | null;
+  agentPanelWidth: number | null;
 }
 
 /** A tab swept up by auto-archive (or manually). Restorable. */
@@ -623,6 +626,26 @@ export interface MediaState {
 // The window.nt API (implemented in preload via contextBridge)
 // ---------------------------------------------------------------------------
 
+/** A guest-session file download, mirrored to the renderer UI. */
+export type DownloadUiEvent =
+  | { kind: 'started'; id: string; filename: string }
+  | {
+      kind: 'progress';
+      id: string;
+      filename: string;
+      received: number;
+      total: number;
+      percent: number;
+    }
+  | { kind: 'done'; id: string; filename: string; path: string }
+  | { kind: 'failed'; id: string; filename: string; reason?: string };
+
+/** find-in-page match counts for the active tab's guest. */
+export interface FindResult {
+  matches: number;
+  active: number;
+}
+
 export interface NextTokenAPI {
   // tabs
   tabsCreate(opts?: { spaceId?: string; url?: string }): Promise<string>;
@@ -634,6 +657,24 @@ export interface NextTokenAPI {
   mediaSeek(ratio: number): Promise<void>;
   /** Toggle play/pause on the active tab's video. */
   mediaToggle(): Promise<{ paused: boolean }>;
+  /** Zoom the active tab's guest content; returns the new zoom percent. */
+  tabsZoom(mode: 'in' | 'out' | 'reset'): Promise<number>;
+  /** Start find-in-page on the active tab. */
+  findStart(query: string): Promise<void>;
+  /** Next/previous find-in-page match. */
+  findNext(forward: boolean): Promise<void>;
+  /** Stop find-in-page and clear the selection. */
+  findStop(): Promise<void>;
+  /** Reveal a finished download in Finder. */
+  downloadsReveal(path: string): Promise<void>;
+  /** Open a blocked popup anyway (from the blocked-popup indicator). */
+  popupOpenBlocked(url: string): Promise<void>;
+  /** Download progress/completion events for the downloads pill. */
+  onDownloadsEvent(cb: (e: DownloadUiEvent) => void): () => void;
+  /** find-in-page match counts for the active tab. */
+  onFindResult(cb: (r: FindResult) => void): () => void;
+  /** A popup was blocked (opener-scripted window we can't host). */
+  onPopupBlocked(cb: (info: { url: string }) => void): () => void;
   /** Media state pushed from main ~1Hz while the active tab has a video. */
   onMediaState(cb: (s: MediaState) => void): () => void;
   tabsPin(tabId: string, pinned: boolean): Promise<void>;
@@ -686,6 +727,10 @@ export interface NextTokenAPI {
   uiSetSidebarCollapsed(collapsed: boolean): Promise<void>;
   uiSetAgentPanelOpen(open: boolean): Promise<void>;
   uiSetSettingsOpen(open: boolean): Promise<void>;
+  /** Persist an explicit sidebar width (px); null clears it back to automatic. */
+  uiSetSidebarWidth(width: number | null): Promise<void>;
+  /** Persist an explicit agent-panel width (px); null clears it back to default. */
+  uiSetAgentPanelWidth(width: number | null): Promise<void>;
   // agent
   agentChat(message: string, opts?: { voice?: boolean }): Promise<string>;
   agentCancel(runId: string): Promise<void>;

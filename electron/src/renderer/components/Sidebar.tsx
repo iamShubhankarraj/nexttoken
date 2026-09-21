@@ -112,12 +112,67 @@ export function Sidebar() {
     }),
     [],
   );
-  useLiquidSidebar(
+  const liquidApi = useLiquidSidebar(
     liquidRefs,
     activeSpace?.activeTabId ?? undefined,
     !!snapshot && !!activeSpace,
     !!media?.hasVideo,
+    snapshot?.sidebarWidth ?? null,
   );
+
+  // Drag-resize the sidebar from its right edge. The engine is driven
+  // imperatively (no React re-render per pixel); the liquid seam re-morphs
+  // live from the width each frame. Double-click the handle to clear the
+  // explicit width and return to auto-breathing.
+  const resizeRaf = useRef(0);
+  const resizeTargetX = useRef(0);
+  const resizeHandleRef = useRef<HTMLDivElement | null>(null);
+  const onResizePointerDown = (e: React.PointerEvent) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const aside = asideRef.current;
+    if (!aside) return;
+    try {
+      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    } catch {
+      /* capture is best-effort */
+    }
+    liquidApi.beginDrag();
+    resizeHandleRef.current?.classList.add("nt-dragging");
+    resizeTargetX.current = e.clientX;
+    const leftOf = () => aside.getBoundingClientRect().left;
+    const move = (ev: PointerEvent) => {
+      resizeTargetX.current = ev.clientX;
+      if (!resizeRaf.current) {
+        resizeRaf.current = requestAnimationFrame(() => {
+          resizeRaf.current = 0;
+          liquidApi.dragTo(resizeTargetX.current - leftOf());
+        });
+      }
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
+      if (resizeRaf.current) {
+        cancelAnimationFrame(resizeRaf.current);
+        resizeRaf.current = 0;
+      }
+      resizeHandleRef.current?.classList.remove("nt-dragging");
+      const w = liquidApi.endDrag();
+      if (w != null) void nt().uiSetSidebarWidth(Math.round(w));
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
+  };
+  const onResizeDoubleClick = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    liquidApi.resetWidth();
+    void nt().uiSetSidebarWidth(null);
+  };
 
   // Stable drag id readable inside memoized callbacks.
   const dragIdRef = useRef<string | null>(null);
@@ -281,6 +336,21 @@ export function Sidebar() {
           while the active tab has a playable video. Rides the seam via
           --media-x / --media-y written by the liquid engine. */}
       <MediaNotch media={media} />
+
+      {/* Resize handle on the sidebar's right edge. Slim ember affordance
+          on hover; drag to set an explicit width (160-320px), double-click
+          to return to auto-breathing. */}
+      <div
+        ref={resizeHandleRef}
+        className="nt-resize-handle"
+        style={{ right: -4 }}
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize sidebar"
+        title="Drag to resize sidebar · double-click to reset"
+        onPointerDown={onResizePointerDown}
+        onDoubleClick={onResizeDoubleClick}
+      />
 
       <div className="relative z-[1] flex h-full min-h-0 flex-col">
         {/* Traffic-light / drag zone (lights are native: hiddenInset @14,14). */}

@@ -59,6 +59,9 @@ interface Persisted {
   activeSpaceId: string;
   sidebarCollapsed: boolean;
   agentPanelOpen: boolean;
+  /** Explicit user-set widths (px), or null for the automatic behavior. */
+  sidebarWidth: number | null;
+  agentPanelWidth: number | null;
   /** spaceId -> tokens. Seeded from DEFAULT_LIGHT_TOKENS (Dia-inspired calm light) + palette. */
   themes: Record<string, ThemeTokens>;
   voice: {
@@ -159,6 +162,8 @@ function defaults(): Persisted {
     activeSpaceId: spaces[0].id,
     sidebarCollapsed: false,
     agentPanelOpen: false,
+    sidebarWidth: null,
+    agentPanelWidth: null,
     themes,
     voice: {
       enabled: true,

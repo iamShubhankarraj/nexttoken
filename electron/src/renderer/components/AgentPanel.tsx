@@ -22,7 +22,6 @@ import {
   Mic,
   Plus,
   Send,
-  Sparkles,
   Square,
   Wrench,
   X,
@@ -45,7 +44,16 @@ import { VoiceOrb, type VoiceOrbMode } from "./VoiceOrb";
 import { VoiceSteps } from "./VoiceSteps";
 import { registerBrainVoiceControl } from "../hooks/useBrainAudio";
 import { domainOf, nt } from "../nt";
+import { useAgentPhase } from "../hooks/useAgentPhase";
+import {
+  AGENT_DRAG_MAX,
+  AGENT_DRAG_MIN,
+} from "../hooks/useLiquidSidebar";
+import { ThinkingOrb } from "./ThinkingAgentButton";
 import { ModelSwitcher } from "./ModelSwitcher";
+
+/** Default agent-panel width (px) when no explicit width is set. */
+const AGENT_DEFAULT_W = 400;
 
 /** One-line label for a brain pipeline event in the trace feed. */
 function brainEventLabel(e: BrainEvent): string {
@@ -477,6 +485,75 @@ export function AgentPanel() {
   }, []);
 
   const busy = activeRun !== null;
+  const agentPhase = useAgentPhase();
+
+  // Drag-resize the panel from its left edge. Width is written directly to
+  // the aside (no React re-render per pixel); the explicit width commits to
+  // main on pointer-up so it persists. Double-click resets to default.
+  const panelRef = useRef<HTMLElement | null>(null);
+  const panelResizeRef = useRef<HTMLDivElement | null>(null);
+  const panelDrag = useRef<{
+    startX: number;
+    startW: number;
+    raf: number;
+    targetX: number;
+  } | null>(null);
+  const onPanelResizeDown = (e: React.PointerEvent) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const aside = panelRef.current;
+    if (!aside) return;
+    try {
+      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    } catch {
+      /* capture is best-effort */
+    }
+    panelResizeRef.current?.classList.add("nt-dragging");
+    const startX = e.clientX;
+    const startW = aside.getBoundingClientRect().width;
+    panelDrag.current = { startX, startW, raf: 0, targetX: startX };
+    const apply = () => {
+      const d = panelDrag.current;
+      const el = panelRef.current;
+      if (!d || !el) return;
+      const w = Math.min(
+        AGENT_DRAG_MAX,
+        Math.max(AGENT_DRAG_MIN, d.startW + (d.startX - d.targetX)),
+      );
+      el.style.width = `${w.toFixed(1)}px`;
+    };
+    const move = (ev: PointerEvent) => {
+      const d = panelDrag.current;
+      if (!d) return;
+      d.targetX = ev.clientX;
+      if (!d.raf) {
+        d.raf = requestAnimationFrame(() => {
+          if (panelDrag.current) panelDrag.current.raf = 0;
+          apply();
+        });
+      }
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
+      const d = panelDrag.current;
+      panelDrag.current = null;
+      if (d?.raf) cancelAnimationFrame(d.raf);
+      panelResizeRef.current?.classList.remove("nt-dragging");
+      const el = panelRef.current;
+      if (el) void nt().uiSetAgentPanelWidth(Math.round(el.getBoundingClientRect().width));
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
+  };
+  const onPanelResizeReset = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    void nt().uiSetAgentPanelWidth(null);
+  };
 
   /* ------------------------- voice status derivation --------------------- */
   // Cross-fading status label — always a text equivalent, never color-only.
@@ -519,9 +596,28 @@ export function AgentPanel() {
 
   return (
     <aside
-      className="nt-fade-slide-in flex h-full w-[400px] shrink-0 flex-col border-l"
-      style={{ background: "var(--nt-bg-subtle)", borderColor: "var(--nt-border)" }}
+      ref={panelRef}
+      className="nt-fade-slide-in relative flex h-full shrink-0 flex-col border-l"
+      style={{
+        width: snapshot?.agentPanelWidth ?? AGENT_DEFAULT_W,
+        background: "var(--nt-bg-subtle)",
+        borderColor: "var(--nt-border)",
+      }}
     >
+      {/* Resize handle on the panel's left edge. Slim ember affordance on
+          hover; drag to set an explicit width (300-560px), double-click to
+          reset to the default. */}
+      <div
+        ref={panelResizeRef}
+        className="nt-resize-handle"
+        style={{ left: -4 }}
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize agent panel"
+        title="Drag to resize agent panel · double-click to reset"
+        onPointerDown={onPanelResizeDown}
+        onDoubleClick={onPanelResizeReset}
+      />
       {/* header */}
       <div
         className="flex items-center gap-1 border-b px-3.5 py-3"
@@ -559,12 +655,17 @@ export function AgentPanel() {
             />
           </span>
         ) : (
-          <span
-            className="nt-r-sm flex h-7 w-7 items-center justify-center"
-            style={{ background: "var(--nt-accent-soft)" }}
-          >
-            <Sparkles size={15} strokeWidth={1.75} style={{ color: "var(--nt-accent)" }} />
-          </span>
+          <ThinkingOrb
+            phase={agentPhase}
+            size={26}
+            title={
+              agentPhase === "web"
+                ? "Agent is browsing the web"
+                : agentPhase === "thinking"
+                  ? "Agent is working"
+                  : "Agent"
+            }
+          />
         )}
         <p className="text-[15px] font-semibold tracking-[-0.01em]" style={{ color: "var(--nt-text-1)" }}>
           Agent

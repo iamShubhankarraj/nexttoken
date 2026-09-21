@@ -16,7 +16,6 @@ import {
   PictureInPicture2,
   Plus,
   RotateCw,
-  Sparkles,
   Star,
   X,
 } from "lucide-react";
@@ -26,6 +25,8 @@ import { domainOf, nt } from "../nt";
 import { AppLogo } from "./AppLogo";
 import { Omnibox } from "./Omnibox";
 import { ShieldButton } from "./ShieldButton";
+import { ThinkingAgentButton } from "./ThinkingAgentButton";
+import { useAgentPhase } from "../hooks/useAgentPhase";
 import { useVoiceSession } from "./VoiceSession";
 import { VoiceOrb, type VoiceOrbMode } from "./VoiceOrb";
 
@@ -59,7 +60,7 @@ function VoiceChip() {
   ) as VoiceOrbMode;
   return (
     <button
-      className="voice-chip nt-r-full flex shrink-0 items-center gap-1.5 border px-2.5 py-1 text-[11px] font-medium"
+      className="voice-chip is-live nt-r-full flex shrink-0 items-center gap-1.5 border px-2.5 py-1 text-[11px] font-medium"
       style={{
         borderColor: "var(--nt-accent)",
         color: "var(--nt-text-1)",
@@ -287,24 +288,16 @@ export function TopStrip() {
       </button>
       {/* Agent: the single clearly-labeled entry point to the agent panel
           (the panel header is the open panel's own title, not a second
-          toggle). Opens/closes with the same ⌘E shortcut. */}
-      <button
-        title="Toggle agent panel (⌘E)"
-        aria-label="Toggle agent panel"
-        aria-expanded={snapshot?.agentPanelOpen ?? false}
-        onClick={() =>
+          toggle). Opens/closes with the same ⌘E shortcut. The ember orb
+          "thinks" while the agent works and pulses signal rings while it
+          is out on the web. */}
+      <ThinkingAgentButton
+        phase={useAgentPhase()}
+        open={snapshot?.agentPanelOpen ?? false}
+        onToggle={() =>
           void nt().uiSetAgentPanelOpen(!(snapshot?.agentPanelOpen ?? false))
         }
-        className={`${iconBtn} flex items-center gap-1.5 !px-3`}
-        style={
-          snapshot?.agentPanelOpen
-            ? { color: "var(--nt-accent)", background: "var(--nt-accent-soft)" }
-            : { color: "var(--nt-text-2)" }
-        }
-      >
-        <Sparkles size={15} strokeWidth={1.75} />
-        <span className="text-[12.5px] font-medium">Agent</span>
-      </button>
+      />
 
       {/* Transient PiP note (toolbar button / context-menu failures) */}
       {pipNote && (
