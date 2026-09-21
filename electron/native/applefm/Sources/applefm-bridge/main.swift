@@ -42,15 +42,21 @@
 // session.respond(to:); "assistant" messages are skipped because the session's own
 // transcript already carries them once a user turn has been answered.
 //
-// Tool calling: when the request carries "tools", the bridge builds one dynamic
-// Tool per definition (a single @Generable Arguments struct carrying JSON-encoded
-// args works around the compile-time associated-type limitation — per-tool
-// parameter schemas can't be expressed as Swift types at runtime, so the schema
-// is embedded in each tool's description and the model fills one "json" string).
-// The framework executes tools automatically inside respond(to:); each Swift
-// call writes a {"id","tool_call":{...}} line and blocks reading the matching
-// {"id","tool_result":{...}} line, which the Node parent services with the real
-// tool implementations. The final {"id","text":"..."} ends the turn.
+// Tool calling: when the request carries "tools", the bridge uses prompt-based
+// tool calling — the tool schemas are rendered into the session instructions
+// with a strict output contract, and the model emits ```nt_tool_call fenced
+// JSON blocks. The bridge parses each block and round-trips it through the
+// broker to the Node parent, which services it with the real tool
+// implementations (approval-gated on the Electron side, exactly as before).
+// This deliberately avoids the native Tool protocol's @Generable macro:
+// @Generable crashes swift-frontend on some toolchains (observed with Apple
+// Swift 6.4 + the macOS 27 beta SDK), and per-tool parameter schemas can't be
+// expressed as compile-time Swift types anyway (they arrive at runtime). The
+// JSON-RPC lines the bridge emits ({"id","tool_call"} / {"id","tool_result"})
+// are unchanged, so the Electron side speaks the same protocol. The
+// nt_tool_call fence never leaves the bridge — only the final text does — and
+// it is named to stay clear of the ```tool_code convention the agent treats
+// as fake tool calls.
 
 import Foundation
 import FoundationModels
@@ -282,29 +288,90 @@ actor ToolCallBroker {
     }
 }
 
-/// One dynamic tool per definition from the Node parent.
-///
-/// The associated-type limitation: `Tool.Arguments` must be a single
-/// compile-time `@Generable` type, but tool schemas arrive at runtime.
-/// So every dynamic tool shares `Arguments{ json: String }` and the real
-/// parameter schema is embedded in the tool `description` (the framework
-/// injects name + description + schema into the prompt, so the model still
-/// sees the full argument contract and encodes it as the `json` string).
+/// The tool-use contract rendered into the session instructions for the
+/// prompt-based tool path. Deliberately NOT named `tool_code`: the agent's
+/// system prompt forbids ```tool_code as a non-functional convention, and the
+/// app-side fake-call detector treats ```tool_code as roleplay. The
+/// nt_tool_call block is the sanctioned tool channel for THIS bridge session
+/// only — it is parsed by the bridge and never leaves it.
 @available(macOS 26, *)
-struct DynamicBridgeTool: Tool {
-    let name: String
-    let description: String
-    let broker: ToolCallBroker
-
-    @Generable
-    struct Arguments {
-        @Guide(description: "The tool arguments as a single JSON object string, matching the schema documented in the tool description.")
-        var json: String
+func toolContract(toolDefs: [ToolDef]) -> String {
+    var lines: [String] = []
+    lines.append("TOOLS — you have \(toolDefs.count) tool(s) available in THIS session. The tool-call channel here is a fenced block (this is the one sanctioned exception to any no-fenced-calls rule):")
+    lines.append("```nt_tool_call")
+    lines.append("{\"name\": \"<tool name>\", \"arguments\": { ... }}")
+    lines.append("```")
+    lines.append("Rules:")
+    lines.append("- \"arguments\" must be a JSON object matching the tool's schema below.")
+    lines.append("- Emit the block when you need a tool; brief prose around it is fine, but the block itself must be complete, valid JSON.")
+    lines.append("- After each tool result arrives, continue: call another tool or write the final answer.")
+    lines.append("- The FINAL answer must contain NO nt_tool_call block — just the result for the user.")
+    lines.append("- Never emit ```tool_code — that is not a working convention anywhere.")
+    lines.append("- If a tool result reports an error, either retry correctly or tell the user plainly.")
+    lines.append("")
+    lines.append("Available tools:")
+    for def in toolDefs {
+        lines.append("### \(def.name)")
+        lines.append(def.description)
+        if let schema = def.parameters, !schema.isEmpty {
+            lines.append("Arguments schema (JSON Schema): \(schema)")
+        }
+        lines.append("")
     }
+    return lines.joined(separator: "\n")
+}
 
-    func call(arguments: Arguments) async throws -> String {
-        try await broker.callTool(name: name, argumentsJSON: arguments.json)
+/// One parsed ```nt_tool_call block: either a well-formed call or the raw
+/// body of a malformed one (fed back to the model so it can self-correct).
+enum ExtractedBlock {
+    case call(name: String, argumentsJSON: String)
+    case malformed(String)
+}
+
+/// Extracts every ```nt_tool_call fenced block from model text, in order.
+func extractToolCalls(_ text: String) -> [ExtractedBlock] {
+    var out: [ExtractedBlock] = []
+    var search = text[...]
+    while let start = search.range(of: "```nt_tool_call") {
+        let afterFence = search[start.upperBound...]
+        // The JSON may start on the next line (per the contract) or on the
+        // same line as the fence — accept either.
+        let afterNL: Substring
+        if let nl = afterFence.firstIndex(of: "\n") {
+            afterNL = afterFence[afterFence.index(after: nl)...]
+        } else {
+            afterNL = afterFence
+        }
+        guard let end = afterNL.range(of: "```") else { break }
+        let body = String(afterNL[..<end.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+        if let data = body.data(using: .utf8),
+           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let name = obj["name"] as? String, !name.isEmpty,
+           let args = obj["arguments"] as? [String: Any],
+           let argsData = try? JSONSerialization.data(withJSONObject: args),
+           let argsJSON = String(data: argsData, encoding: .utf8) {
+            out.append(.call(name: name, argumentsJSON: argsJSON))
+        } else {
+            out.append(.malformed(body))
+        }
+        search = afterNL[end.upperBound...]
     }
+    return out
+}
+
+/// Removes every ```nt_tool_call block so leftover fences never reach the user.
+func stripToolCallBlocks(_ text: String) -> String {
+    var result = text
+    while let start = result.range(of: "```nt_tool_call") {
+        let afterFence = result[start.upperBound...]
+        if let end = afterFence.range(of: "```") {
+            result.replaceSubrange(start.lowerBound..<end.upperBound, with: "")
+        } else {
+            result.replaceSubrange(start.lowerBound..<result.endIndex, with: "")
+            break
+        }
+    }
+    return result.trimmingCharacters(in: .whitespacesAndNewlines)
 }
 
 // MARK: - Bridge
@@ -438,11 +505,13 @@ struct Bridge {
         return text
     }
 
-    /// Tool path: ONE respond(to:) with the whole conversation rendered as a
-    /// single prompt, so historical turns can't re-trigger side-effecting
-    /// tools — only the latest message drives tool use. The framework runs the
-    /// tool loop internally: each DynamicBridgeTool.call round-trips through
-    /// the broker to the Node parent, and respond returns the final text.
+    /// Tool path: prompt-based tool calling (no @Generable — see the file
+    /// header). ONE plain-text LanguageModelSession: the tool schemas and the
+    /// nt_tool_call contract live in the instructions, and the bridge runs
+    /// the tool loop itself — each parsed block round-trips through the
+    /// broker to the Node parent, and respond returns the final text. Only
+    /// the latest message drives tool use (single-prompt rendering), so
+    /// historical turns can't re-trigger side-effecting tools.
     @available(macOS 26, *)
     static func chatWithTools(
         request: ChatRequest,
@@ -451,17 +520,50 @@ struct Bridge {
         stdin: StdinLineReader
     ) async throws -> String {
         let broker = ToolCallBroker(requestId: request.id, stdin: stdin)
-        let tools: [any Tool] = toolDefs.map { def in
-            var desc = def.description
-            if let schema = def.parameters, !schema.isEmpty {
-                desc += "\n\nArguments — provide as a single JSON object string in the 'json' field, matching this schema:\n\(schema)"
-            }
-            return DynamicBridgeTool(name: def.name, description: desc, broker: broker)
-        }
-        let session = LanguageModelSession(tools: tools, instructions: instructions)
+        let knownNames = Set(toolDefs.map { $0.name })
+        let contract = toolContract(toolDefs: toolDefs)
+        let fullInstructions = instructions.isEmpty ? contract : instructions + "\n\n" + contract
+        let session = LanguageModelSession(instructions: fullInstructions)
         let prompt = renderConversation(request.messages)
-        let response = try await session.respond(to: prompt)
-        return response.content
+        var response = try await session.respond(to: prompt)
+
+        // Tool round-trips: parse nt_tool_call blocks, execute each through
+        // the broker (the same {"id","tool_call"}/{"id","tool_result"}
+        // JSON-RPC lines the Node parent already speaks), feed the results
+        // back, and let the model continue. Bounded so a confused model
+        // can't loop forever.
+        var rounds = 0
+        while rounds < 10 {
+            let blocks = extractToolCalls(response.content)
+            if blocks.isEmpty { break }
+            rounds += 1
+            var feedbacks: [String] = []
+            for block in blocks {
+                switch block {
+                case .malformed(let body):
+                    feedbacks.append(
+                        "Tool protocol error: that nt_tool_call block was not valid JSON " +
+                        "of the form {\"name\": string, \"arguments\": object} " +
+                        "(got: \(body.prefix(120))). Re-emit a valid block or answer without one.")
+                case .call(let name, let argsJSON):
+                    if !knownNames.contains(name) {
+                        feedbacks.append(
+                            "Tool protocol error: unknown tool '\(name)'. " +
+                            "Available: \(toolDefs.map { $0.name }.joined(separator: ", ")).")
+                    } else {
+                        // Broker throws on transport failures — fail loudly.
+                        let result = try await broker.callTool(name: name, argumentsJSON: argsJSON)
+                        feedbacks.append("Tool result (\(name)): \(result)")
+                    }
+                }
+            }
+            response = try await session.respond(to: feedbacks.joined(separator: "\n\n"))
+        }
+        var finalText = stripToolCallBlocks(response.content)
+        if rounds >= 10 {
+            finalText += "\n\n(Stopped after 10 tool rounds — ask again to continue.)"
+        }
+        return finalText
     }
 
     /// Renders the conversation for the single-prompt tool path.

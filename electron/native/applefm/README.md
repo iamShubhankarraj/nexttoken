@@ -9,9 +9,13 @@ app can't touch from Node.
 ## Build (on a Mac)
 
 Requires the macOS 26 SDK, which ships `FoundationModels` — via Xcode 26+ or
-the macOS 26 (Tahoe) command line tools. The Swift toolchain itself may be
-older than 6.2: the package targets macOS 13+ and every FoundationModels API
-use is guarded by `#available(macOS 26, *)`.
+the macOS 26 (Tahoe) command line tools — and Swift 6.2+ (the package declares
+`swift-tools-version: 6.2` with a macOS 26 deployment target). v0.6.1 removed
+the `@Generable` macro entirely: tool calling is prompt-based (tool schemas in
+the session instructions, the model emits ```nt_tool_call fenced JSON blocks,
+the bridge parses and round-trips them), because `@Generable` crashed
+swift-frontend on some toolchains (observed with Apple Swift 6.4 + the macOS 27
+beta SDK). The stdio JSON-RPC protocol the Electron app speaks is unchanged.
 
 ```bash
 cd electron/native/applefm
