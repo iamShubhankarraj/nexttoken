@@ -4,12 +4,13 @@
  * with @-mentions and a visible Ask/Web override.
  */
 
-import { Globe, Sparkles } from "lucide-react";
+import { Globe, Import, Sparkles } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { SkillDef } from "../../shared/ipc";
 import { useBrowser } from "../BrowserContext";
 import { nt } from "../nt";
 import { routeSubmit, type RouteOverride } from "../routing";
+import { openImportDialog } from "./ImportDialog";
 import { SmartInput, type SmartTab } from "./SmartInput";
 
 export function NewTabHero() {
@@ -130,6 +131,21 @@ export function NewTabHero() {
                 : "Auto: URLs and searches go to the web, questions go to the AI"}
             </p>
           </div>
+        </div>
+
+        <div className="mt-4 flex items-center justify-center">
+          <button
+            onClick={openImportDialog}
+            className="nt-r-full flex items-center gap-2 border px-4 py-2 text-[13px] font-medium transition-colors hover:border-[var(--nt-accent)]"
+            style={{
+              borderColor: "var(--nt-border-strong)",
+              color: "var(--nt-text-2)",
+              background: "var(--nt-bg-raised)",
+            }}
+          >
+            <Import size={14} style={{ color: "var(--nt-accent)" }} />
+            Import from another browser
+          </button>
         </div>
 
         {skills.length > 0 && (

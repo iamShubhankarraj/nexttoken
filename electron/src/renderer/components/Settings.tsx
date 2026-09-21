@@ -12,6 +12,7 @@ import {
   Check,
   ChevronRight,
   Database,
+  Import,
   KeyRound,
   Loader2,
   Mic,
@@ -35,11 +36,12 @@ import {
 } from "../../shared/ipc";
 import { useBrowser } from "../BrowserContext";
 import { nt } from "../nt";
+import { openImportDialog } from "./ImportDialog";
 import { ModelsPanel } from "./ModelsPanel";
 import { SkillsSection } from "./SettingsSkills";
 import { ThemeEditor } from "./ThemeEditor";
 
-type Section = "provider" | "models" | "skills" | "voice" | "theme" | "privacy";
+type Section = "provider" | "models" | "skills" | "voice" | "theme" | "privacy" | "import";
 
 const SECTIONS: Array<{ id: Section; label: string; icon: typeof Plug }> = [
   { id: "provider", label: "AI Provider", icon: Plug },
@@ -47,6 +49,7 @@ const SECTIONS: Array<{ id: Section; label: string; icon: typeof Plug }> = [
   { id: "skills", label: "Skills", icon: Zap },
   { id: "voice", label: "Voice & Search", icon: Mic },
   { id: "privacy", label: "Privacy", icon: Shield },
+  { id: "import", label: "Import", icon: Import },
   { id: "theme", label: "Theme", icon: Palette },
 ];
 
@@ -126,6 +129,7 @@ export function Settings({ onClose }: { onClose: () => void }) {
             {section === "skills" && <SkillsSection />}
             {section === "voice" && <VoiceSearchSection />}
             {section === "privacy" && <PrivacySection />}
+            {section === "import" && <ImportSection />}
             {section === "theme" &&
               (activeSpace ? (
                 <ThemeEditor spaceId={activeSpace.id} />
@@ -931,6 +935,67 @@ function FieldLabel({ text, hint }: { text: string; hint?: string }) {
 }
 
 /* ------------------------------ privacy -------------------------------- */
+
+function ImportSection() {
+  const [loginsCount, setLoginsCount] = useState<number | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    nt()
+      .importLoginsCount()
+      .then((n) => {
+        if (alive) setLoginsCount(n);
+      })
+      .catch(() => {
+        if (alive) setLoginsCount(0);
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h3
+          className="mb-2 flex items-center gap-2 text-[13px] font-semibold"
+          style={{ color: "var(--nt-text-1)" }}
+        >
+          <Import size={14} strokeWidth={1.75} /> Import from another browser
+        </h3>
+        <p className="mb-3 text-[12px]" style={{ color: "var(--nt-text-3)" }}>
+          Bring bookmarks, open &amp; pinned tabs, and saved passwords from Arc,
+          Chrome, Brave, Edge, Safari, or Firefox into the current Bit. Nothing
+          is read until you choose to import — duplicates are skipped, never
+          overwritten.
+        </p>
+        <button
+          onClick={openImportDialog}
+          className="nt-r-md flex items-center gap-2 px-4 py-2 text-[13px] font-semibold"
+          style={{ background: "var(--nt-accent)", color: "white" }}
+        >
+          <Import size={14} />
+          Import from another browser
+        </button>
+      </div>
+      <div>
+        <h3
+          className="mb-2 flex items-center gap-2 text-[13px] font-semibold"
+          style={{ color: "var(--nt-text-1)" }}
+        >
+          <KeyRound size={14} strokeWidth={1.75} /> Imported passwords
+        </h3>
+        <p className="text-[12px]" style={{ color: "var(--nt-text-3)" }}>
+          {loginsCount === null
+            ? "Checking…"
+            : loginsCount === 0
+              ? "No passwords imported yet. They are stored encrypted in this Mac's keychain."
+              : `${loginsCount} logins stored encrypted in this Mac's keychain.`}
+        </p>
+      </div>
+    </div>
+  );
+}
 
 function PrivacySection() {
   const [state, setState] = useState<AdBlockState>({

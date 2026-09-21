@@ -1361,47 +1361,24 @@ const TabRow = memo(function TabRow({
 
 /* -------------------------------- bookmarks ------------------------------ */
 
-function BookmarksSection({
+function BookmarkRow({
+  b,
   space,
-  open,
-  onToggle,
+  renamingId,
+  renameValue,
+  setRenameValue,
+  setRenamingId,
+  setMenu,
 }: {
+  b: BookmarkState;
   space: SpaceState;
-  open: boolean;
-  onToggle: () => void;
+  renamingId: string | null;
+  renameValue: string;
+  setRenameValue: (v: string) => void;
+  setRenamingId: (id: string | null) => void;
+  setMenu: (m: { x: number; y: number; bm: BookmarkState } | null) => void;
 }) {
-  const [menu, setMenu] = useState<{ x: number; y: number; bm: BookmarkState } | null>(null);
-  const [renamingId, setRenamingId] = useState<string | null>(null);
-  const [renameValue, setRenameValue] = useState("");
-
   return (
-    <section className="mt-3">
-      <button
-        onClick={onToggle}
-        className="nt-r-sm flex w-full items-center gap-1.5 px-1 py-1 text-left transition-colors hover:bg-[var(--nt-bg-hover)]"
-      >
-        {open ? (
-          <ChevronDown size={13} strokeWidth={1.75} style={{ color: "var(--nt-text-3)" }} />
-        ) : (
-          <ChevronRight size={13} strokeWidth={1.75} style={{ color: "var(--nt-text-3)" }} />
-        )}
-        <BookmarkIcon size={13} strokeWidth={1.75} style={{ color: "var(--nt-text-3)" }} />
-        <span className="nt-micro">Bookmarks</span>
-        <span
-          className="nt-num ml-auto pr-1 text-[11px]"
-          style={{ color: "var(--nt-text-faint)" }}
-        >
-          {space.bookmarks.length}
-        </span>
-      </button>
-      {open && (
-        <div className="nt-fade-in mt-1 space-y-1">
-          {space.bookmarks.length === 0 && (
-            <p className="px-2.5 py-2 text-[12px]" style={{ color: "var(--nt-text-3)" }}>
-              Star a page in the toolbar to keep it here.
-            </p>
-          )}
-          {space.bookmarks.map((b) => (
             <div key={b.id} data-bookmark={b.id}>
               {renamingId === b.id ? (
                 <input
@@ -1453,7 +1430,87 @@ function BookmarksSection({
                 </div>
               )}
             </div>
-          ))}
+  );
+}
+
+function BookmarksSection({
+  space,
+  open,
+  onToggle,
+}: {
+  space: SpaceState;
+  open: boolean;
+  onToggle: () => void;
+}) {
+  const [menu, setMenu] = useState<{ x: number; y: number; bm: BookmarkState } | null>(null);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+
+  return (
+    <section className="mt-3">
+      <button
+        onClick={onToggle}
+        className="nt-r-sm flex w-full items-center gap-1.5 px-1 py-1 text-left transition-colors hover:bg-[var(--nt-bg-hover)]"
+      >
+        {open ? (
+          <ChevronDown size={13} strokeWidth={1.75} style={{ color: "var(--nt-text-3)" }} />
+        ) : (
+          <ChevronRight size={13} strokeWidth={1.75} style={{ color: "var(--nt-text-3)" }} />
+        )}
+        <BookmarkIcon size={13} strokeWidth={1.75} style={{ color: "var(--nt-text-3)" }} />
+        <span className="nt-micro">Bookmarks</span>
+        <span
+          className="nt-num ml-auto pr-1 text-[11px]"
+          style={{ color: "var(--nt-text-faint)" }}
+        >
+          {space.bookmarks.length}
+        </span>
+      </button>
+      {open && (
+        <div className="nt-fade-in mt-1 space-y-1">
+          {space.bookmarks.length === 0 && (
+            <p className="px-2.5 py-2 text-[12px]" style={{ color: "var(--nt-text-3)" }}>
+              Star a page in the toolbar to keep it here.
+            </p>
+          )}
+          {(() => {
+            const groups = new Map<string | null, BookmarkState[]>();
+            for (const b of space.bookmarks) {
+              const key = b.folder?.trim() ? b.folder!.trim() : null;
+              const arr = groups.get(key);
+              if (arr) arr.push(b);
+              else groups.set(key, [b]);
+            }
+            const ordered = [...groups.entries()].sort(([a], [b]) => {
+              if (a === null) return -1;
+              if (b === null) return 1;
+              return a.localeCompare(b);
+            });
+            return ordered.map(([folder, items]) => (
+              <div key={folder ?? "__unfiled"}>
+                {folder && (
+                  <p
+                    className="nt-micro mt-2 px-2.5 pb-0.5"
+                    style={{ color: "var(--nt-text-faint)" }}
+                  >
+                    {folder}
+                  </p>
+                )}
+                {items.map((b) => (
+                  <BookmarkRow
+                    key={b.id}
+                    b={b}
+                    space={space}
+                    renamingId={renamingId}
+                    renameValue={renameValue}
+                    setRenameValue={setRenameValue}
+                    setRenamingId={setRenamingId}
+                    setMenu={setMenu}
+                  />
+                ))}
+              </div>
+            ));
+          })()}
         </div>
       )}
       {menu && (

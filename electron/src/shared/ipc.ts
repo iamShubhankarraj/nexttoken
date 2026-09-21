@@ -37,6 +37,8 @@ export interface BookmarkState {
   url: string;
   favicon?: string;
   createdAt: number;
+  /** Folder path from browser import, e.g. "Bookmarks bar/Work". Absent for manual bookmarks. */
+  folder?: string;
 }
 
 export interface SpaceState {
@@ -55,6 +57,38 @@ export interface FavoriteState {
   id: string;
   name: string;
   url: string;
+}
+
+export interface DetectedBrowserState {
+  id: string;
+  name: string;
+  kind: string;
+  profileDir: string;
+  profileLabel: string;
+  accessDenied?: boolean;
+}
+
+export interface ImportReportState {
+  bookmarksAdded: number;
+  bookmarksSkippedDupes: number;
+  tabsOpened: number;
+  tabsPinned: number;
+  warnings: string[];
+}
+
+export interface PasswordGuidance {
+  supported: false;
+  title: string;
+  steps: string[];
+}
+
+export interface ImportRunResult {
+  ok: boolean;
+  report?: ImportReportState;
+  /** Set when macOS denied file access — renderer shows the access guide. */
+  accessDeniedPath?: string;
+  passwordGuidance?: PasswordGuidance;
+  error?: string;
 }
 
 export interface BrowserSnapshot {
@@ -589,6 +623,14 @@ export interface NextTokenAPI {
   bookmarksAdd(spaceId: string, name: string, url: string): Promise<BookmarkState[]>;
   bookmarksRename(spaceId: string, id: string, name: string): Promise<BookmarkState[]>;
   bookmarksRemove(spaceId: string, id: string): Promise<BookmarkState[]>;
+  // import from other browsers (explicit user action only; main owns all secrets)
+  importDetect(): Promise<DetectedBrowserState[]>;
+  importRun(
+    browserId: string,
+    kinds: Array<'bookmarks' | 'tabs' | 'passwords'>,
+  ): Promise<ImportRunResult>;
+  importPasswordGuidance(browserId: 'safari' | 'firefox'): Promise<PasswordGuidance>;
+  importLoginsCount(): Promise<number>;
   // AI tidy — local models only; tab URLs never leave the device
   /** Produce a reviewable tidy plan. Nothing is applied until tidyApply is called. */
   tidyPlan(spaceId: string): Promise<TidyPlan>;

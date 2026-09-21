@@ -17,6 +17,12 @@ import { executeControl, runTerminalControl, type ControlEnv } from './brain/con
 import { MODEL_CATALOG, ModelDownloader, targetPathFor, type DownloadEvent } from './models';
 import { ensureSidecar, whisperManualSteps } from './models/binaries';
 import { registerModelsIpc } from './models/ipc';
+import { setupUpdater, checkForUpdatesManually } from './updater';
+import { detectBrowsers, type DetectedBrowser } from './import/browsers';
+import { importBookmarks, importTabs, type ImportDeps, type ImportReport } from './import/index';
+import { importChromiumPasswords, passwordImportGuidance } from './import/passwords';
+import { saveImportedLogins, getStoredLogins } from './import/logins';
+import { normalizeUrlKey } from './import/util';
 import { LlamaServer } from './models/runtime';
 import { AppleFmClient } from './models/applefm';
 import { VoiceEngine, type CleanupPrompt } from './voice';
@@ -553,6 +559,156 @@ function registerIpc() {
     return list;
   });
 
+  // -- import from other browsers (explicit user action only) --------------------
+  // Keychain items for Chromium-family "Safe Storage" secrets (macOS).
+  const KEYCHAIN_ITEMS: Record<string, { service: string; account: string }> = {
+    chrome: { service: 'Chrome Safe Storage', account: 'Chrome' },
+    brave: { service: 'Brave Safe Storage', account: 'Brave' },
+    edge: { service: 'Microsoft Edge Safe Storage', account: 'Microsoft Edge' },
+    chromium: { service: 'Chromium Safe Storage', account: 'Chromium' },
+    arc: { service: 'Arc Safe Storage', account: 'Arc' },
+  };
+
+  ipcMain.handle('nt.import.detect', async () => {
+    try {
+      const found = await detectBrowsers();
+      return found.map((b) => ({
+        id: b.id,
+        name: b.name,
+        kind: b.kind,
+        profileDir: b.profileDir,
+        profileLabel: b.profileLabel,
+        accessDenied: !!b.accessDenied,
+      }));
+    } catch {
+      return [];
+    }
+  });
+
+  ipcMain.handle(
+    'nt.import.run',
+    async (_e, browserId: string, kinds: Array<'bookmarks' | 'tabs' | 'passwords'>) => {
+      const result: {
+        ok: boolean;
+        report?: ImportReport;
+        accessDeniedPath?: string;
+        passwordGuidance?: { title: string; steps: string[] };
+        error?: string;
+      } = { ok: false };
+      try {
+        const found = await detectBrowsers();
+        const browser = found.find((b) => b.id === browserId);
+        if (!browser) {
+          result.error = 'That browser is no longer available.';
+          return result;
+        }
+        const baseId = browserId.split(':')[0];
+        const spaceId = store.d.activeSpaceId;
+        const deps: ImportDeps = {
+          spaceId,
+          addBookmark: (sid, name, url, folder) => {
+            store.addBookmark(sid, name, url, folder);
+          },
+          createTab: (url) => {
+            const t = tabs.create(spaceId, url);
+            return t.id;
+          },
+          pinTab: (tabId) => {
+            const t = tabs.tabs.get(tabId);
+            if (t) {
+              t.pinned = true;
+              tabs.persistPinned();
+            }
+          },
+          existingBookmarkUrls: (sid) =>
+            new Set(store.listBookmarks(sid).map((b) => normalizeUrlKey(b.url))),
+          existingTabUrls: (sid) =>
+            new Set(
+              [...tabs.tabs.values()]
+                .filter((t) => t.spaceId === sid)
+                .map((t) => normalizeUrlKey(t.url)),
+            ),
+        };
+        const combined: ImportReport = {
+          bookmarksAdded: 0,
+          bookmarksSkippedDupes: 0,
+          tabsOpened: 0,
+          tabsPinned: 0,
+          warnings: [],
+        };
+        const merge = (r: ImportReport) => {
+          combined.bookmarksAdded += r.bookmarksAdded;
+          combined.bookmarksSkippedDupes += r.bookmarksSkippedDupes;
+          combined.tabsOpened += r.tabsOpened;
+          combined.tabsPinned += r.tabsPinned;
+          for (const w of r.warnings) {
+            if (combined.warnings.length < 20) combined.warnings.push(w);
+          }
+        };
+        if (kinds.includes('bookmarks')) merge(await importBookmarks(browserId, deps));
+        if (kinds.includes('tabs')) merge(await importTabs(browserId, deps));
+        if (kinds.includes('passwords')) {
+          if (baseId === 'safari' || baseId === 'firefox') {
+            result.passwordGuidance = passwordImportGuidance(baseId);
+          } else {
+            const kc = KEYCHAIN_ITEMS[baseId];
+            if (!kc) {
+              combined.warnings.push('Password import is not supported for this browser.');
+            } else {
+              // The security CLI shows macOS's native consent prompt — the
+              // explicit user approval this import requires. Decrypted
+              // passwords flow ONLY into the safeStorage vault via
+              // onDecrypted; they never cross IPC and are never logged.
+              const pw = await importChromiumPasswords({
+                profileDir: browser.profileDir,
+                keychainService: kc.service,
+                keychainAccount: kc.account,
+                onDecrypted: async (logins) => {
+                  await saveImportedLogins(
+                    logins.map((l) => ({ origin: l.origin, username: l.username, password: l.password })),
+                    app.getPath('userData'),
+                  );
+                },
+              });
+              combined.warnings.push(...pw.warnings.slice(0, 20 - combined.warnings.length));
+              if (pw.imported.length > 0 || pw.skipped > 0) {
+                combined.warnings.unshift(
+                  `Passwords: ${pw.imported.length} imported into the encrypted vault, ${pw.skipped} skipped.`,
+                );
+              }
+            }
+          }
+        }
+        sendSnapshot();
+        result.ok = true;
+        result.report = combined;
+        return result;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        // TCC / file-access denial → renderer shows the macOS access guide.
+        if (msg.startsWith('FILE_ACCESS_DENIED:')) {
+          result.accessDeniedPath = msg.slice('FILE_ACCESS_DENIED:'.length);
+          return result;
+        }
+        // Never leak internals or paths beyond the access-denied case.
+        result.error = 'Import failed. Nothing was changed.';
+        return result;
+      }
+    },
+  );
+
+  ipcMain.handle('nt.import.password-guidance', async (_e, browserId: 'safari' | 'firefox') => {
+    return passwordImportGuidance(browserId);
+  });
+
+  ipcMain.handle('nt.import.logins-count', () => {
+    try {
+      return getStoredLogins(app.getPath('userData')).length;
+    } catch {
+      return 0;
+    }
+  });
+
   // -- AI tidy (local models only — tab URLs never leave the device) -------------
   ipcMain.handle('nt.tidy.plan', async (_e, spaceId: string): Promise<TidyPlan> => {
     return buildTidyPlan(store, tabs, modelRouter, spaceId);
@@ -965,6 +1121,60 @@ app.whenReady().then(() => {
   );
   initModelTier();
   registerIpc();
+  setupUpdater();
+  Menu.setApplicationMenu(
+    Menu.buildFromTemplate([
+      {
+        label: app.name,
+        submenu: [
+          { role: 'about' },
+          { type: 'separator' },
+          {
+            label: 'Check for updates…',
+            click: () => void checkForUpdatesManually(),
+          },
+          { type: 'separator' },
+          {
+            label: 'Settings…',
+            accelerator: 'CmdOrCtrl+,',
+            click: () => {
+              settingsOpen = true;
+              sendSnapshot();
+            },
+          },
+          { type: 'separator' },
+          { role: 'quit' },
+        ],
+      },
+      {
+        label: 'Edit',
+        submenu: [
+          { role: 'undo' },
+          { role: 'redo' },
+          { type: 'separator' },
+          { role: 'cut' },
+          { role: 'copy' },
+          { role: 'paste' },
+          { role: 'selectAll' },
+        ],
+      },
+      {
+        label: 'View',
+        submenu: [
+          { role: 'reload' },
+          { role: 'forceReload' },
+          { type: 'separator' },
+          { role: 'resetZoom' },
+          { role: 'zoomIn' },
+          { role: 'zoomOut' },
+        ],
+      },
+      {
+        label: 'Window',
+        submenu: [{ role: 'minimize' }, { role: 'zoom' }, { role: 'close' }],
+      },
+    ]),
+  );
   createWindow();
 
   // Restore pinned tabs + last session's open tabs; guarantee at least one tab in the active space.

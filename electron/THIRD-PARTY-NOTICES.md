@@ -52,3 +52,20 @@ licenses/attribution:
 
 - EasyList — https://easylist.to/ (attribution to the EasyList authors)
 - uBlock Origin filters (uAssets) — https://github.com/uBlockOrigin/uAssets
+
+## electron-updater — in-app update plumbing (MIT)
+
+Update scaffolding (`electron/src/main/updater.ts`) uses **electron-updater**
+by electron-userland, licensed under the MIT License.
+
+- Source: https://github.com/electron-userland/electron-builder (packages/electron-updater)
+- License: MIT (Copyright (c) 2015-2019 electron-userland)
+
+## bplist-parser — Safari bookmark import (MIT)
+
+Safari bookmark import (`electron/src/main/import/bookmarks.ts`) parses
+`Bookmarks.plist` (binary plist) with **bplist-parser** by Joe Ferner,
+licensed under the MIT License.
+
+- Source: https://github.com/joeferner/node-bplist-parser
+- License: MIT (Copyright (c) 2012 Joe Ferner)

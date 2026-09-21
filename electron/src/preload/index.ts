@@ -35,6 +35,11 @@ const api: NextTokenAPI = {
   bookmarksAdd: (spaceId, name, url) => ipcRenderer.invoke('nt.bookmarks.add', spaceId, name, url),
   bookmarksRename: (spaceId, id, name) => ipcRenderer.invoke('nt.bookmarks.rename', spaceId, id, name),
   bookmarksRemove: (spaceId, id) => ipcRenderer.invoke('nt.bookmarks.remove', spaceId, id),
+  // import from other browsers (explicit user action only)
+  importDetect: () => ipcRenderer.invoke('nt.import.detect'),
+  importRun: (browserId, kinds) => ipcRenderer.invoke('nt.import.run', browserId, kinds),
+  importPasswordGuidance: (browserId) => ipcRenderer.invoke('nt.import.password-guidance', browserId),
+  importLoginsCount: () => ipcRenderer.invoke('nt.import.logins-count'),
   // AI tidy — local models only
   tidyPlan: (spaceId) => ipcRenderer.invoke('nt.tidy.plan', spaceId),
   tidyApply: (spaceId, actions) => ipcRenderer.invoke('nt.tidy.apply', spaceId, actions),

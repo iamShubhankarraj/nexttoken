@@ -25,6 +25,7 @@ import { BrowserProvider, useBrowser } from "./BrowserContext";
 import { AgentPanel } from "./components/AgentPanel";
 import { AgentActingOverlay } from "./components/AgentActingOverlay";
 import { CommandBar } from "./components/CommandBar";
+import { ImportDialog } from "./components/ImportDialog";
 import { NewTabHero } from "./components/NewTabHero";
 import { Settings } from "./components/Settings";
 import { Sidebar } from "./components/Sidebar";
@@ -34,6 +35,18 @@ import { TopStrip } from "./components/TopStrip";
 import { WritingHint } from "./components/WritingHint";
 import { useBrainAudio } from "./hooks/useBrainAudio";
 import { isNewTabUrl, nt } from "./nt";
+
+/** Listens for "nt:open-import" and mounts the import dialog. */
+function ImportDialogHost() {
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    const handler = () => setOpen(true);
+    window.addEventListener("nt:open-import", handler);
+    return () => window.removeEventListener("nt:open-import", handler);
+  }, []);
+  if (!open) return null;
+  return <ImportDialog onClose={() => setOpen(false)} />;
+}
 
 function Shell() {
   // Brain TTS playback + brain-driven listen/command-bar requests.
@@ -220,6 +233,7 @@ function Shell() {
       {snapshot.settingsOpen && (
         <Settings onClose={() => void nt().uiSetSettingsOpen(false)} />
       )}
+      <ImportDialogHost />
     </div>
   );
 }

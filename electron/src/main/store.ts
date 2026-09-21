@@ -10,7 +10,7 @@ import type { ModelRef } from './models/types';
 
 export interface FavoritePersist { id: string; name: string; url: string }
 export interface FolderPersist { id: string; name: string }
-export interface BookmarkPersist { id: string; name: string; url: string; createdAt: number }
+export interface BookmarkPersist { id: string; name: string; url: string; createdAt: number; folder?: string }
 /** One open (non-pinned) tab, in sidebar order — restored on launch. */
 export interface SessionTabPersist { url: string; title: string; folderId: string | null; favicon?: string | null }
 export interface SpacePersist {
@@ -360,14 +360,15 @@ export class Store {
     return this.data.spaces.find((x) => x.id === spaceId)?.bookmarks.map((b) => ({ ...b })) ?? [];
   }
 
-  addBookmark(spaceId: string, name: string, url: string): BookmarkPersist[] {
+  addBookmark(spaceId: string, name: string, url: string, folder?: string): BookmarkPersist[] {
     const s = this.data.spaces.find((x) => x.id === spaceId);
     if (!s) throw new Error('Bit not found.');
     const cleanUrl = String(url ?? '').trim();
     if (!cleanUrl || !/^https?:\/\//i.test(cleanUrl)) throw new Error('Only web pages can be bookmarked.');
     if (s.bookmarks.some((b) => b.url === cleanUrl)) return this.listBookmarks(spaceId);
     const cleanName = String(name ?? '').trim().slice(0, 80) || cleanUrl;
-    s.bookmarks.unshift({ id: randomUUID(), name: cleanName, url: cleanUrl, createdAt: Date.now() });
+    const cleanFolder = String(folder ?? '').trim().slice(0, 160) || undefined;
+    s.bookmarks.unshift({ id: randomUUID(), name: cleanName, url: cleanUrl, createdAt: Date.now(), folder: cleanFolder });
     this.saveSoon();
     return this.listBookmarks(spaceId);
   }

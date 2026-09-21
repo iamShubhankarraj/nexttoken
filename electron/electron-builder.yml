@@ -1,5 +1,14 @@
 appId: com.nexttoken.app
 productName: Next Token
+# Update-in-place: the app is ALWAYS "Next Token.app" with this ONE stable
+# CFBundleIdentifier. Replacing the old .app in /Applications IS the update —
+# macOS never sees a second app identity. Keep this ID forever.
+# In-app updates (electron-updater, generic provider): fill in a release feed
+# URL below when a server exists. Until then the "Check for updates" menu item
+# degrades gracefully and the zip remains the distribution path.
+#publish:
+#  provider: generic
+#  url: https://updates.nexttoken.app/mac-arm64/
 directories:
   output: release
 files:

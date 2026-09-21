@@ -2,6 +2,8 @@
   "author": "Next Token",
   "dependencies": {
     "@ghostery/adblocker-electron": "^2.18.2",
+    "bplist-parser": "^0.5.0",
+    "electron-updater": "^6.8.9",
     "lucide-react": "^1.47.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"
