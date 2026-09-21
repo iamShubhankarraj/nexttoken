@@ -123,11 +123,14 @@ async function openAiComplete(o: LlmOpts): Promise<LlmResult> {
     }
     return { role: m.role, content: openAiContent(m) };
   });
-  const body = {
+  // Strict OpenAI-compatible providers (Jev included) reject `"tools": []`
+  // with HTTP 400 — omit the field, and tool_choice with it, when there
+  // are no tools to offer.
+  const toolDefs = o.tools.map((t) => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.parameters } }));
+  const body: Record<string, unknown> = {
     model: o.model,
     messages,
-    tools: o.tools.map((t) => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.parameters } })),
-    tool_choice: 'auto'
+    ...(toolDefs.length > 0 ? { tools: toolDefs, tool_choice: 'auto' } : {}),
   };
   const json = await postJson(url, headers, body, o.signal);
   const choice = asRecord((json.choices as unknown[])?.[0]);
@@ -163,12 +166,15 @@ async function anthropicComplete(o: LlmOpts): Promise<LlmResult> {
     }
     messages.push({ role: m.role, content: anthropicContent(m) });
   }
-  const body = {
+  const body: Record<string, unknown> = {
     model: o.model,
     max_tokens: 2048,
     ...(system ? { system } : {}),
     messages,
-    tools: o.tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.parameters }))
+    // Anthropic also rejects an empty tools array — omit when unused.
+    ...(o.tools.length > 0
+      ? { tools: o.tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.parameters })) }
+      : {}),
   };
   const json = await postJson(
     url,

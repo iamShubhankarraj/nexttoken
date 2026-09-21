@@ -498,6 +498,15 @@ function createWindow() {
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     trafficLightPosition: { x: 14, y: 14 },
     backgroundColor: '#0B0B0D',
+    // Explicit window chrome: the window must always be minimizable and must
+    // never be created fullscreen/kiosk (a stuck fullscreen window with no
+    // minimize button was reported on macOS).
+    minimizable: true,
+    maximizable: true,
+    closable: true,
+    fullscreenable: true,
+    fullscreen: false,
+    kiosk: false,
     webPreferences: {
       preload: path.join(__dirname, '../preload/index.js'),
       contextIsolation: true,
@@ -1270,7 +1279,36 @@ function registerIpc() {
   });
 }
 
+// Single instance: launching the app a second time (Finder double-click,
+// Spotlight, or a stray Terminal invocation while an instance already runs)
+// must NOT spawn a duplicate app process with its own window — it focuses
+// the existing window instead. (A duplicate instance was reported as
+// "voice mode opens a new window of the app".)
+const singleInstanceLock = app.requestSingleInstanceLock();
+if (!singleInstanceLock) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    const existing = BrowserWindow.getAllWindows()[0];
+    if (existing && !existing.isDestroyed()) {
+      if (existing.isMinimized()) existing.restore();
+      existing.focus();
+    }
+  });
+}
+
 app.whenReady().then(() => {
+  // The app must always appear in the macOS dock as the active app, with a
+  // working Quit. No code path hides the dock icon, but an instance started
+  // outside LaunchServices (e.g. from a Terminal during debugging) can leave
+  // the dock in a confused state — this call is a no-op when already shown.
+  if (process.platform === 'darwin' && app.dock) {
+    try {
+      app.dock.show();
+    } catch {
+      /* dock already visible */
+    }
+  }
   store = new Store();
   // Native ad blocker: filter guest traffic at the network layer. Stats are
   // pushed to the renderer for the toolbar shield badge.
