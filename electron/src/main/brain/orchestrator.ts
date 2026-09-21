@@ -30,6 +30,7 @@ import {
   type VoiceCommandDef,
   type VoiceSpecialist
 } from './voice-commands';
+import { isVisionRequiredError } from '../models/task-models';
 import { ModelRouter, type RouterDeps } from '../models/router';
 import type { LlmMessage } from '../agent/llm';
 import type { BrainEvent } from '../../shared/ipc';
@@ -236,6 +237,16 @@ export class Orchestrator {
       await this.dispatch(decision, heard, page);
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
+      // The vision slot is empty: say so clearly (and speak it — this is a
+      // voice turn), nudge the model manager, and never guess at the screen.
+      if (isVisionRequiredError(e)) {
+        this.emit({ kind: 'vision-missing' });
+        await this.speakOnly(
+          "I need a vision model to see the screen, and none is downloaded yet. " +
+          "I've opened Settings, Models, Vision for you — download the small experimental build and ask again."
+        );
+        return;
+      }
       this.emit({ kind: 'error', message });
       await this.speakOnly('Something went wrong on my side — try again?');
     }
@@ -546,6 +557,13 @@ function normalizeSlots(intent: string, slots: Record<string, string>): Record<s
   const out = { ...slots };
   if (intent === 'agent.task' && !out.task && out.text) out.task = out.text;
   if (intent === 'agent.ask' && !out.question && out.text) out.question = out.text;
+  // screen.describe runs through the agent: give it a focused task so the
+  // model reaches for describe_screen with the user's question.
+  if (intent === 'screen.describe' && !out.task) {
+    out.task = out.question?.trim()
+      ? `Look at my screen and answer this: ${out.question.trim()}`
+      : 'Describe what is visible on my screen right now.';
+  }
   return out;
 }
 

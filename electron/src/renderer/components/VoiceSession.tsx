@@ -82,9 +82,24 @@ export function VoiceSession({ children }: { children: ReactNode }) {
   const [voiceEnabled, setVoiceEnabled] = useState(false);
   const enabledRef = useRef(false);
   enabledRef.current = voiceEnabled;
+  const [voiceControl, setVoiceControl] = useState(false);
+  const voiceControlRef = useRef(false);
+  voiceControlRef.current = voiceControl;
 
   const voice = useVoice({
-    onCommand: (t) => commandRef.current?.(t),
+    onCommand: (t) => {
+      // Single dispatch: the agent panel owns the transcript when it's open.
+      // Panel closed + voice-control on → route straight to the brain so a
+      // spoken command still works (main never dispatches; this is the only
+      // path, so nothing runs twice).
+      if (commandRef.current) {
+        commandRef.current(t);
+      } else if (voiceControlRef.current) {
+        void nt()
+          .brainHandleUtterance(t, "voice")
+          .catch(() => {});
+      }
+    },
     onDictation: (t) => dictationRef.current?.(t),
     isEnabled: () => enabledRef.current,
   });
@@ -98,7 +113,9 @@ export function VoiceSession({ children }: { children: ReactNode }) {
       nt()
         .settingsGetVoice()
         .then((v) => {
-          if (alive) setVoiceEnabled(!!v?.enabled);
+          if (!alive) return;
+          setVoiceEnabled(!!v?.enabled);
+          setVoiceControl(!!v?.voiceControl);
         })
         .catch(() => {});
     refresh();

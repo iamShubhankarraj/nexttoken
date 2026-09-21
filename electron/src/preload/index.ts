@@ -92,6 +92,8 @@ const api: NextTokenAPI = {
   modelsRemove: (id) => ipcRenderer.invoke('nt.models.remove', id),
   modelsGetAssignment: () => ipcRenderer.invoke('nt.models.assignment.get'),
   modelsSetAssignment: (task, ref) => ipcRenderer.invoke('nt.models.assignment.set', task, ref),
+  modelsTaskModels: () => ipcRenderer.invoke('nt.models.task-models'),
+  modelsSetVision: (ref) => ipcRenderer.invoke('nt.models.set-vision', ref),
   modelsAppleFm: () => ipcRenderer.invoke('nt.models.applefm'),
   modelsDiskUsage: () => ipcRenderer.invoke('nt.models.disk-usage'),
   onModelEvent: (cb) => {
@@ -179,6 +181,11 @@ const api: NextTokenAPI = {
     const l = (_e: unknown, start: boolean) => cb(start);
     ipcRenderer.on('nt.voice.request-listen', l);
     return () => ipcRenderer.removeListener('nt.voice.request-listen', l);
+  },
+  onOpenModels: (cb) => {
+    const l = (_e: unknown, focus: { task?: string }) => cb(focus);
+    ipcRenderer.on('nt.ui.open-models', l);
+    return () => ipcRenderer.removeListener('nt.ui.open-models', l);
   },
   // brain — Jev System-One orchestration
   brainGetJev: () => ipcRenderer.invoke('nt.brain.jev.get'),

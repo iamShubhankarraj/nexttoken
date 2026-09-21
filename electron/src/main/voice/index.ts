@@ -37,6 +37,7 @@ export type VoiceEngineState =
   | "listening"
   | "transcribing"
   | "thinking"
+  | "acting"
   | "speaking";
 
 export interface VoiceEngineEvents {
@@ -105,6 +106,13 @@ export class VoiceEngine {
   private cleanupComplete: CleanupCompleteFn | null = null;
   /** Serialises concurrent speak() calls so audio never overlaps. */
   private speakTail: Promise<void> = Promise.resolve();
+  /**
+   * Barge-in generation: stopSpeaking() bumps it and aborts the in-flight
+   * synth. Queued/stale speak() calls check it before touching state or
+   * the TTS child, so a new listen is never clobbered by zombie audio.
+   */
+  private speakGeneration = 0;
+  private speakAbort: AbortController | null = null;
 
   constructor(private readonly opts: VoiceEngineOptions) {
     this.stt = new SttEngine(opts);
@@ -268,23 +276,34 @@ export class VoiceEngine {
    * engine just finished transcribing (or is idle after a silent clip).
    */
   setThinking(on: boolean): void {
-    if (on) {
-      if (this.state === "idle" || this.state === "transcribing") {
-        this.setState("thinking");
-      }
-    } else if (this.state === "thinking") {
-      this.setState("idle");
+    this.setRunState(on ? 'thinking' : null);
+  }
+
+  /**
+   * Voice-turn state from the agent loop / orchestrator: 'thinking' while
+   * the model reasons, 'acting' while browser tools run, null when the run
+   * settles (returns to idle). Never clobbers an active listen or speak.
+   */
+  setRunState(s: 'thinking' | 'acting' | null): void {
+    if (s === null) {
+      if (this.state === 'thinking' || this.state === 'acting') this.setState('idle');
+      return;
+    }
+    if (this.state === 'idle' || this.state === 'transcribing' || this.state === 'thinking') {
+      this.setState(s);
     }
   }
 
   /**
-   * Barge-in: stop TTS immediately. The queued synth calls are left to
-   * finish silently in the background (their audio is discarded by the
-   * renderer, which stops playback); the state flips to idle at once so a
-   * new listen can start within ~150 ms.
+   * Barge-in: abort the in-flight synthesis child, invalidate queued synth
+   * calls, and return to idle at once so a new listen can start
+   * immediately. Stale completions are discarded — they never touch state.
    */
   stopSpeaking(): void {
-    if (this.state === "speaking") this.setState("idle");
+    this.speakGeneration++;
+    this.speakAbort?.abort();
+    this.speakAbort = null;
+    if (this.state === 'speaking') this.setState('idle');
   }
 
   /**
@@ -293,7 +312,8 @@ export class VoiceEngine {
    * Throws a clear error when no TTS model is downloaded or text is empty/too long.
    */
   speak(text: string): Promise<Buffer> {
-    const run = this.speakTail.then(() => this.doSpeak(text));
+    const gen = this.speakGeneration;
+    const run = this.speakTail.then(() => this.doSpeak(text, gen));
     // Keep the queue alive even if one speak() rejects.
     this.speakTail = run.then(
       () => undefined,
@@ -302,18 +322,29 @@ export class VoiceEngine {
     return run;
   }
 
-  private async doSpeak(text: string): Promise<Buffer> {
+  private async doSpeak(text: string, gen: number): Promise<Buffer> {
+    // A barge-in arrived while this call was queued — drop it silently.
+    if (gen !== this.speakGeneration) {
+      throw new Error('Speech cancelled by barge-in.');
+    }
     const modelDir = this.opts.getTtsModelDir();
     if (!modelDir) {
       throw new Error(
         "Voice: no text-to-speech model is downloaded. Download a Kokoro TTS model in Settings → Models first.",
       );
     }
+    const ac = new AbortController();
+    this.speakAbort = ac;
     this.setState("speaking");
     try {
-      return await this.tts.speak(text, modelDir);
+      return await this.tts.speak(text, modelDir, ac.signal);
     } finally {
-      this.setState("idle");
+      if (this.speakAbort === ac) this.speakAbort = null;
+      // Only settle the state we own: a newer listen must never be
+      // clobbered back to idle by a stale synth completion.
+      if (gen === this.speakGeneration && this.state === "speaking") {
+        this.setState("idle");
+      }
     }
   }
 }

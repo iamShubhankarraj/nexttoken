@@ -83,6 +83,13 @@ interface Persisted {
     downloaded: Record<string, ModelDownloadRecord>;
     /** 'vision' still has its own per-task override; 'chat' is legacy — the unified activeModel drives chat now. */
     assignment: { chat: ModelRef; vision: ModelRef };
+    /**
+     * The vision task slot ('none' | 'cloud' | 'apple-fm' | downloaded vision
+     * catalog id). 'none' until the user downloads a vision model — vision
+     * tasks then raise a clear "download a vision model" notice instead of
+     * silently falling back. Single source of truth: task-models.ts.
+     */
+    taskVision: string;
     appleFmAvailable: boolean | null;
     /** The single model selection used by every LLM call in the app. */
     activeModel: ActiveModelRef;
@@ -178,7 +185,8 @@ function defaults(): Persisted {
     archiveAfterMs: ARCHIVE_AFTER_DEFAULT,
     models: {
       downloaded: {},
-      assignment: { chat: 'apple-fm', vision: 'cloud' },
+      assignment: { chat: 'apple-fm', vision: 'none' },
+      taskVision: 'none',
       appleFmAvailable: null,
       activeModel: { kind: 'local-applefm' }
     },
@@ -207,6 +215,20 @@ export class Store {
       const parsed = { ...defaults(), ...JSON.parse(raw) };
       // Backfill the models shape for installs that predate it.
       if (!parsed.models) parsed.models = defaults().models;
+      // Backfill the vision task slot (v0.5.3): the single source of truth
+      // moved from assignment.vision to taskVision. A legacy assignment that
+      // points at a downloaded vision model is kept; anything else ('cloud',
+      // 'apple-fm') becomes 'none' so vision tasks nudge the user to
+      // download a vision model instead of silently using another model.
+      if (typeof parsed.models.taskVision !== 'string') {
+        const legacy = parsed.models.assignment?.vision;
+        const legacyKept =
+          typeof legacy === 'string' &&
+          legacy !== 'cloud' && legacy !== 'apple-fm' && legacy !== 'applefm' &&
+          parsed.models.downloaded?.[legacy];
+        parsed.models.taskVision = legacyKept ? legacy : 'none';
+        parsed.models.assignment.vision = parsed.models.taskVision;
+      }
       // Backfill brain config + voice-control flag for installs that predate them.
       if (!parsed.brain) parsed.brain = defaults().brain;
       if (!parsed.voice) parsed.voice = defaults().voice;

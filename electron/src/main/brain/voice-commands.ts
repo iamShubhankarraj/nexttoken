@@ -209,6 +209,16 @@ export const VOICE_COMMANDS: VoiceCommandDef[] = [
   cmd('page.find', 'Page', 'Find something on the current page', [
     'find pricing on this page', 'look for the download link'
   ], { slots: [{ name: 'query', type: 'text', description: 'What to look for' }], specialist: 'chat' }),
+  // Screen vision: the agent captures the screen and describes it with the
+  // vision-slot model (describe_screen tool). Runs through the agent so the
+  // vision-missing nudge fires when no vision model is downloaded.
+  cmd('screen.describe', 'Screen', 'Describe what is on the screen', [
+    "what's on my screen", 'describe my screen', 'what do you see',
+    'describe this image', 'describe this screenshot', 'what is shown here'
+  ], {
+    slots: [{ name: 'question', type: 'text', description: 'What to focus on in the description' }],
+    specialist: 'agent'
+  }),
 
   // -- Voice itself --------------------------------------------------------------------
   cmd('voice.listen.start', 'Voice', 'Start listening for voice commands', [

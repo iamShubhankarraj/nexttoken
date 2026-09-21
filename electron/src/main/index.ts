@@ -17,6 +17,7 @@ import { executeControl, runTerminalControl, type ControlEnv } from './brain/con
 import { MODEL_CATALOG, ModelDownloader, targetPathFor, ensureEspeakNgData, type DownloadEvent } from './models';
 import { ensureSidecar, whisperManualSteps } from './models/binaries';
 import { registerModelsIpc } from './models/ipc';
+import { setVisionRef, describeTaskModels } from './models/task-models';
 import { setupUpdater, checkForUpdatesManually } from './updater';
 import { detectBrowsers, type DetectedBrowser } from './import/browsers';
 import { importBookmarks, importTabs, type ImportDeps, type ImportReport } from './import/index';
@@ -327,9 +328,33 @@ function initModelTier() {
         pageText: snap ? formatSnapshot(snap) : '(no readable page)'
       };
     },
-    startAgentRun: (task: string) =>
-      startAgentRun(task, { win: win as BrowserWindow, tabs, store, emit: emitAgent, router: routerDeps }, { voice: true }),
-    emit: (e: BrainEvent) => win?.webContents.send('nt.brain.event', e)
+    startAgentRun: async (task: string) => {
+      const runId = await startAgentRun(
+        task,
+        {
+          win: win as BrowserWindow,
+          tabs,
+          store,
+          emit: emitAgent,
+          router: routerDeps,
+          // Voice turn state: thinking while the model reasons, acting while
+          // browser tools run, back to idle when the run settles.
+          onVoiceState: (s) => voiceEngine.setRunState(s),
+          onVisionMissing: nudgeVisionModels
+        },
+        { voice: true }
+      );
+      voiceRunIds.add(runId);
+      return runId;
+    },
+    emit: (e: BrainEvent) => {
+      win?.webContents.send('nt.brain.event', e);
+      if (e.kind === 'vision-missing') {
+        // Nudge the model manager: open Settings → Models with the Vision
+        // slot highlighted so the user can download a vision model.
+        win?.webContents.send('nt.ui.open-models', { task: 'vision' });
+      }
+    }
   });
 }
 
@@ -397,6 +422,38 @@ function sendSnapshot() {
 
 function emitAgent(e: AgentEvent) {
   win?.webContents.send('nt.agent-event', e);
+  // Voice-driven runs are tracked so barge-in can cancel them mid-flight.
+  if (e.kind === 'done') voiceRunIds.delete(e.runId);
+}
+
+/** Run ids of voice-driven agent runs still in flight (barge-in targets). */
+const voiceRunIds = new Set<string>();
+
+/**
+ * Nudge the model manager: open Settings → Models with the Vision slot
+ * highlighted, so the user can download a vision model.
+ */
+function nudgeVisionModels(): void {
+  win?.webContents.send('nt.ui.open-models', { task: 'vision' });
+}
+
+/**
+ * One voice turn, end to end: the brain owns the transcript, the voice
+ * engine mirrors the turn state for the toolbar chip. Fire-and-forget —
+ * callers never await this, so the renderer stays responsive while the
+ * turn runs. Errors are spoken by the orchestrator itself; anything that
+ * escapes becomes a brain error event.
+ */
+async function runVoiceTurn(text: string, source: 'voice' | 'text'): Promise<void> {
+  voiceEngine.setRunState('thinking');
+  try {
+    await orchestrator.handleUtterance(text, source);
+  } finally {
+    // Voice agent runs keep driving the state themselves via onVoiceState —
+    // only settle here when no voice run is still in flight. Never clears
+    // 'speaking' (a reply being spoken) or an active listen.
+    if (voiceRunIds.size === 0) voiceEngine.setRunState(null);
+  }
 }
 
 // -- native ad blocker --------------------------------------------------------
@@ -804,7 +861,26 @@ function registerIpc() {
   // -- agent -------------------------------------------------------------------
   ipcMain.handle('nt.agent.chat', (_e, message: string, opts?: { voice?: boolean }) => {
     if (!win) throw new Error('No window');
-    return startAgentRun(message, { win, tabs, store, emit: emitAgent, router: routerDeps }, opts);
+    const p = startAgentRun(
+      message,
+      {
+        win,
+        tabs,
+        store,
+        emit: emitAgent,
+        router: routerDeps,
+        // Voice turns drive the toolbar chip (thinking → acting → idle) and
+        // nudge the model manager when a vision task finds the slot empty.
+        onVoiceState: opts?.voice ? (s) => voiceEngine.setRunState(s) : undefined,
+        onVisionMissing: nudgeVisionModels
+      },
+      opts
+    );
+    if (opts?.voice) {
+      // Track for barge-in cancellation; the 'done' event clears the entry.
+      void p.then((runId) => voiceRunIds.add(runId)).catch(() => {});
+    }
+    return p;
   });
   ipcMain.handle('nt.agent.cancel', (_e, runId: string) => cancelAgentRun(runId));
   ipcMain.handle('nt.agent.history', () => store.d.agentHistory);
@@ -993,7 +1069,11 @@ function registerIpc() {
     await downloader.remove(id);
     delete store.d.models.downloaded[id];
     if (store.d.models.assignment.chat === id) store.d.models.assignment.chat = APPLE_FM_REF;
-    if (store.d.models.assignment.vision === id) store.d.models.assignment.vision = CLOUD_REF;
+    if (store.d.models.assignment.vision === id || store.d.models.taskVision === id) {
+      // The vision slot never falls back to cloud silently — empty means
+      // "download a vision model", raised as a clear notice.
+      setVisionRef(store, 'none');
+    }
     const active = store.d.models.activeModel;
     if (active?.kind === 'local' && active.id === id) {
       store.d.models.activeModel = { kind: 'local-applefm' };
@@ -1011,7 +1091,7 @@ function registerIpc() {
   });
   ipcMain.handle('nt.models.assignment.set', (_e, task: 'chat' | 'vision', ref: string) => {
     if (task !== 'chat' && task !== 'vision') throw new Error(`Unknown task "${task}"`);
-    if (ref !== APPLE_FM_REF && ref !== CLOUD_REF) {
+    if (ref !== APPLE_FM_REF && ref !== CLOUD_REF && ref !== 'none') {
       const entry = catalogEntry(ref);
       if (!entry) throw new Error(`Unknown model "${ref}"`);
       if (!store.d.models.downloaded[ref]) {
@@ -1019,7 +1099,20 @@ function registerIpc() {
       }
     }
     store.d.models.assignment[task] = ref;
+    if (task === 'vision') {
+      // The vision task slot is the single source of truth (task-models.ts);
+      // route the legacy setter through it. 'cloud' is allowed as an explicit
+      // opt-in, but it never silently becomes the default.
+      setVisionRef(store, ref === CLOUD_REF ? 'cloud' : ref);
+    }
     store.saveSoon();
+  });
+  // Task-model registry: the four task slots and what serves each.
+  ipcMain.handle('nt.models.task-models', () => {
+    return describeTaskModels(store, store.d.models.appleFmAvailable === true);
+  });
+  ipcMain.handle('nt.models.set-vision', (_e, ref: string) => {
+    setVisionRef(store, ref);
   });
   ipcMain.handle('nt.models.applefm', async () => {
     const probe = await appleFm.probe();
@@ -1067,18 +1160,10 @@ function registerIpc() {
     voiceEngine.pushAudio(Buffer.from(data));
   });
   ipcMain.handle('nt.voice.stop-listening', async (): Promise<VoiceTranscript> => {
-    const result = await voiceEngine.stopListening();
-    // Voice-control mode: route the transcript into the brain pipeline,
-    // with the "thinking" state driving the pill + panel while it works.
-    if (result.text && store.d.voice.voiceControl) {
-      voiceEngine.setThinking(true);
-      try {
-        await orchestrator.handleUtterance(result.text, 'voice');
-      } finally {
-        voiceEngine.setThinking(false);
-      }
-    }
-    return result;
+    // Single dispatch: the transcript is returned to the renderer, which owns
+    // routing (fixed commands → runVoiceCommand, voice-control → brain).
+    // Main never dispatches here — that used to run every utterance twice.
+    return voiceEngine.stopListening();
   });
   ipcMain.handle('nt.voice.cancel-listening', () => {
     voiceEngine.cancelListening();
@@ -1087,8 +1172,12 @@ function registerIpc() {
     const wav = await voiceEngine.speak(text);
     return new Uint8Array(wav);
   });
-  // Barge-in: stop TTS at once so a new listen can start immediately.
+  // Barge-in: abort in-flight TTS (child killed, queue invalidated), cancel
+  // any voice-driven agent run, and return to idle so a new listen can
+  // start immediately. No zombie audio or stale replies survive this.
   ipcMain.handle('nt.voice.stop-speaking', () => {
+    for (const runId of voiceRunIds) cancelAgentRun(runId);
+    voiceRunIds.clear();
     voiceEngine.stopSpeaking();
     // The renderer stops its own audio element; if it was mid-playback it
     // also flips back to listening via the barge-in event below.
@@ -1174,7 +1263,9 @@ function registerIpc() {
     return r.ok ? { ok: true } : { ok: false, error: r.message };
   });
   ipcMain.handle('nt.brain.utterance', (_e, text: string, source: 'voice' | 'text') => {
-    void orchestrator.handleUtterance(text, source).catch((e) =>
+    // Fire-and-forget: runVoiceTurn owns the turn's voice state and the
+    // orchestrator speaks its own errors — the renderer never blocks here.
+    void runVoiceTurn(text, source).catch((e) =>
       win?.webContents.send('nt.brain.event', { kind: 'error', message: String(e) } satisfies BrainEvent));
   });
 }

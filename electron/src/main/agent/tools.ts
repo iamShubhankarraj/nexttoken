@@ -4,11 +4,14 @@ import type { Store } from '../store';
 import { runTerminal } from '../terminal';
 import { snapshotPage, formatSnapshot, extractPageText, backendForRef } from './perceive';
 import type { LlmToolDef } from './llm';
+import type { RouterDeps } from './router';
+import { isVisionRequiredError } from '../models/task-models';
 
 export interface ToolCtx {
   win: BrowserWindow;
   tabs: TabManager;
   store: Store;
+  router: RouterDeps;
 }
 
 export interface ToolOutcome {
@@ -90,6 +93,17 @@ export const TOOL_DEFS: LlmToolDef[] = [
         cwd: { type: 'string', description: 'Working directory (default: home)' }
       },
       required: ['command'], additionalProperties: false
+    }
+  },
+  {
+    name: 'describe_screen',
+    description: 'Capture the current screen and describe what is visible, using the on-device vision model. Use when the user asks what is on their screen, to describe an image or video frame, or for any visual question. If no vision model is downloaded this fails with a VISION_MODEL_REQUIRED message — relay it to the user and tell them to download a vision model in Settings → Models → Vision. Never invent visual details you did not see.',
+    parameters: {
+      type: 'object',
+      properties: {
+        question: { type: 'string', description: 'What to focus on, e.g. "what error is shown in the dialog"' }
+      },
+      additionalProperties: false
     }
   }
 ];
@@ -287,6 +301,18 @@ export async function executeTool(
       if (res.stderr.trim()) out.push(`stderr:\n${res.stderr.trim()}`);
       return { ok: (res.exitCode ?? 1) === 0, result: out.join('\n') };
     }
+    case 'describe_screen': {
+      // Real vision: screenshot → vision-slot VLM → description. A missing
+      // vision model throws VisionRequiredError — it propagates to the loop,
+      // which nudges the model manager and feeds the message back to the
+      // model so the final answer tells the user what to do.
+      const { describeScreen } = await import('../vision');
+      const { text, via } = await describeScreen(
+        ctx.router,
+        String(args.question ?? 'Describe what is visible on the screen.')
+      );
+      return { ok: true, result: `Screen description (seen by ${via}):\n${text}` };
+    }
     default:
       return fail(`Unknown tool ${name}`);
   }
@@ -299,6 +325,7 @@ export function summarizeToolCall(name: string, args: Record<string, unknown>): 
     case 'click': return `click [${args.ref}]`;
     case 'fill': return `fill [${args.ref}]: ${String(args.text ?? '').slice(0, 40)}`;
     case 'run_terminal': return `terminal: ${String(args.command ?? '').slice(0, 80)}`;
+    case 'describe_screen': return `describe screen${args.question ? `: ${String(args.question).slice(0, 60)}` : ''}`;
     default: return name;
   }
 }

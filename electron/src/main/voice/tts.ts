@@ -52,8 +52,9 @@ export class TtsEngine {
    * Synthesise text to 16 kHz mono WAV bytes.
    * @param text     text to speak (1–2000 chars after trimming)
    * @param modelDir absolute path to the downloaded Kokoro model dir
+   * @param signal   optional abort: barge-in kills the in-flight synth child
    */
-  async speak(text: string, modelDir: string): Promise<Buffer> {
+  async speak(text: string, modelDir: string, signal?: AbortSignal): Promise<Buffer> {
     const clean = text.trim().replace(/\s+/g, " ");
     if (!clean) {
       throw new Error("TTS: nothing to speak (empty text).");
@@ -83,9 +84,10 @@ export class TtsEngine {
     try {
       const wavs: Buffer[] = [];
       for (const chunk of chunks) {
+        signal?.throwIfAborted();
         const outWav = path.join(os.tmpdir(), `nt-tts-${randomUUID()}.wav`);
         tempFiles.push(outWav);
-        await synthChunk(bin, files, chunk, outWav);
+        await synthChunk(bin, files, chunk, outWav, signal);
         const raw = await fs.readFile(outWav);
         const { pcm, sampleRate } = decodePcm16(raw);
         if (pcm.length === 0) {
@@ -184,6 +186,7 @@ async function synthChunk(
   files: KokoroFiles,
   text: string,
   outWav: string,
+  signal?: AbortSignal,
 ): Promise<void> {
   const args = [
     `--kokoro-model=${files.model}`,
@@ -199,7 +202,13 @@ async function synthChunk(
   args.push(text);
 
   try {
-    await execFileAsync(bin, args, { timeout: CHUNK_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024 });
+    // The abort signal kills the sherpa-onnx child on barge-in — no zombie
+    // synth keeps the CPU busy after the user interrupted.
+    await execFileAsync(bin, args, {
+      timeout: CHUNK_TIMEOUT_MS,
+      maxBuffer: 16 * 1024 * 1024,
+      ...(signal ? { signal } : {}),
+    });
   } catch (err) {
     throw normaliseExecError(err, "TTS");
   }

@@ -59,6 +59,7 @@ function brainEventLabel(e: BrainEvent): string {
     case "ask": return e.question;
     case "spoken": return `“${e.text}”`;
     case "note": return `Note: ${e.text}`;
+    case "vision-missing": return "No vision model — opened Settings → Models → Vision";
     case "error": return e.message;
   }
 }
@@ -462,6 +463,13 @@ export function AgentPanel() {
       if (e.kind === "acted") setVoiceFeedback(e.summary);
       else if (e.kind === "ask") setVoiceFeedback(e.question);
       else if (e.kind === "error") setVoiceFeedback(`Brain: ${e.message}`);
+      else if (e.kind === "vision-missing")
+        setVoiceFeedback("No vision model yet — opened Settings → Models → Vision.");
+      // Voice-control mode: the brain owns dispatch, so claim agent runs here
+      // (not in handleVoiceCommand) — the run's reply is spoken via Kokoro.
+      // Fixed commands never reach the agent, so no stale-claim risk.
+      else if (e.kind === "dispatched" && (e.specialist === "agent" || e.specialist === "vision"))
+        voiceRunPendingRef.current = true;
     });
     return off;
   }, []);

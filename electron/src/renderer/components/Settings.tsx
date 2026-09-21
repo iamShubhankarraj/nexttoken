@@ -53,9 +53,22 @@ const SECTIONS: Array<{ id: Section; label: string; icon: typeof Plug }> = [
   { id: "theme", label: "Theme", icon: Palette },
 ];
 
-export function Settings({ onClose }: { onClose: () => void }) {
+export function Settings({
+  onClose,
+  modelsFocus,
+}: {
+  onClose: () => void;
+  /** Open straight into Models and highlight a task section (vision nudge). */
+  modelsFocus?: { task?: string };
+}) {
   const { activeSpace } = useBrowser();
   const [section, setSection] = useState<Section>("provider");
+
+  // External nudge (e.g. a vision task found no vision model): jump straight
+  // to Models and highlight the requested task section.
+  useEffect(() => {
+    if (modelsFocus) setSection("models");
+  }, [modelsFocus]);
 
   return (
     <div
@@ -125,7 +138,7 @@ export function Settings({ onClose }: { onClose: () => void }) {
 
           <div className="min-h-0 flex-1 overflow-y-auto p-5">
             {section === "provider" && <ProviderSection />}
-            {section === "models" && <ModelsPanel />}
+            {section === "models" && <ModelsPanel focusTask={modelsFocus?.task} />}
             {section === "skills" && <SkillsSection />}
             {section === "voice" && <VoiceSearchSection />}
             {section === "privacy" && <PrivacySection />}

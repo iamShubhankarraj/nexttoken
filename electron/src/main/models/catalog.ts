@@ -14,6 +14,7 @@ import type { ModelEntry } from './types';
  *       Qwen3-4B-GGUF, Qwen3-8B-GGUF, gemma-3n-E4B-it-GGUF (unsloth mirror),
  *       Qwen2.5-VL-3B-Instruct-GGUF + mmproj (ggml-org),
  *       Qwen2.5-VL-7B-Instruct-GGUF + mmproj (ggml-org),
+ *       SmolVLM2-256M-Video-Instruct-GGUF + mmproj (ggml-org, experimental slot),
  *       whisper ggml-base/small.en (ggerganov/whisper.cpp),
  *       kokoro-en-v0_19.tar.bz2 + espeak-ng-data.tar.bz2 (sherpa-onnx tts-models release)
  * Every entry downloads with ZERO sign-in. The canonical repos for SmolLM3
@@ -92,6 +93,19 @@ export const MODEL_CATALOG: ModelEntry[] = [
   // -- vision ---------------------------------------------------------------
   // bartowski's VL repo went access-gated (401 anonymous); ggml-org's build
   // is the same weights, verified ungated, and ships the mmproj too.
+  {
+    id: 'smolvlm2-256m-q4km',
+    name: 'SmolVLM2 256M (experimental)',
+    task: 'vision',
+    params: '256M',
+    quant: 'Q4_K_M',
+    sizeBytes: 235_000_000,
+    url: 'https://huggingface.co/ggml-org/SmolVLM2-256M-Video-Instruct-GGUF/resolve/main/SmolVLM2-256M-Video-Instruct-Q4_K_M.gguf',
+    description: 'Experimental tiny vision model (~235 MB total) — good enough to try on-device screen descriptions.',
+    license: 'Apache-2.0',
+    mmprojUrl:
+      'https://huggingface.co/ggml-org/SmolVLM2-256M-Video-Instruct-GGUF/resolve/main/mmproj-SmolVLM2-256M-Video-Instruct-Q8_0.gguf',
+  },
   {
     id: 'qwen25vl-3b-q4km',
     name: 'Qwen2.5-VL 3B',

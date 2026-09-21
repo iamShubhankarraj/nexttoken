@@ -452,6 +452,23 @@ export type ModelEvent =
   | { kind: 'done'; id: string }
   | { kind: 'error'; id: string; error: string };
 
+/** Per-task model slots — the single source of truth lives in main (task-models.ts). */
+export type TaskSlot = 'transcription' | 'agent' | 'speech' | 'vision';
+
+/** One row of the task-model registry, as shown in Settings → Models. */
+export interface TaskModelSlotInfo {
+  slot: TaskSlot;
+  title: string;
+  description: string;
+  /** Human label of what serves the slot, e.g. "Whisper base.en", "No vision model". */
+  label: string;
+  detail: string;
+  available: boolean;
+  /** Machine ref: 'none' | 'cloud' | 'apple-fm' | catalog id, used by selectors. */
+  ref: string;
+  missingHint?: string;
+}
+
 export interface ModelAssignment {
   chat: ModelRef;
   vision: ModelRef;
@@ -462,7 +479,7 @@ export interface AppleFmStatus {
   reason?: string;
 }
 
-export type VoiceEngineState = 'idle' | 'listening' | 'transcribing' | 'thinking' | 'speaking';
+export type VoiceEngineState = 'idle' | 'listening' | 'transcribing' | 'thinking' | 'acting' | 'speaking';
 
 /** Voice settings. voiceControl routes STT transcripts into the brain (voice commands). */
 export interface VoiceSettings {
@@ -524,6 +541,8 @@ export type BrainEvent =
   | { kind: 'spoken'; text: string }
   /** Informational note, e.g. the model router fell back to another model. Never spoken aloud. */
   | { kind: 'note'; text: string }
+  /** A vision task was requested but no vision model is downloaded — the UI should nudge the model manager. */
+  | { kind: 'vision-missing' }
   | { kind: 'error'; message: string };
 
 // ---------------------------------------------------------------------------
@@ -684,6 +703,10 @@ export interface NextTokenAPI {
   modelsRemove(id: string): Promise<void>;
   modelsGetAssignment(): Promise<ModelAssignment>;
   modelsSetAssignment(task: 'chat' | 'vision', ref: ModelRef): Promise<void>;
+  /** The four task slots (transcription / agent / speech / vision) and what serves each. */
+  modelsTaskModels(): Promise<TaskModelSlotInfo[]>;
+  /** Assign the vision slot: 'none', 'cloud', or a downloaded vision catalog id. */
+  modelsSetVision(ref: string): Promise<void>;
   modelsAppleFm(): Promise<AppleFmStatus>;
   modelsDiskUsage(): Promise<number>;
   onModelEvent(cb: (e: ModelEvent) => void): () => void;
@@ -739,6 +762,8 @@ export interface NextTokenAPI {
   onCommandBar(cb: () => void): () => void;
   /** Brain asked the renderer to start/stop microphone capture. */
   onVoiceRequestListen(cb: (start: boolean) => void): () => void;
+  /** Main asks the renderer to open Settings → Models, optionally focused on one task section. */
+  onOpenModels(cb: (focus: { task?: string }) => void): () => void;
   // brain — Jev System-One orchestration (key in OS keychain, never exposed)
   brainGetJev(): Promise<JevConfigPublic>;
   brainSetJev(input: JevConfigInput): Promise<JevConfigPublic>;

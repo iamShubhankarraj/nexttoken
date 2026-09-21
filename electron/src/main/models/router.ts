@@ -33,9 +33,12 @@ import type {
   ActiveModelRef, ModelChoice, ProviderValidateInput
 } from '../../shared/ipc';
 import {
-  chatComplete, testConnection,
+  chatComplete, messagesHaveImages, testConnection,
   type LlmMessage, type LlmResult, type LlmToolCall, type LlmToolDef
 } from '../agent/llm';
+import {
+  VisionRequiredError, resolveVisionModel
+} from './task-models';
 
 export interface RouterDeps {
   store: Store;
@@ -164,10 +167,13 @@ export class ModelRouter {
   // -- completion -----------------------------------------------------------
 
   async complete(opts: CompleteOpts): Promise<CompleteResult> {
+    // The vision task is served ONLY by the vision slot. When the slot is
+    // empty we raise VisionRequiredError (never silently fall back to a
+    // text model that would hallucinate about images it cannot see).
+    if ((opts.task ?? 'chat') === 'vision') return this.completeVision(opts);
     const tools = opts.tools ?? [];
-    const task = opts.task ?? 'chat';
-    const primary = await this.primaryAttempt(task, opts.messages, tools, opts.signal);
-    const fallbacks = this.fallbackAttempts(task, primary.viaRef, tools, opts.messages, opts.signal);
+    const primary = await this.primaryAttempt(opts.messages, tools, opts.signal);
+    const fallbacks = this.fallbackAttempts(primary.viaRef, tools, opts.messages, opts.signal);
     const errors: string[] = [];
     const attempts = [primary, ...fallbacks];
     for (let i = 0; i < attempts.length; i++) {
@@ -191,6 +197,91 @@ export class ModelRouter {
       }
     }
     throw new Error(`All models failed: ${errors.join(' | ')}`);
+  }
+
+  /**
+   * Vision completion: the vision slot is the single source of truth.
+   * 'none' (or a removed model) → VisionRequiredError so the caller can
+   * nudge the user to download a vision model. Fallbacks stay inside the
+   * vision-capable set: other usable cloud providers, then other downloaded
+   * VLMs. Text-only models (Apple FM, chat GGUFs) are NEVER used here —
+   * answering a vision question without seeing the image is a hallucination.
+   */
+  private async completeVision(opts: CompleteOpts): Promise<CompleteResult> {
+    const resolved = resolveVisionModel(this.deps.store);
+    if (resolved.kind === 'none') throw new VisionRequiredError();
+
+    const tools = opts.tools ?? [];
+    if (tools.length > 0) {
+      throw new Error('Vision turns do not support tool calling — ask the chat model to call tools.');
+    }
+    const attempts: Attempt[] = [];
+    const seen = new Set<string>();
+    const push = (a: Attempt) => {
+      if (seen.has(a.viaRef)) return;
+      seen.add(a.viaRef);
+      attempts.push(a);
+    };
+
+    // Primary: whatever the vision slot resolves to.
+    if (resolved.kind === 'local') {
+      push({
+        label: resolved.entry.name, viaRef: `local:${resolved.entry.id}`,
+        run: () => this.localTurn(resolved.entry, 'vision', opts.messages, [], opts.signal)
+      });
+    } else if (resolved.kind === 'applefm') {
+      push({
+        label: 'Apple Foundation Models', viaRef: 'local-applefm',
+        run: () => this.appleFmTurn(opts.messages, [], opts.signal)
+      });
+    }
+    if (resolved.kind === 'cloud' || resolved.kind === 'applefm') {
+      // Fall through to the provider loop below for the primary provider.
+    }
+
+    // Usable cloud providers (the primary one first when the slot is 'cloud').
+    const providers = this.deps.store.d.providers.filter((p) => this.providerUsable(p));
+    for (const p of providers) {
+      push({
+        label: `${p.name} · ${p.model}`, viaRef: `cloud:${p.id}`,
+        run: () => this.cloudTurn(p, opts.messages, [], opts.signal)
+      });
+    }
+    // Other downloaded VLMs as a last resort.
+    for (const e of MODEL_CATALOG) {
+      if (e.task !== 'vision' || !this.deps.store.d.models.downloaded[e.id]) continue;
+      push({
+        label: e.name, viaRef: `local:${e.id}`,
+        run: () => this.localTurn(e, 'vision', opts.messages, [], opts.signal)
+      });
+    }
+    if (attempts.length === 0) {
+      throw new VisionRequiredError();
+    }
+
+    const errors: string[] = [];
+    for (let i = 0; i < attempts.length; i++) {
+      try {
+        const r = await attempts[i].run();
+        const fallbackUsed = i > 0;
+        return {
+          text: r.text,
+          toolCalls: r.toolCalls,
+          via: attempts[i].label,
+          viaRef: attempts[i].viaRef,
+          fallbackUsed,
+          fallbackNote: fallbackUsed
+            ? `“${attempts[0].label}” unavailable (${errors[0]}); answered by ${attempts[i].label}.`
+            : undefined
+        };
+      } catch (e) {
+        if (opts.signal?.aborted) throw e;
+        // A missing-vision signal from deeper in the stack stays typed.
+        if (e instanceof VisionRequiredError) throw e;
+        errors.push(e instanceof Error ? e.message : String(e));
+      }
+    }
+    throw new Error(`All vision models failed: ${errors.join(' | ')}`);
   }
 
   /**
@@ -273,12 +364,10 @@ export class ModelRouter {
   }
 
   private async primaryAttempt(
-    task: 'chat' | 'vision',
     messages: LlmMessage[],
     tools: LlmToolDef[],
     signal?: AbortSignal
   ): Promise<Attempt> {
-    if (task === 'vision') return this.visionPrimary(messages, tools, signal);
     const active = this.deps.store.d.models.activeModel ?? { kind: 'local-applefm' as const };
     switch (active.kind) {
       case 'local-applefm':
@@ -291,7 +380,7 @@ export class ModelRouter {
         if (entry && this.deps.store.d.models.downloaded[active.id!]) {
           return {
             label: entry.name, viaRef: `local:${entry.id}`,
-            run: () => this.localTurn(entry, task, messages, tools, signal)
+            run: () => this.localTurn(entry, 'chat', messages, tools, signal)
           };
         }
         return failing(active.id ?? 'model', `local:${active.id ?? ''}`,
@@ -311,36 +400,7 @@ export class ModelRouter {
     }
   }
 
-  /** The vision task keeps its dedicated per-task assignment. */
-  private visionPrimary(messages: LlmMessage[], tools: LlmToolDef[], signal?: AbortSignal): Attempt {
-    const ref = this.deps.store.d.models.assignment.vision ?? 'cloud';
-    if (ref === 'apple-fm' || ref === 'applefm') {
-      return {
-        label: 'Apple Foundation Models', viaRef: 'local-applefm',
-        run: () => this.appleFmTurn(messages, tools, signal)
-      };
-    }
-    if (ref !== 'cloud') {
-      const entry = catalogEntry(ref);
-      if (entry && this.deps.store.d.models.downloaded[ref]) {
-        return {
-          label: entry.name, viaRef: `local:${entry.id}`,
-          run: () => this.localTurn(entry, 'vision', messages, tools, signal)
-        };
-      }
-    }
-    const p = this.deps.store.d.providers.find((x) => x.enabled && this.providerUsable(x));
-    if (!p) {
-      return failing('cloud', 'cloud', 'No usable cloud provider for the vision task — configure one in Settings → Providers.');
-    }
-    return {
-      label: `${p.name} · ${p.model}`, viaRef: `cloud:${p.id}`,
-      run: () => this.cloudTurn(p, messages, tools, signal)
-    };
-  }
-
   private fallbackAttempts(
-    task: 'chat' | 'vision',
     excludeViaRef: string,
     tools: LlmToolDef[],
     messages: LlmMessage[],
@@ -368,7 +428,7 @@ export class ModelRouter {
     if (dl && `local:${dl.id}` !== excludeViaRef) {
       out.push({
         label: dl.name, viaRef: `local:${dl.id}`,
-        run: () => this.localTurn(dl, task, messages, tools, signal)
+        run: () => this.localTurn(dl, 'chat', messages, tools, signal)
       });
     }
     return out;
@@ -385,6 +445,12 @@ export class ModelRouter {
   // -- turn implementations ---------------------------------------------------
 
   private async appleFmTurn(messages: LlmMessage[], tools: LlmToolDef[], signal?: AbortSignal): Promise<LlmResult> {
+    if (messagesHaveImages(messages)) {
+      throw new Error(
+        'Apple Foundation Models cannot process images. ' +
+        'Pick a downloaded vision model or a cloud provider for the vision slot in Settings → Models.'
+      );
+    }
     if (tools.length > 0) {
       throw new Error('Apple Foundation Models has no tool calling — trying the next model');
     }

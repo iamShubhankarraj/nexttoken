@@ -24,6 +24,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { nt } from "../nt";
+import type { TaskModelSlotInfo } from "../../shared/ipc";
 
 /* ------------------------- bridge (local contract) ------------------------ */
 
@@ -54,6 +55,9 @@ interface NtModels {
   modelsRemove(id: string): Promise<void>;
   modelsGetAssignment(): Promise<{ chat: string; vision: string }>;
   modelsSetAssignment(task: "chat" | "vision", ref: string): Promise<void>;
+  /** Task-model registry (newer builds): the four task slots and what serves each. */
+  modelsTaskModels?(): Promise<TaskModelSlotInfo[]>;
+  modelsSetVision?(ref: string): Promise<void>;
   modelsAppleFm(): Promise<{ available: boolean; reason?: string }>;
   modelsDiskUsage(): Promise<number>;
   onModelEvent(cb: (e: ModelEvent) => void): () => void;
@@ -104,7 +108,7 @@ function progressPct(e: ModelEntryPublic): number {
 
 /* -------------------------------- component ------------------------------- */
 
-export function ModelsPanel() {
+export function ModelsPanel({ focusTask }: { focusTask?: string }) {
   const [entries, setEntries] = useState<ModelEntryPublic[] | null>(null);
   const [apple, setApple] = useState<{
     available: boolean;
@@ -123,6 +127,12 @@ export function ModelsPanel() {
   const [assignBusy, setAssignBusy] = useState<"" | "chat" | "vision">("");
   const [assignError, setAssignError] = useState<string | null>(null);
   const [activeModelLabel, setActiveModelLabel] = useState<string | null>(null);
+  // Task-model registry: one serving model per task. null = older build without the bridge.
+  const [slots, setSlots] = useState<TaskModelSlotInfo[] | null>(null);
+  const [visionBusy, setVisionBusy] = useState(false);
+  // Focus highlight: when the vision-missing nudge opens this panel, draw the
+  // eye to the Vision slot card.
+  const [visionFocus, setVisionFocus] = useState(false);
   // HF token: null = preload doesn't support it yet (older build) → hide card.
   const [hfTokenSaved, setHfTokenSaved] = useState<boolean | null>(null);
   const [hfTokenInput, setHfTokenInput] = useState("");
@@ -149,16 +159,18 @@ export function ModelsPanel() {
     setLoadError(null);
     try {
       const api = modelsApi();
-      const [list, fm, assign, usage] = await Promise.all([
+      const [list, fm, assign, usage, taskSlots] = await Promise.all([
         api.modelsList(),
         api.modelsAppleFm(),
         api.modelsGetAssignment(),
         api.modelsDiskUsage(),
+        api.modelsTaskModels ? api.modelsTaskModels().catch(() => null) : Promise.resolve(null),
       ]);
       setEntries(list);
       setApple(fm);
       setAssignment(assign);
       setDiskBytes(usage);
+      setSlots(taskSlots);
     } catch (err) {
       setLoadError(err instanceof Error ? err.message : String(err));
     }
@@ -320,6 +332,34 @@ export function ModelsPanel() {
     }
   };
 
+  // Vision slot assignment goes through the task-model registry (not the
+  // legacy chat/vision assignment setter).
+  const setVision = async (ref: string) => {
+    const api = modelsApi();
+    if (!api.modelsSetVision) return;
+    setVisionBusy(true);
+    setAssignError(null);
+    try {
+      await api.modelsSetVision(ref);
+    } catch (err) {
+      setAssignError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setVisionBusy(false);
+      void load();
+    }
+  };
+
+  // Vision-missing nudge: scroll the Vision slot card into view and hold a
+  // highlight ring on it briefly.
+  useEffect(() => {
+    if (focusTask !== "vision" || slots === null) return;
+    setVisionFocus(true);
+    const el = document.getElementById("nt-vision-slot");
+    el?.scrollIntoView({ behavior: "smooth", block: "center" });
+    const t = setTimeout(() => setVisionFocus(false), 6000);
+    return () => clearTimeout(t);
+  }, [focusTask, slots]);
+
   /* ------------------------------ HF token -------------------------------- */
 
   const saveHfToken = async () => {
@@ -389,14 +429,55 @@ export function ModelsPanel() {
   )
     ? assignment.chat
     : CLOUD_REF;
-  const visionValue = [CLOUD_REF, ...downloadedFor("vision").map((e) => e.id)].includes(
-    assignment.vision,
-  )
-    ? assignment.vision
-    : CLOUD_REF;
+  // Legacy builds without the task-model registry still show the old vision
+  // dropdown; new builds configure vision in the Task models card above.
+  const legacyVision = !slots;
 
   return (
     <div>
+      {/* --------------------------- Task models --------------------------- */}
+      {slots && (
+        <>
+          <h3
+            className="mb-2 text-[13px] font-semibold"
+            style={{ color: "var(--nt-text-1)" }}
+          >
+            Task models
+          </h3>
+          <p
+            className="mb-2.5 text-[12px]"
+            style={{ color: "var(--nt-text-3)" }}
+          >
+            Every job the app does is served by exactly one model. Voice input
+            and speech output always stay on-device; vision needs a downloaded
+            model or an explicit cloud opt-in.
+          </p>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            {slots.map((s) => (
+              <TaskSlotCard
+                key={s.slot}
+                slot={s}
+                focused={visionFocus && s.slot === "vision"}
+                visionOptions={
+                  s.slot === "vision"
+                    ? [
+                        { value: "none", label: "No vision model — download one below" },
+                        ...downloadedFor("vision").map((e) => ({
+                          value: e.id,
+                          label: `${e.name} (${formatBytes(e.sizeBytes)})`,
+                        })),
+                        { value: "cloud", label: "Cloud (BYOK fallback)" },
+                      ]
+                    : undefined
+                }
+                visionBusy={visionBusy}
+                onSetVision={setVision}
+              />
+            ))}
+          </div>
+        </>
+      )}
+
       {/* ------------------------- On-device / Apple FM ---------------------- */}
       <h3
         className="mb-2 text-[13px] font-semibold"
@@ -635,20 +716,29 @@ export function ModelsPanel() {
             Agent tab.
           </p>
         </div>
-        <AssignmentSelect
-          label="Vision model"
-          value={visionValue}
-          busy={assignBusy === "vision"}
-          disabled={assignBusy !== ""}
-          onChange={(v) => void setAssign("vision", v)}
-          options={[
-            ...downloadedFor("vision").map((e) => ({
-              value: e.id,
-              label: `${e.name} (${formatBytes(e.sizeBytes)})`,
-            })),
-            { value: CLOUD_REF, label: "Cloud (BYOK fallback)" },
-          ]}
-        />
+        {legacyVision && (
+          <AssignmentSelect
+            label="Vision model"
+            value={
+              [ "none", CLOUD_REF, ...downloadedFor("vision").map((e) => e.id) ].includes(
+                assignment.vision,
+              )
+                ? assignment.vision
+                : CLOUD_REF
+            }
+            busy={assignBusy === "vision"}
+            disabled={assignBusy !== ""}
+            onChange={(v) => void setAssign("vision", v)}
+            options={[
+              { value: "none", label: "No vision model — download one below" },
+              ...downloadedFor("vision").map((e) => ({
+                value: e.id,
+                label: `${e.name} (${formatBytes(e.sizeBytes)})`,
+              })),
+              { value: CLOUD_REF, label: "Cloud (BYOK fallback)" },
+            ]}
+          />
+        )}
       </div>
       {assignError && (
         <p className="mt-2 text-[12.5px]" style={{ color: "#d97362" }}>
@@ -716,6 +806,107 @@ export function ModelsPanel() {
 }
 
 /* --------------------------------- bits ---------------------------------- */
+
+const SLOT_ICONS: Record<TaskModelSlotInfo["slot"], typeof Mic> = {
+  transcription: Mic,
+  agent: Brain,
+  speech: Volume2,
+  vision: Eye,
+};
+
+/** One task-model slot card: fixed slots are read-only, vision is configurable. */
+function TaskSlotCard({
+  slot,
+  focused,
+  visionOptions,
+  visionBusy,
+  onSetVision,
+}: {
+  slot: TaskModelSlotInfo;
+  focused: boolean;
+  visionOptions?: Array<{ value: string; label: string }>;
+  visionBusy: boolean;
+  onSetVision: (ref: string) => void;
+}) {
+  const Icon = SLOT_ICONS[slot.slot];
+  return (
+    <div
+      id={slot.slot === "vision" ? "nt-vision-slot" : undefined}
+      className="nt-r-md border p-3.5"
+      style={{
+        borderColor: focused ? "var(--nt-accent)" : "var(--nt-border)",
+        background: "var(--nt-bg-raised)",
+        boxShadow: focused ? "0 0 0 2px var(--nt-accent-soft)" : undefined,
+      }}
+    >
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <Icon size={15} strokeWidth={1.75} style={{ color: "var(--nt-text-2)" }} />
+          <p className="text-[13px] font-semibold" style={{ color: "var(--nt-text-1)" }}>
+            {slot.title}
+          </p>
+        </div>
+        <span
+          className="nt-r-sm shrink-0 px-2 py-0.5 text-[11px] font-medium"
+          style={
+            slot.available
+              ? { background: "rgba(111,162,135,0.1)", color: "#6fa287" }
+              : { background: "rgba(196,158,74,0.1)", color: "#c49e4a" }
+          }
+        >
+          {slot.available ? "Ready" : "Needs setup"}
+        </span>
+      </div>
+      <p className="mt-1.5 text-[13px] font-medium" style={{ color: "var(--nt-text-1)" }}>
+        {slot.label}
+      </p>
+      <p className="text-[12px]" style={{ color: "var(--nt-text-3)" }}>
+        {slot.detail}
+      </p>
+      <p className="mt-1.5 text-[12.5px]" style={{ color: "var(--nt-text-2)" }}>
+        {slot.description}
+      </p>
+      {slot.missingHint && (
+        <p className="mt-1.5 text-[12px] font-medium" style={{ color: "#c49e4a" }}>
+          {slot.missingHint}
+        </p>
+      )}
+      {slot.slot === "vision" && visionOptions && (
+        <div className="relative mt-2.5">
+          <select
+            value={visionOptions.some((o) => o.value === slot.ref) ? slot.ref : "none"}
+            disabled={visionBusy}
+            onChange={(e) => onSetVision(e.target.value)}
+            aria-label="Vision model"
+            className="nt-r-sm w-full appearance-none border bg-[var(--nt-bg-base)] py-2 pl-3 pr-8 text-[13px] outline-none transition-colors focus:border-[var(--nt-accent)] disabled:opacity-60"
+            style={{ borderColor: "var(--nt-border)", color: "var(--nt-text-1)" }}
+          >
+            {visionOptions.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+          <span
+            className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2"
+            style={{ color: "var(--nt-text-3)" }}
+          >
+            {visionBusy ? (
+              <Loader2 size={14} strokeWidth={1.75} className="animate-spin" />
+            ) : (
+              <ChevronDown size={14} strokeWidth={1.75} className="pointer-events-none" />
+            )}
+          </span>
+        </div>
+      )}
+      {slot.slot === "agent" && (
+        <p className="mt-1.5 text-[12px]" style={{ color: "var(--nt-text-3)" }}>
+          Change it any time in the Agent tab model switcher.
+        </p>
+      )}
+    </div>
+  );
+}
 
 function AssignmentSelect({
   label,

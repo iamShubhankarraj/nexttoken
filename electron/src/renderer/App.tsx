@@ -59,6 +59,11 @@ function Shell() {
     setSplitPick,
   } = useBrowser();
   const [commandOpen, setCommandOpen] = useState(false);
+  // Models nudge: main asks us to open Settings → Models, optionally
+  // highlighting one task section (vision-missing nudge).
+  const [modelsFocus, setModelsFocus] = useState<{ task?: string } | undefined>(
+    undefined,
+  );
   // Delight moment: gentle overshoot when the space (and theme) changes.
   const [delight, setDelight] = useState(false);
   const activeSpaceId = snapshot?.activeSpaceId;
@@ -75,6 +80,22 @@ function Shell() {
     const open = () => setCommandOpen(true);
     window.addEventListener("nt:open-command-bar", open);
     return () => window.removeEventListener("nt:open-command-bar", open);
+  }, []);
+
+  // Main-process nudge: open Settings → Models (e.g. a vision task found no
+  // vision model). The focus object is recreated per nudge so repeated nudges
+  // re-fire the Settings highlight effect.
+  useEffect(() => {
+    let off: (() => void) | undefined;
+    try {
+      off = nt().onOpenModels((focus) => {
+        setModelsFocus({ ...(focus ?? {}) });
+        void nt().uiSetSettingsOpen(true);
+      });
+    } catch {
+      /* bridge unavailable */
+    }
+    return () => off?.();
   }, []);
 
   const closeOverlays = useCallback(() => {
@@ -231,7 +252,10 @@ function Shell() {
       {snapshot.agentPanelOpen && <AgentPanel />}
       {commandOpen && <CommandBar onClose={() => setCommandOpen(false)} />}
       {snapshot.settingsOpen && (
-        <Settings onClose={() => void nt().uiSetSettingsOpen(false)} />
+        <Settings
+          onClose={() => void nt().uiSetSettingsOpen(false)}
+          modelsFocus={modelsFocus}
+        />
       )}
       <ImportDialogHost />
     </div>

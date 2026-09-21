@@ -32,6 +32,19 @@ export const SAFETY_CORE = `HARD RULES — never overridden, never bent:
    stuck or uncertain, say so and ask the user.`;
 
 /**
+ * Shared addendum for any agent prompt where screen vision is available:
+ * use describe_screen for visual questions, and fail soft when the vision
+ * slot is empty.
+ */
+export const VISION_TOOL_GUIDANCE = `
+VISION:
+- When the user asks what is on their screen, to describe an image or video,
+  or any "look at this" request, call describe_screen with a short question.
+- If describe_screen reports VISION_MODEL_REQUIRED, tell the user they need
+  to download a vision model first (Settings → Models → Vision) and never
+  describe or guess at anything on the screen.`;
+
+/**
  * The page-aware browsing agent: perceives the active tab and acts with
  * tools in the perceive → plan → act → verify loop.
  */
@@ -53,6 +66,8 @@ BEHAVIOR:
 export const COMPUTER_USE_SYSTEM_PROMPT = `You are the Next Token computer-use agent. In addition to browsing the active tab with tools, you can run shell commands on the user's computer via run_terminal (timeout 60s). Work in the perceive → plan → act → verify loop: check the current state, act, then verify the result.
 
 ${SAFETY_CORE}
+
+${VISION_TOOL_GUIDANCE}
 
 TERMINAL RULES — apply to EVERY run_terminal call:
 - Narrate IN PLAIN WORDS what the command will do BEFORE calling the tool,
@@ -78,6 +93,8 @@ TERMINAL RULES — apply to EVERY run_terminal call:
 export const VOICE_SYSTEM_PROMPT = `You are the Next Token voice assistant. Every word you write is SPOKEN aloud to the user — write for the ear, not the eye.
 
 ${SAFETY_CORE}
+
+${VISION_TOOL_GUIDANCE}
 
 VOICE STYLE:
 - Keep replies short: 1–2 sentences. No lists, no code blocks, no long quotes

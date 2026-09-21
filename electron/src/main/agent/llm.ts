@@ -7,8 +7,54 @@
 export interface LlmMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
   content: string;
+  /**
+   * Optional image attachments (base64, no data-URI prefix). Mapped to
+   * OpenAI `image_url` content parts / Anthropic image blocks by the
+   * providers below; Apple Foundation Models rejects them with a clear
+   * error (no image input there).
+   */
+  images?: LlmImage[];
   toolCallId?: string;
   toolCalls?: LlmToolCall[];
+}
+
+/** One image for a vision turn: base64 PNG/JPEG bytes + MIME type. */
+export interface LlmImage {
+  data: string;
+  mimeType: string;
+}
+
+/** True when any message in the turn carries image attachments. */
+export function messagesHaveImages(messages: LlmMessage[]): boolean {
+  return messages.some((m) => (m.images?.length ?? 0) > 0);
+}
+
+/** OpenAI-style content value: plain string, or text+image parts. */
+function openAiContent(m: LlmMessage): unknown {
+  if (!m.images?.length) return m.content;
+  const parts: unknown[] = [];
+  if (m.content) parts.push({ type: 'text', text: m.content });
+  for (const img of m.images) {
+    parts.push({
+      type: 'image_url',
+      image_url: { url: `data:${img.mimeType};base64,${img.data}` }
+    });
+  }
+  return parts;
+}
+
+/** Anthropic-style content blocks for one message. */
+function anthropicContent(m: LlmMessage): unknown {
+  if (!m.images?.length) return m.content;
+  const blocks: unknown[] = [];
+  for (const img of m.images) {
+    blocks.push({
+      type: 'image',
+      source: { type: 'base64', media_type: img.mimeType, data: img.data }
+    });
+  }
+  if (m.content) blocks.push({ type: 'text', text: m.content });
+  return blocks;
 }
 
 export interface LlmToolCall {
@@ -75,7 +121,7 @@ async function openAiComplete(o: LlmOpts): Promise<LlmResult> {
         }))
       };
     }
-    return { role: m.role, content: m.content };
+    return { role: m.role, content: openAiContent(m) };
   });
   const body = {
     model: o.model,
@@ -115,7 +161,7 @@ async function anthropicComplete(o: LlmOpts): Promise<LlmResult> {
       messages.push({ role: 'assistant', content });
       continue;
     }
-    messages.push({ role: m.role, content: m.content });
+    messages.push({ role: m.role, content: anthropicContent(m) });
   }
   const body = {
     model: o.model,
