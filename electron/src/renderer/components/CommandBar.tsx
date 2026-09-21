@@ -247,7 +247,7 @@ export function CommandBar({ onClose }: { onClose: () => void }) {
         style={{
           borderColor: "var(--nt-border)",
           background: "var(--nt-bg-overlay)",
-          boxShadow: "0 24px 64px rgba(0,0,0,0.55)",
+          boxShadow: "var(--nt-shadow-overlay)",
         }}
         onMouseDown={(e) => e.stopPropagation()}
       >

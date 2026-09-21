@@ -66,7 +66,7 @@ export function NewTabHero() {
           className="nt-r-lg border bg-[var(--nt-bg-raised)] px-5 py-4"
           style={{
             borderColor: "var(--nt-border-strong)",
-            boxShadow: "0 16px 48px rgba(0,0,0,0.4)",
+            boxShadow: "var(--nt-shadow-card)",
           }}
         >
           <SmartInput

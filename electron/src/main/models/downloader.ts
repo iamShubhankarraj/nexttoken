@@ -3,11 +3,14 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import http from 'node:http';
 import https from 'node:https';
+import { execFileSync } from 'node:child_process';
 import type { DownloadEvent, ModelEntry } from './types';
+import { getHfToken } from './hfToken';
 
 /**
- * Streams model files from direct URLs (HuggingFace `resolve` URLs) into
- * `modelsDir`, with resume, redirect-following, throttled progress events,
+ * Streams model files from direct URLs (HuggingFace `resolve` URLs and
+ * GitHub release assets) into `modelsDir`, with resume, redirect-following,
+ * retries with backoff on transient failures, throttled progress events,
  * atomic rename, and optional SHA-256 verification. No external dependencies.
  *
  * Layout inside `modelsDir`:
@@ -15,9 +18,12 @@ import type { DownloadEvent, ModelEntry } from './types';
  *   <id>.bin           stt model file
  *   <id>.mmproj.gguf   vision mmproj companion
  *   <id>.part          in-progress download, resumed via Range on next run
- *   <id>/              tts bundle directory (kokoro: onnx + voices + tokens)
+ *   <id>/              tts bundle directory (kokoro: extracted release
+ *                      tarballs — model.onnx, voices.bin, tokens.txt,
+ *                      espeak-ng-data/)
+ *   <id>/.downloads/   in-progress archive downloads (deleted after extract)
  *
- * For entries with multiple files (vision mmproj, tts companions) the files
+ * For entries with multiple files (vision mmproj, tts archives) the files
  * download sequentially and progress events are emitted under the same `id`.
  */
 
@@ -26,19 +32,42 @@ const PROGRESS_THROTTLE_MS = 250; // ~4 progress events/sec
 const REQUEST_TIMEOUT_MS = 60_000;
 
 /**
- * Companion files downloaded alongside the main URL for a tts entry.
- * Resolved against the directory of `entry.url` (same HF repo).
- * sherpa-onnx's kokoro config also needs an espeak-ng-data directory, which
- * is not a single downloadable file; it must be provisioned at runtime.
+ * Archive bundles downloaded + extracted for a tts entry.
+ *
+ * Kokoro's sherpa-onnx recipe needs model.onnx, voices.bin, tokens.txt AND
+ * the espeak-ng-data phonemizer directory. The old catalog pointed at a
+ * single kokoro-v1.0.onnx URL that 404s (hexgrad/Kokoro-82M only publishes
+ * PyTorch .pth); these release tarballs are the working source, verified
+ * HTTP 200 on 2026-09-21. `present` is the marker that proves the archive's
+ * contents are already extracted, so re-downloads are skipped.
  */
-const TTS_COMPANION_FILES: Record<string, string[]> = {
-  'kokoro-82m': ['voices-v1.0.bin', 'tokens.txt'],
+const TTS_ARCHIVES: Record<string, Array<{ url: string; present: RegExp }>> = {
+  'kokoro-82m': [
+    {
+      url: 'https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-en-v0_19.tar.bz2',
+      present: /\.onnx$/i,
+    },
+    {
+      url: 'https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/espeak-ng-data.tar.bz2',
+      // The kokoro tarball usually bundles espeak-ng-data already; when it
+      // does, this marker is present after the first extraction and the
+      // second download is skipped.
+      present: /(^|[/\\])espeak-ng-data$/,
+    },
+  ],
 };
 
 interface FileJob {
   url: string;
   target: string;   // final path (without .part)
   sha256?: string;
+  /**
+   * When set, the download is an archive: after a successful download it is
+   * extracted into `extractDir` (macOS /usr/bin/tar or unzip, no new deps)
+   * and the archive file is deleted. `present` proves the contents are
+   * already there, so the job is skipped on re-runs.
+   */
+  archive?: { extractDir: string; present: RegExp };
 }
 
 interface ActiveDownload {
@@ -52,12 +81,6 @@ function fileNameFromUrl(url: string): string {
   const base = path.posix.basename(u.pathname);
   if (!base) throw new Error(`Cannot determine a file name from URL: ${url}`);
   return base;
-}
-
-function urlDir(url: string): string {
-  const u = new URL(url);
-  const dir = path.posix.dirname(u.pathname);
-  return `${u.origin}${dir === '/' ? '' : dir}`;
 }
 
 /** Final on-disk path for an entry's main file. */
@@ -79,12 +102,20 @@ export function mmprojPathFor(modelsDir: string, entry: ModelEntry): string {
 }
 
 function jobsFor(modelsDir: string, entry: ModelEntry): FileJob[] {
+  // TTS entries download archive bundles (kokoro release tarballs), not the
+  // single `entry.url` file — see TTS_ARCHIVES above.
+  const ttsArchives = TTS_ARCHIVES[entry.id];
+  if (entry.task === 'tts' && ttsArchives) {
+    const dir = path.join(modelsDir, entry.id);
+    return ttsArchives.map(({ url, present }) => ({
+      url,
+      target: path.join(dir, '.downloads', fileNameFromUrl(url)),
+      archive: { extractDir: dir, present },
+    }));
+  }
   const jobs: FileJob[] = [{ url: entry.url, target: targetPathFor(modelsDir, entry), sha256: entry.sha256 }];
   if (entry.mmprojUrl) {
     jobs.push({ url: entry.mmprojUrl, target: mmprojPathFor(modelsDir, entry), sha256: entry.mmprojSha256 });
-  }
-  for (const companion of TTS_COMPANION_FILES[entry.id] ?? []) {
-    jobs.push({ url: `${urlDir(entry.url)}/${companion}`, target: path.join(modelsDir, entry.id, companion) });
   }
   return jobs;
 }
@@ -104,20 +135,23 @@ export class ModelDownloader {
   }
 
   /**
-   * Download an entry's files (main + mmproj for vision + companions for tts).
-   * Files that already exist with a non-zero size are skipped. Resumes from a
-   * `<target>.part` file when the server honors Range (206); otherwise the
-   * partial file is discarded and the download restarts.
+   * Download an entry's files (main + mmproj for vision + extracted archives
+   * for tts). Files that already exist with a non-zero size are skipped.
+   * Resumes from a `<target>.part` file when the server honors Range (206);
+   * otherwise the partial file is discarded and the download restarts.
+   * Transient failures (network blips, timeouts, HTTP 5xx/429) are retried
+   * with exponential backoff; permanent ones (404, 401/403, checksum
+   * mismatch) fail fast with a human-readable message.
    */
   async download(entry: ModelEntry): Promise<void> {
-    fs.mkdirSync(this.modelsDir, { recursive: true });
-    if (this.active.has(entry.id)) return; // already downloading
     const active: ActiveDownload = { req: null, file: null, cancelled: false };
+    if (this.active.has(entry.id)) return; // already downloading
     this.active.set(entry.id, active);
     try {
+      fs.mkdirSync(this.modelsDir, { recursive: true });
       for (const job of jobsFor(this.modelsDir, entry)) {
         if (active.cancelled) throw new Error('Download cancelled');
-        await this.downloadFile(entry.id, job, active);
+        await this.downloadWithRetry(entry.id, job, active);
       }
       this.onEvent({ kind: 'done', id: entry.id });
     } catch (err) {
@@ -138,6 +172,11 @@ export class ModelDownloader {
     active.cancelled = true;
     try { active.req?.destroy(); } catch { /* ignore */ }
     try { active.file?.destroy(); } catch { /* ignore */ }
+    // Main's progress map is cleared on any non-progress event; emitting here
+    // means a fresh Download click starts over instead of hitting the stale
+    // "already downloading" guard. The panel treats 'cancelled' as a quiet
+    // state reset, not a red error.
+    this.onEvent({ kind: 'error', id, error: 'Download cancelled' });
   }
 
   /** Delete an entry's files (model, mmproj, tts bundle dir, partials). */
@@ -179,6 +218,28 @@ export class ModelDownloader {
 
   // -- internals ------------------------------------------------------------
 
+  /**
+   * Download one file job, retrying transient failures with exponential
+   * backoff (2s, 4s, 8s + jitter, max 4 attempts). Resume picks up from the
+   * kept `.part` file, so a retry rarely re-downloads from zero.
+   */
+  private async downloadWithRetry(id: string, job: FileJob, active: ActiveDownload): Promise<void> {
+    const MAX_ATTEMPTS = 4;
+    for (let attempt = 1; ; attempt++) {
+      try {
+        await this.downloadFile(id, job, active);
+        return;
+      } catch (err) {
+        const e = err instanceof Error ? err : new Error(String(err));
+        if (active.cancelled || attempt >= MAX_ATTEMPTS || !isTransientDownloadError(e)) {
+          throw e;
+        }
+        const backoffMs = Math.min(30_000, 1000 * 2 ** attempt) + Math.floor(Math.random() * 1000);
+        await sleep(backoffMs);
+      }
+    }
+  }
+
   private downloadFile(id: string, job: FileJob, active: ActiveDownload): Promise<void> {
     return new Promise((resolve, reject) => {
       let settled = false;
@@ -188,6 +249,11 @@ export class ModelDownloader {
         if (err) reject(err);
         else resolve();
       };
+
+      // Archive jobs: skip when the extracted marker is already present.
+      if (job.archive && archiveMarkerPresent(job.archive.extractDir, job.archive.present)) {
+        return done();
+      }
 
       const partPath = `${job.target}.part`;
       let resumeFrom = 0;
@@ -207,7 +273,7 @@ export class ModelDownloader {
       const finishPart = (hash: crypto.Hash, received: number, total: number | null): void => {
         try {
           if (total !== null && received !== total) {
-            throw new Error(`Download truncated: received ${received} of ${total} bytes`);
+            throw new Error(`Download truncated: received ${received} of ${total} bytes — will retry`);
           }
           if (job.sha256) {
             const digest = hash.digest('hex');
@@ -217,6 +283,17 @@ export class ModelDownloader {
             }
           }
           fs.renameSync(partPath, job.target); // atomic on the same volume
+          if (job.archive) {
+            // A corrupt archive can't be repaired by re-extracting: drop it
+            // so the retry path downloads it fresh.
+            try {
+              extractArchiveSync(job.target, job.archive.extractDir);
+            } catch (e) {
+              try { fs.unlinkSync(job.target); } catch { /* ignore */ }
+              throw e;
+            }
+            try { fs.unlinkSync(job.target); } catch { /* ignore */ }
+          }
           done();
         } catch (e) {
           done(e instanceof Error ? e : new Error(String(e)));
@@ -237,6 +314,13 @@ export class ModelDownloader {
           'Accept': '*/*',
         };
         if (startByte > 0) headers['Range'] = `bytes=${startByte}-`;
+        // Gated Hugging Face repos need the user's token (Settings → Models).
+        // Only sent to huggingface.co itself — never to redirect targets
+        // (the CDN URLs are signed and don't need it).
+        if (parsed.hostname === 'huggingface.co' || parsed.hostname.endsWith('.huggingface.co')) {
+          const token = getHfToken();
+          if (token) headers['Authorization'] = `Bearer ${token}`;
+        }
 
         const req = getClient(url).get(url, { headers }, (res) => {
           // Follow redirects (HuggingFace resolve URLs 302 to a CDN).
@@ -259,7 +343,7 @@ export class ModelDownloader {
 
           if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
             res.resume();
-            return done(new Error(`Download failed for ${job.url}: HTTP ${res.statusCode ?? 'unknown'}`));
+            return done(friendlyHttpError(res.statusCode ?? 0, job.url));
           }
 
           const resumed = res.statusCode === 206;
@@ -321,6 +405,90 @@ export class ModelDownloader {
 
       request(job.url, MAX_REDIRECTS, resumeFrom);
     });
+  }
+}
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/**
+ * Human-readable errors for HTTP failures. 401/403 almost always means the
+ * HuggingFace repo is access-gated (license acceptance + token required) —
+ * Next Token has no token support, so say so plainly instead of dumping a
+ * raw status code on the user.
+ */
+function friendlyHttpError(status: number, url: string): Error {
+  if (status === 401 || status === 403) {
+    return new Error(
+      'This model is access-gated on Hugging Face — add an HF token in Settings → Models, or choose an ungated model.'
+    );
+  }
+  if (status === 404) {
+    return new Error(
+      `Download failed (HTTP 404): file not found at ${url} — the catalog link looks outdated.`
+    );
+  }
+  if (status === 429) {
+    return new Error(`Download rate-limited (HTTP 429) — retrying…`);
+  }
+  if (status >= 500) {
+    return new Error(`Download failed (HTTP ${status}): server error — retrying…`);
+  }
+  return new Error(`Download failed for ${url}: HTTP ${status || 'unknown'}`);
+}
+
+/** Retryable: network blips, timeouts, rate limits, 5xx, truncated bodies, bad archives. */
+function isTransientDownloadError(e: Error): boolean {
+  const m = e.message;
+  if (/cancelled/i.test(m)) return false;
+  if (/access-gated|file not found at|checksum mismatch|invalid download url|too many redirects/i.test(m)) {
+    return false;
+  }
+  return /network error|timed out|stalled|HTTP 429|HTTP 5\d\d|server error — retrying|truncated|will retry|ECONNRESET|ETIMEDOUT|EAI_AGAIN|socket hang up|failed to extract/i.test(m);
+}
+
+/** Depth-limited recursive walk looking for a path matching `present`. */
+function archiveMarkerPresent(dir: string, present: RegExp, depth = 0): boolean {
+  if (depth > 4) return false;
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return false;
+  }
+  for (const e of entries) {
+    if (e.name === '.downloads') continue;
+    const full = path.join(dir, e.name);
+    if (present.test(full)) return true;
+  }
+  for (const e of entries) {
+    if (e.name === '.downloads') continue;
+    if (e.isDirectory() && !e.isSymbolicLink()) {
+      if (archiveMarkerPresent(path.join(dir, e.name), present, depth + 1)) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Extract a tarball/zip with the macOS-bundled tools (same approach as
+ * models/binaries.ts — no new dependencies). Throws a clear error; the
+ * caller deletes the corrupt archive so a retry downloads it fresh.
+ */
+function extractArchiveSync(archivePath: string, destDir: string): void {
+  fs.mkdirSync(destDir, { recursive: true });
+  const isZip = /\.zip$/i.test(archivePath);
+  const tool = isZip ? '/usr/bin/unzip' : '/usr/bin/tar';
+  const args = isZip
+    ? ['-q', '-o', archivePath, '-d', destDir]
+    : ['-xf', archivePath, '-C', destDir];
+  try {
+    execFileSync(tool, args, { timeout: 300_000 });
+  } catch (e) {
+    const detail = e instanceof Error ? e.message : String(e);
+    throw new Error(
+      `Failed to extract ${path.basename(archivePath)} ` +
+        `(${isZip ? 'unzip' : 'tar'}): ${detail.slice(-300)} — will retry`
+    );
   }
 }
 

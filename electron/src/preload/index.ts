@@ -92,8 +92,13 @@ const api: NextTokenAPI = {
     ipcRenderer.on('nt.model-event', l);
     return () => ipcRenderer.removeListener('nt.model-event', l);
   },
+  modelsHfTokenSet: (token) => ipcRenderer.invoke('nt.models.hf-token.set', token),
+  modelsHfTokenHas: () => ipcRenderer.invoke('nt.models.hf-token.has'),
+  modelsHfTokenClear: () => ipcRenderer.invoke('nt.models.hf-token.clear'),
+  modelsGatedIds: () => ipcRenderer.invoke('nt.models.gated-ids'),
   // voice engine
   voiceSttAvailable: () => ipcRenderer.invoke('nt.voice.stt-available'),
+  voiceSttStatus: () => ipcRenderer.invoke('nt.voice.stt-status'),
   voiceStartListening: () => ipcRenderer.invoke('nt.voice.start-listening'),
   voiceAudioChunk: (data) => ipcRenderer.invoke('nt.voice.audio-chunk', data),
   voiceStopListening: () => ipcRenderer.invoke('nt.voice.stop-listening'),

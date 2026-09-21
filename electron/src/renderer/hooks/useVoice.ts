@@ -33,11 +33,33 @@ import { fuzzy, nt } from "../nt";
 export type VoiceMode = "command" | "dictate";
 
 /**
+ * Guided voice-setup states. Shown as a card in the agent panel instead of
+ * a bare error string:
+ * - "no-stt-model": no Whisper model downloaded → one-tap download button.
+ * - "no-stt-binary": model is ready but the whisper-cli sidecar is missing →
+ *   manual install steps.
+ * - "mic-denied": mic permission denied → macOS System Settings guide.
+ */
+export type VoiceGuideKind = "no-stt-model" | "no-stt-binary" | "mic-denied";
+
+export interface VoiceGuide {
+  kind: VoiceGuideKind;
+  /** Manual whisper-cli install steps (no-stt-binary only). */
+  steps?: string;
+}
+
+/** macOS mic-denial guidance (Next Token is macOS-only). */
+const MIC_DENIED_NOTICE =
+  "Microphone access was denied. Grant access in System Settings → Privacy & Security → Microphone, then try again.";
+
+/**
  * Local voice IPC surface. Owned by the integrator (preload + main
  * handlers); declared here so the hook compiles without it.
  */
 interface NtVoice {
   voiceSttAvailable(): Promise<boolean>;
+  /** Granular STT readiness (wired in preload; may be absent in old builds). */
+  voiceSttStatus?(): Promise<{ model: boolean; binary: boolean; binarySteps: string }>;
   voiceStartListening(): Promise<void>;
   voiceAudioChunk(data: Uint8Array): Promise<void>;
   voiceStopListening(): Promise<VoiceTranscript>;
@@ -360,6 +382,17 @@ interface UseVoiceResult {
   /** Graceful notice (unsupported / disabled / mic blocked / errors). */
   notice: string | null;
   clearNotice: () => void;
+  /**
+   * Guided setup card (missing STT model/binary, mic denied). Rendered by
+   * the panel instead of a bare exception string.
+   */
+  guide: VoiceGuide | null;
+  clearGuide: () => void;
+  /** One-tap Whisper model download; voice starts automatically when ready. */
+  downloadSttModel: () => void;
+  downloadingStt: boolean;
+  /** Explicit opt-in to the Web Speech fallback (sends audio to Google). */
+  useWebSpeechFallback: () => void;
   toggleCommand: () => void;
   toggleDictate: () => void;
   /** Start listening without toggling (barge-in entry point). */
@@ -386,6 +419,12 @@ export function useVoice(handlers: UseVoiceHandlers): UseVoiceResult {
   const [interim, setInterim] = useState("");
   const [notice, setNotice] = useState<string | null>(null);
   const [localReady, setLocalReady] = useState(false);
+  const [guide, setGuide] = useState<VoiceGuide | null>(null);
+  const [downloadingStt, setDownloadingStt] = useState(false);
+  /** Voice mode the user asked for before the guided setup appeared. */
+  const pendingMode = useRef<VoiceMode | null>(null);
+  /** Poll timer while waiting for the Whisper download to finish. */
+  const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const webSupported =
     typeof window !== "undefined" &&
@@ -465,9 +504,8 @@ export function useVoice(handlers: UseVoiceHandlers): UseVoiceResult {
       };
       rec.onerror = (e: SpeechRecognitionErrorEvent) => {
         if (e.error === "not-allowed" || e.error === "service-not-allowed") {
-          setNotice(
-            "Microphone access was blocked. Allow it in the browser's site settings and try again.",
-          );
+          setNotice(MIC_DENIED_NOTICE);
+          setGuide({ kind: "mic-denied" });
         } else if (e.error === "no-speech") {
           setNotice("Didn't hear anything — try again.");
         } else if (e.error !== "aborted") {
@@ -529,9 +567,8 @@ export function useVoice(handlers: UseVoiceHandlers): UseVoiceResult {
         stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       }
     } catch {
-      setNotice(
-        "Microphone access was blocked. Allow it in the browser's site settings and try again.",
-      );
+      setNotice(MIC_DENIED_NOTICE);
+      setGuide({ kind: "mic-denied" });
       const err = new Error("mic-denied");
       (err as { micDenied?: boolean }).micDenied = true;
       throw err;
@@ -686,6 +723,15 @@ export function useVoice(handlers: UseVoiceHandlers): UseVoiceResult {
         return;
       }
       stop();
+      // A fresh open cancels any in-flight guided setup (the download itself
+      // keeps running in the main process; reopening voice later picks it up).
+      setGuide(null);
+      pendingMode.current = null;
+      if (pollTimer.current) {
+        clearInterval(pollTimer.current);
+        pollTimer.current = null;
+      }
+      if (downloadingStt) setDownloadingStt(false);
       // Prefer the on-device engines when a local STT model is downloaded.
       try {
         if (await localSttAvailable()) {
@@ -694,12 +740,98 @@ export function useVoice(handlers: UseVoiceHandlers): UseVoiceResult {
         }
       } catch (e) {
         if ((e as { micDenied?: boolean }).micDenied) return;
-        // Any other local failure → fall through to Web Speech.
+        // Any other local failure → guided setup below.
       }
-      startWeb(nextMode);
+      // No usable on-device STT: show the guided setup card instead of a
+      // bare error (and never silently fall back to cloud speech).
+      pendingMode.current = nextMode;
+      let status: { model: boolean; binary: boolean; binarySteps: string } | null = null;
+      try {
+        const fn = voiceApi()?.voiceSttStatus;
+        if (typeof fn === "function") status = await fn();
+      } catch {
+        /* fall through to the generic card */
+      }
+      if (status && status.model && !status.binary) {
+        setGuide({ kind: "no-stt-binary", steps: status.binarySteps });
+      } else {
+        setGuide({ kind: "no-stt-model" });
+      }
     },
-    [stop, startLocal, startWeb],
+    [stop, startLocal, downloadingStt],
   );
+
+  /**
+   * One-tap Whisper download from the guided setup card. Fire-and-forget
+   * IPC (progress/errors arrive via nt.model-event); polls the STT engine
+   * until it becomes available, then starts the pending voice mode.
+   */
+  const downloadSttModel = useCallback(async () => {
+    setDownloadingStt(true);
+    setNotice(null);
+    try {
+      await nt().modelsDownload("whisper-base.en");
+    } catch {
+      setDownloadingStt(false);
+      setNotice("Couldn't start the Whisper download. Try again from Settings → Models.");
+      return;
+    }
+    if (pollTimer.current) clearInterval(pollTimer.current);
+    let off: (() => void) | undefined;
+    try {
+      off = nt().onModelEvent((e) => {
+        if (e.id !== "whisper-base.en" || e.kind !== "error") return;
+        if (pollTimer.current) {
+          clearInterval(pollTimer.current);
+          pollTimer.current = null;
+        }
+        off?.();
+        setDownloadingStt(false);
+        setNotice("Whisper download failed — check Settings → Models for details.");
+      });
+    } catch {
+      /* polling below is the fallback */
+    }
+    pollTimer.current = setInterval(() => {
+      void (async () => {
+        let ok = false;
+        try {
+          ok = await localSttAvailable();
+        } catch {
+          /* keep polling */
+        }
+        if (!ok) return;
+        if (pollTimer.current) {
+          clearInterval(pollTimer.current);
+          pollTimer.current = null;
+        }
+        off?.();
+        setDownloadingStt(false);
+        setGuide(null);
+        const m = pendingMode.current;
+        pendingMode.current = null;
+        if (m) void start(m);
+      })();
+    }, 3000);
+  }, [start]);
+
+  /** Explicit opt-in to the Web Speech fallback (sends audio to Google). */
+  const useWebSpeechFallback = useCallback(() => {
+    const m = pendingMode.current ?? "command";
+    pendingMode.current = null;
+    setGuide(null);
+    startWeb(m);
+  }, [startWeb]);
+
+  const clearGuide = useCallback(() => {
+    setGuide(null);
+    pendingMode.current = null;
+    if (pollTimer.current) {
+      clearInterval(pollTimer.current);
+      pollTimer.current = null;
+    }
+    if (downloadingStt) setDownloadingStt(false);
+  }, [downloadingStt]);
 
   const toggleCommand = useCallback(() => {
     if (listening && mode === "command") {
@@ -724,7 +856,16 @@ export function useVoice(handlers: UseVoiceHandlers): UseVoiceResult {
     return () => window.removeEventListener("nt:voice-toggle", onToggle);
   }, []);
 
-  useEffect(() => stop, [stop]);
+  useEffect(
+    () => () => {
+      stop();
+      if (pollTimer.current) {
+        clearInterval(pollTimer.current);
+        pollTimer.current = null;
+      }
+    },
+    [stop],
+  );
 
   const clearNotice = useCallback(() => setNotice(null), []);
 
@@ -745,6 +886,11 @@ export function useVoice(handlers: UseVoiceHandlers): UseVoiceResult {
     interim,
     notice,
     clearNotice,
+    guide,
+    clearGuide,
+    downloadSttModel,
+    downloadingStt,
+    useWebSpeechFallback,
     toggleCommand,
     toggleDictate,
     beginCommand,

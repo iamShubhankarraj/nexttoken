@@ -113,7 +113,7 @@ export function TidyDialog({
         style={{
           background: "var(--nt-bg-overlay)",
           borderColor: "var(--nt-border)",
-          boxShadow: "0 24px 64px rgba(0,0,0,0.5)",
+          boxShadow: "var(--nt-shadow-overlay)",
         }}
       >
         <div

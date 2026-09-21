@@ -23,7 +23,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { useVoice, stopLocalSpeech, type VoiceMode } from "../hooks/useVoice";
+import { useVoice, stopLocalSpeech, type VoiceMode, type VoiceGuide } from "../hooks/useVoice";
 import type { AgentActingEvent, VoiceEngineState } from "../../shared/ipc";
 import { nt } from "../nt";
 
@@ -35,6 +35,12 @@ export interface VoiceSessionValue {
   interim: string;
   notice: string | null;
   clearNotice: () => void;
+  /** Guided setup card (missing STT model/binary, mic denied). */
+  guide: VoiceGuide | null;
+  clearGuide: () => void;
+  downloadSttModel: () => void;
+  downloadingStt: boolean;
+  useWebSpeechFallback: () => void;
   toggleCommand: () => void;
   toggleDictate: () => void;
   beginCommand: () => void;
@@ -169,6 +175,11 @@ export function VoiceSession({ children }: { children: ReactNode }) {
       interim: voice.interim,
       notice: voice.notice,
       clearNotice: voice.clearNotice,
+      guide: voice.guide,
+      clearGuide: voice.clearGuide,
+      downloadSttModel: voice.downloadSttModel,
+      downloadingStt: voice.downloadingStt,
+      useWebSpeechFallback: voice.useWebSpeechFallback,
       toggleCommand: voice.toggleCommand,
       toggleDictate: voice.toggleDictate,
       beginCommand: voice.beginCommand,
@@ -193,6 +204,11 @@ export function VoiceSession({ children }: { children: ReactNode }) {
       voice.interim,
       voice.notice,
       voice.clearNotice,
+      voice.guide,
+      voice.clearGuide,
+      voice.downloadSttModel,
+      voice.downloadingStt,
+      voice.useWebSpeechFallback,
       voice.toggleCommand,
       voice.toggleDictate,
       voice.beginCommand,

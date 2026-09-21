@@ -116,6 +116,7 @@ function actionLabel(intent: string, slots: Record<string, unknown>): string {
   switch (intent) {
     case "page.click": return `Clicking “${s("target") || s("elementLabel") || "…"}”…`;
     case "agent.dictate": return "Typing…";
+    case "terminal.run": return `Running “${s("command").slice(0, 60) || "command"}”…`;
     case "browser.nav.go": return `Opening ${s("destination") || "page"}…`;
     case "browser.nav.search": return `Searching for “${s("query")}”…`;
     case "browser.nav.back": return "Going back…";

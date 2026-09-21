@@ -784,7 +784,7 @@ export function AgentPanel() {
       </div>
 
       {/* voice mode surface — orb, cross-fading status, interim, steps */}
-      {(voice.active || voice.notice || voiceFeedback || voice.interim) && (
+      {(voice.active || voice.notice || voice.guide || voiceFeedback || voice.interim) && (
         <div
           className="voice-surface border-t px-3.5 py-2.5"
           style={{ borderColor: "var(--nt-border)" }}
@@ -843,6 +843,102 @@ export function AgentPanel() {
                 dismiss
               </button>
             </p>
+          )}
+          {/* guided voice setup — never a bare exception string */}
+          {voice.guide?.kind === "no-stt-model" && (
+            <div
+              className="nt-r-md mt-2 border p-3"
+              style={{ borderColor: "var(--nt-border)", background: "var(--nt-bg-soft)" }}
+            >
+              <p className="text-[12.5px] font-medium" style={{ color: "var(--nt-text-1)" }}>
+                Voice needs a speech-to-text model
+              </p>
+              <p className="mt-1 text-[12px] leading-relaxed" style={{ color: "var(--nt-text-2)" }}>
+                Download Whisper (142 MB, one-time) to enable on-device voice.
+                Your audio never leaves this Mac.
+              </p>
+              <div className="mt-2.5 flex flex-wrap items-center gap-2">
+                <button
+                  onClick={() => voice.downloadSttModel()}
+                  disabled={voice.downloadingStt}
+                  className="nt-r-sm px-3 py-1.5 text-[12px] font-semibold transition-opacity disabled:opacity-60"
+                  style={{ background: "var(--nt-accent)", color: "#1a1206" }}
+                >
+                  {voice.downloadingStt ? "Downloading…" : "Download Whisper model"}
+                </button>
+                <button
+                  onClick={voice.useWebSpeechFallback}
+                  className="text-[12px] underline"
+                  style={{ color: "var(--nt-text-3)" }}
+                >
+                  Use Web Speech instead
+                </button>
+                <button
+                  onClick={voice.clearGuide}
+                  className="text-[12px] underline"
+                  style={{ color: "var(--nt-text-3)" }}
+                >
+                  dismiss
+                </button>
+              </div>
+              {voice.downloadingStt ? (
+                <p className="mt-1.5 text-[12px]" style={{ color: "var(--nt-text-3)" }}>
+                  Downloading… you can keep browsing — voice will start automatically when it’s ready.
+                </p>
+              ) : (
+                <p className="mt-1.5 text-[11.5px]" style={{ color: "var(--nt-text-3)" }}>
+                  Web Speech sends your audio to Google; on-device Whisper keeps it local.
+                </p>
+              )}
+            </div>
+          )}
+          {voice.guide?.kind === "no-stt-binary" && (
+            <div
+              className="nt-r-md mt-2 border p-3"
+              style={{ borderColor: "var(--nt-border)", background: "var(--nt-bg-soft)" }}
+            >
+              <p className="text-[12.5px] font-medium" style={{ color: "var(--nt-text-1)" }}>
+                One more step: install the Whisper engine
+              </p>
+              <p className="mt-1 text-[12px] leading-relaxed" style={{ color: "var(--nt-text-2)" }}>
+                The Whisper model is downloaded, but the speech engine itself needs a manual install:
+              </p>
+              <pre
+                className="nt-r-sm mt-2 overflow-x-auto p-2 font-mono text-[11px] leading-relaxed"
+                style={{ color: "var(--nt-text-2)", background: "var(--nt-bg)" }}
+              >
+{voice.guide.steps}
+              </pre>
+              <button
+                onClick={voice.clearGuide}
+                className="mt-2 text-[12px] underline"
+                style={{ color: "var(--nt-text-3)" }}
+              >
+                dismiss
+              </button>
+            </div>
+          )}
+          {voice.guide?.kind === "mic-denied" && (
+            <div
+              className="nt-r-md mt-2 border p-3"
+              style={{ borderColor: "var(--nt-border)", background: "var(--nt-bg-soft)" }}
+            >
+              <p className="text-[12.5px] font-medium" style={{ color: "var(--nt-text-1)" }}>
+                Microphone access is blocked
+              </p>
+              <ol className="mt-1 list-decimal space-y-0.5 pl-4 text-[12px] leading-relaxed" style={{ color: "var(--nt-text-2)" }}>
+                <li>Open System Settings on your Mac</li>
+                <li>Go to Privacy &amp; Security → Microphone</li>
+                <li>Turn on access for Next Token, then try again</li>
+              </ol>
+              <button
+                onClick={voice.clearGuide}
+                className="mt-2 text-[12px] underline"
+                style={{ color: "var(--nt-text-3)" }}
+              >
+                dismiss
+              </button>
+            </div>
           )}
           {voiceFeedback && !voice.listening && (
             <p className="mt-1.5 text-[12px]" style={{ color: "var(--nt-text-2)" }}>{voiceFeedback}</p>

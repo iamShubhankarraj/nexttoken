@@ -401,7 +401,7 @@ export class Orchestrator {
         checks,
         confirmText:
           d.intent === 'terminal.run'
-            ? `Run this terminal command?\n\n${d.slots.command}\n\n(You can review the working directory in the terminal panel.)`
+            ? `Run this terminal command?\n\n${d.slots.command}\n\nWorking directory: ${typeof d.slots.cwd === 'string' && d.slots.cwd.trim() ? d.slots.cwd.trim() : '(your home directory)'}\n\nA second confirmation dialog shows the exact command again before it runs.`
             : `Do you want me to ${describeAction(d)}?`
       };
     }

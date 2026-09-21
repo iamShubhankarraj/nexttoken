@@ -28,7 +28,7 @@ import type {
   TabDelta,
   TabState,
 } from "../shared/ipc";
-import { rootThemeStyle, type RootThemeStyle } from "./theme";
+import { rootThemeStyle, applyTokensToRoot, repairLegacyTokens, migrateLegacyDefault, type RootThemeStyle } from "./theme";
 
 function applyDeltaToTab(tab: TabState, d: TabDelta): TabState {
   switch (d.type) {
@@ -133,7 +133,9 @@ export function BrowserProvider({ children }: { children: ReactNode }) {
   );
 
   // Fetch the active space's theme tokens (from main, never hardcoded) and
-  // map them to CSS vars. Switching spaces re-skins the chrome.
+  // paint them onto documentElement (:root). Switching spaces re-skins
+  // the chrome; the vars are mirrored to localStorage so the pre-paint
+  // boot script restores them before first paint on relaunch.
   useEffect(() => {
     const spaceId = snapshot?.activeSpaceId;
     if (!spaceId || !window.nt) return;
@@ -141,7 +143,24 @@ export function BrowserProvider({ children }: { children: ReactNode }) {
     window.nt
       .themesGet(spaceId)
       .then((tokens) => {
-        if (alive) setTheme(rootThemeStyle(tokens));
+        if (!alive) return;
+        // Heal themes saved while the Appearance toggle flipped `mode`
+        // without swapping the palette (they never rendered as intended).
+        let healed = repairLegacyTokens(tokens);
+        let healedChanged = healed !== tokens;
+        // One-time migration: pristine legacy dark defaults become the
+        // Dia-inspired light default. Deliberate dark themes are untouched.
+        const migrated = migrateLegacyDefault(spaceId, healed);
+        if (migrated) {
+          healed = migrated;
+          healedChanged = true;
+        }
+        if (healedChanged) {
+          // Persist the repair so the broken combo doesn't come back.
+          window.nt?.themesSet(spaceId, healed).catch(() => {});
+        }
+        applyTokensToRoot(healed);
+        setTheme(rootThemeStyle(healed));
       })
       .catch(() => {
         /* keep previous theme on failure */

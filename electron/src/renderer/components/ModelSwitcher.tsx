@@ -153,7 +153,7 @@ export function ModelSwitcher() {
           style={{
             background: "var(--nt-bg-overlay)",
             borderColor: "var(--nt-border)",
-            boxShadow: "0 16px 40px rgba(0,0,0,0.5)",
+            boxShadow: "var(--nt-shadow-card)",
           }}
           role="menu"
           aria-label="Choose model"

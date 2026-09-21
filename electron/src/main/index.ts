@@ -13,9 +13,10 @@ import { snapshotPage, formatSnapshot } from './agent/perceive';
 import { JevClient } from './brain/jev';
 import { JevCredentialStore } from './brain/credentials';
 import { Orchestrator, createRouterChat, type BrainPageState } from './brain/orchestrator';
-import { executeControl, type ControlEnv } from './brain/control';
+import { executeControl, runTerminalControl, type ControlEnv } from './brain/control';
 import { MODEL_CATALOG, ModelDownloader, targetPathFor, type DownloadEvent } from './models';
-import { ensureSidecar } from './models/binaries';
+import { ensureSidecar, whisperManualSteps } from './models/binaries';
+import { registerModelsIpc } from './models/ipc';
 import { LlamaServer } from './models/runtime';
 import { AppleFmClient } from './models/applefm';
 import { VoiceEngine, type CleanupPrompt } from './voice';
@@ -229,7 +230,12 @@ function initModelTier() {
         const env = brainControlEnv();
         return wrapWithActing(
           env,
-          (intent, slots) => executeControl(env, intent, slots),
+          // terminal.run is gated: the exact command + cwd go through
+          // runTerminalControl's native confirmation dialog — never
+          // executeControl's raw switch.
+          (intent, slots) => intent === 'terminal.run'
+            ? runTerminalControl(win, slots)
+            : executeControl(env, intent, slots),
           (channel, payload) => {
             // The renderer's AgentActingOverlay + Steps list consume these.
             win?.webContents.send(channel, payload);
@@ -355,36 +361,6 @@ function publicAdBlock(): AdBlockState {
     enabled: store.d.adblock.enabled !== false,
     allowedHosts: [...store.d.adblock.allowedHosts]
   };
-}
-
-// -- floating picture-in-picture ---------------------------------------------
-// Toggle Chromium's native PiP for the video at srcUrl in the guest page.
-// Chromium's native PiP window is a system overlay and stays on top of
-// other windows by design. A context-menu click counts as a user gesture,
-// so requestPictureInPicture() is allowed here.
-function pipToggle(wc: WebContents, srcUrl: string): void {
-  const code = `(async () => {
-    var src = ${JSON.stringify(srcUrl)};
-    var vids = Array.prototype.slice.call(document.querySelectorAll('video'));
-    var v = null;
-    for (var i = 0; i < vids.length; i++) {
-      if (vids[i].currentSrc === src || vids[i].src === src) { v = vids[i]; break; }
-    }
-    if (!v) v = vids[0] || null;
-    if (!v) return 'no-video';
-    try {
-      if (document.pictureInPictureElement) {
-        await document.exitPictureInPicture();
-        return 'exited';
-      }
-      if (v.disablePictureInPicture || !document.pictureInPictureEnabled) return 'unavailable';
-      await v.requestPictureInPicture();
-      return 'entered';
-    } catch (e) {
-      return 'error:' + String((e && e.message) || e);
-    }
-  })()`;
-  void wc.executeJavaScript(code, true).catch(() => {});
 }
 
 /** Adapter from brain intents to the same state setters the nt.ui.* handlers use. */
@@ -714,6 +690,7 @@ function registerIpc() {
   ipcMain.handle('nt.adblock.set-enabled', (_e, enabled: boolean): AdBlockState => {
     store.d.adblock.enabled = !!enabled;
     store.saveSoon();
+    adblocker.refreshConfig();
     return publicAdBlock();
   });
   ipcMain.handle('nt.adblock.set-site-allowed', (_e, host: string, allowed: boolean): AdBlockState => {
@@ -724,6 +701,7 @@ function registerIpc() {
       if (allowed && i === -1) list.push(h);
       if (!allowed && i !== -1) list.splice(i, 1);
       store.saveSoon();
+      adblocker.refreshConfig();
     }
     return publicAdBlock();
   });
@@ -822,11 +800,21 @@ function registerIpc() {
     return probe;
   });
   ipcMain.handle('nt.models.disk-usage', () => downloader.diskUsage());
+  // Optional HF token for gated repos (safeStorage; registered from models/ipc).
+  registerModelsIpc();
 
   // -- voice engine (local STT/TTS sidecars) -----------------------------------------
   ipcMain.handle('nt.voice.stt-available', (): boolean => {
     return sttModelFile() !== null && whisperBinaryAvailable();
   });
+  // Granular STT readiness for the voice guided-setup card: the renderer
+  // needs to tell "no model yet" (one-tap download) apart from "model ready
+  // but whisper-cli missing" (manual install steps).
+  ipcMain.handle('nt.voice.stt-status', () => ({
+    model: sttModelFile() !== null,
+    binary: whisperBinaryAvailable(),
+    binarySteps: whisperManualSteps(binDir),
+  }));
   ipcMain.handle('nt.voice.start-listening', () => {
     voiceEngine.startListening();
   });
@@ -885,7 +873,8 @@ function registerIpc() {
     if (!d || Date.now() - d.at > 5 * 60 * 1000) return false;
     const tab = tabs.tabs.get(d.tabId);
     if (!tab) return false;
-    const wc = tabs.activeWebContents();
+    // Undo in the tab that received the dictation, not whatever is active now.
+    const wc = (tab.wc && !tab.wc.isDestroyed()) ? tab.wc : tabs.activeWebContents();
     if (!wc) return false;
     try {
       const ok = await wc.executeJavaScript(dictateUndoJs(d.chars));
@@ -953,16 +942,11 @@ app.whenReady().then(() => {
       win?.webContents.send('nt.tab-delta', d);
     },
     {
-      // Right-click on a video: offer floating picture-in-picture.
+      // Right-click on a video: video actions.
       onContextMenu: (wc: WebContents, params) => {
         if (params.mediaType !== 'video' || !params.srcURL) return;
         const srcURL = params.srcURL;
         const menu = Menu.buildFromTemplate([
-          {
-            label: 'Picture in picture',
-            click: () => pipToggle(wc, srcURL)
-          },
-          { type: 'separator' },
           {
             label: 'Copy video address',
             click: () => clipboard.writeText(srcURL)

@@ -182,10 +182,13 @@ export const VOICE_COMMANDS: VoiceCommandDef[] = [
   ], { slots: [{ name: 'engine', type: 'text', description: 'Search engine name' }] }),
 
   // -- Terminal --------------------------------------------------------------------
-  cmd('terminal.run', 'Terminal', 'Run a terminal command (ALWAYS asks for confirmation first)', [
+  cmd('terminal.run', 'Terminal', 'Run a terminal command (ALWAYS asks for confirmation first, showing the exact command and working directory)', [
     'run ls minus la in the terminal', 'run npm test', 'open the terminal and run git status'
   ], {
-    slots: [{ name: 'command', type: 'text', description: 'The exact shell command to run' }],
+    slots: [
+      { name: 'command', type: 'text', description: 'The exact shell command to run' },
+      { name: 'cwd', type: 'text', description: 'Working directory for the command (optional; defaults to the home directory). Shown in the confirmation dialog.' }
+    ],
     requiresConfirmation: true
   }),
 
@@ -373,9 +376,16 @@ export function extractSlots(intent: string, text: string): Record<string, strin
     }
     case 'terminal.run': {
       // Keep the raw command text; the confirmation dialog shows it verbatim.
-      const m = text.match(/\brun\s+(.+?)(?:\s+in the terminal)?$/i);
+      // An optional "in <dir>" tail sets the working directory (also shown).
+      let rest = text.trim();
+      const dirM = rest.match(/\s+in\s+(?:the\s+)?(?:dir|directory|folder)\s+(.+?)$/i);
+      if (dirM) {
+        slots.cwd = dirM[1].trim();
+        rest = rest.slice(0, dirM.index).trim();
+      }
+      const m = rest.match(/\brun\s+(.+?)(?:\s+in the terminal)?$/i);
       if (m) slots.command = m[1].trim();
-      else slots.command = text.trim();
+      else slots.command = rest.replace(/\s+in the terminal$/i, '').trim();
       break;
     }
     case 'page.click': {

@@ -287,7 +287,7 @@ async function isExecutable(filePath: string): Promise<boolean> {
   }
 }
 
-function whisperManualSteps(binDir: string): string {
+export function whisperManualSteps(binDir: string): string {
   return (
     `No prebuilt macOS binary for whisper.cpp is published in its GitHub releases, ` +
     `so on-device speech-to-text needs a manual install:\n` +

@@ -36,3 +36,19 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+## Ghostery Adblocker — ad-blocking engine (MPL-2.0)
+
+Next Token's native ad blocker (`electron/src/main/adblock/`) is built on
+**@ghostery/adblocker-electron** (which bundles **@ghostery/adblocker**),
+by Ghostery GmbH, licensed under the Mozilla Public License 2.0.
+
+- Source: https://github.com/ghostery/adblocker
+- License: https://mozilla.org/MPL/2.0/ (Copyright (c) 2017-present Ghostery GmbH)
+
+The engine loads community filter lists at runtime (EasyList and uBlock
+Origin filters, mirrored via Ghostery's CDN); those lists carry their own
+licenses/attribution:
+
+- EasyList — https://easylist.to/ (attribution to the EasyList authors)
+- uBlock Origin filters (uAssets) — https://github.com/uBlockOrigin/uAssets

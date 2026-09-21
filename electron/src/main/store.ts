@@ -2,7 +2,7 @@ import { app, safeStorage } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { DEFAULT_DARK_TOKENS, MAX_CHAT_SESSIONS, PROVIDER_PRESETS, SPACE_PALETTE } from '../shared/ipc';
+import { DEFAULT_LIGHT_TOKENS, MAX_CHAT_SESSIONS, PROVIDER_PRESETS, SPACE_PALETTE } from '../shared/ipc';
 import type {
   ActiveModelRef, AgentMessage, ArchivedTab, ProviderId, SiteBoost, SkillDef, SkillInput, ThemeTokens
 } from '../shared/ipc';
@@ -59,7 +59,7 @@ interface Persisted {
   activeSpaceId: string;
   sidebarCollapsed: boolean;
   agentPanelOpen: boolean;
-  /** spaceId -> tokens. Seeded from DEFAULT_DARK_TOKENS + palette. */
+  /** spaceId -> tokens. Seeded from DEFAULT_LIGHT_TOKENS (Dia-inspired calm light) + palette. */
   themes: Record<string, ThemeTokens>;
   voice: {
     enabled: boolean;
@@ -145,7 +145,7 @@ function defaults(): Persisted {
   const spaces = defaultSpaces();
   const themes: Record<string, ThemeTokens> = {};
   spaces.forEach((s, i) => {
-    themes[s.id] = { ...DEFAULT_DARK_TOKENS, spaceColor: SPACE_PALETTE[i % SPACE_PALETTE.length].value };
+    themes[s.id] = { ...DEFAULT_LIGHT_TOKENS, spaceColor: SPACE_PALETTE[i % SPACE_PALETTE.length].value };
   });
   return {
     spaces,
@@ -260,7 +260,7 @@ export class Store {
       for (const s of parsed.spaces) {
         if (!parsed.themes[s.id]) {
           parsed.themes[s.id] = {
-            ...DEFAULT_DARK_TOKENS,
+            ...DEFAULT_LIGHT_TOKENS,
             spaceColor: SPACE_PALETTE[parsed.spaces.indexOf(s) % SPACE_PALETTE.length].value
           };
         }
@@ -302,7 +302,7 @@ export class Store {
     };
     this.data.spaces.push(s);
     this.data.themes[s.id] = {
-      ...DEFAULT_DARK_TOKENS,
+      ...DEFAULT_LIGHT_TOKENS,
       spaceColor: SPACE_PALETTE[this.data.spaces.length % SPACE_PALETTE.length].value
     };
     this.saveSoon();
@@ -320,7 +320,7 @@ export class Store {
   }
 
   themeFor(spaceId: string): ThemeTokens {
-    return this.data.themes[spaceId] ?? { ...DEFAULT_DARK_TOKENS };
+    return this.data.themes[spaceId] ?? { ...DEFAULT_LIGHT_TOKENS };
   }
 
   // -- folders (per Bit) -----------------------------------------------------

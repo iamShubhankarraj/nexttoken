@@ -34,7 +34,6 @@ import { TopStrip } from "./components/TopStrip";
 import { WritingHint } from "./components/WritingHint";
 import { useBrainAudio } from "./hooks/useBrainAudio";
 import { isNewTabUrl, nt } from "./nt";
-import { rootStyleProp } from "./theme";
 
 function Shell() {
   // Brain TTS playback + brain-driven listen/command-bar requests.
@@ -43,7 +42,6 @@ function Shell() {
     snapshot,
     bridgeError,
     activeTab,
-    theme,
     splitPick,
     setSplitPick,
   } = useBrowser();
@@ -163,8 +161,10 @@ function Shell() {
     <div
       id="nt-root"
       className={`flex h-full overflow-hidden ${delight ? "nt-space-switch" : ""}`}
+      // Theme CSS vars live on documentElement (:root) — painted by
+      // applyTokensToRoot() (theme.ts), never inlined here, so React
+      // re-renders can't clobber a live preview.
       style={{
-        ...(theme ? rootStyleProp(theme) : undefined),
         background: "var(--nt-bg-base)",
         color: "var(--nt-text-1)",
       }}

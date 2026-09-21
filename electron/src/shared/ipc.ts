@@ -210,20 +210,23 @@ export const DEFAULT_DARK_TOKENS: ThemeTokens = {
 };
 
 export const DEFAULT_LIGHT_TOKENS: ThemeTokens = {
-  bgBase: '#F4F2ED',
-  bgSubtle: '#ECE9E2',
-  bgRaised: '#FBFAF6',
+  // Dia-inspired calm light chrome: warm paper base, white cards, hairline
+  // borders, soft warm-gray text hierarchy. The ember accent stays #E8A33D
+  // (brand); text on accent fills goes dark for contrast.
+  bgBase: '#FAF9F6',
+  bgSubtle: '#F1EFE9',
+  bgRaised: '#FFFFFF',
   bgOverlay: '#FFFFFF',
-  bgHover: '#E6E2D8',
-  border: 'rgba(28,26,21,0.10)',
-  borderStrong: 'rgba(28,26,21,0.20)',
-  text1: '#1C1A15',
-  text2: 'rgba(28,26,21,0.68)',
-  text3: 'rgba(28,26,21,0.45)',
-  textFaint: 'rgba(28,26,21,0.28)',
-  accent: '#B97A1F',
-  accentSoft: 'rgba(185,122,31,0.14)',
-  accentText: '#FFFFFF',
+  bgHover: '#ECE9E1',
+  border: 'rgba(28,26,21,0.08)',
+  borderStrong: 'rgba(28,26,21,0.16)',
+  text1: '#1D1B16',
+  text2: 'rgba(29,27,22,0.66)',
+  text3: 'rgba(29,27,22,0.44)',
+  textFaint: 'rgba(29,27,22,0.28)',
+  accent: '#E8A33D',
+  accentSoft: 'rgba(232,163,61,0.16)',
+  accentText: '#1C1503',
   spaceColor: '#5F7F7C',
   radiusScale: 0.6,
   mode: 'light'
@@ -261,7 +264,17 @@ export function tokensToCssVars(t: ThemeTokens): Record<string, string> {
   v['--nt-r-lg'] = `${Math.round(RADII.lg * m)}px`;
   v['--nt-accent-glow'] = t.mode === 'dark'
     ? '0 0 16px rgba(232,163,61,0.28)'
-    : '0 0 12px rgba(185,122,31,0.25)';
+    : '0 0 12px rgba(232,163,61,0.22)';
+  // Theme-aware elevation: quiet on light (Dia-like), deeper on dark.
+  v['--nt-shadow-card'] = t.mode === 'dark'
+    ? '0 16px 48px rgba(0,0,0,0.45)'
+    : '0 16px 40px rgba(31,28,22,0.10), 0 2px 8px rgba(31,28,22,0.06)';
+  v['--nt-shadow-overlay'] = t.mode === 'dark'
+    ? '0 24px 64px rgba(0,0,0,0.55)'
+    : '0 24px 64px rgba(31,28,22,0.14), 0 4px 16px rgba(31,28,22,0.08)';
+  v['--nt-shadow-pop'] = t.mode === 'dark'
+    ? '0 12px 32px rgba(0,0,0,0.45)'
+    : '0 12px 32px rgba(31,28,22,0.12), 0 2px 6px rgba(31,28,22,0.06)';
   v['color-scheme'] = t.mode;
   return v;
 }
@@ -630,8 +643,16 @@ export interface NextTokenAPI {
   modelsAppleFm(): Promise<AppleFmStatus>;
   modelsDiskUsage(): Promise<number>;
   onModelEvent(cb: (e: ModelEvent) => void): () => void;
+  /** Optional Hugging Face token for gated repos (safeStorage; never returned). */
+  modelsHfTokenSet(token: string): Promise<{ ok: true }>;
+  modelsHfTokenHas(): Promise<boolean>;
+  modelsHfTokenClear(): Promise<void>;
+  /** Catalog ids currently flagged as access-gated. */
+  modelsGatedIds(): Promise<string[]>;
   // voice engine (local STT/TTS sidecars; Web Speech remains the fallback)
   voiceSttAvailable(): Promise<boolean>;
+  /** Granular STT readiness for the guided voice-setup card. */
+  voiceSttStatus(): Promise<{ model: boolean; binary: boolean; binarySteps: string }>;
   voiceStartListening(): Promise<void>;
   voiceAudioChunk(data: Uint8Array): Promise<void>;
   voiceStopListening(): Promise<VoiceTranscript>;

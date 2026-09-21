@@ -28,7 +28,6 @@ import {
   CARET_SCRIPT,
   type CaretHintDetail,
 } from "../caretScript";
-import { PIP_SCRIPT } from "../pipScript";
 import type { WebviewElement, WebviewNewWindowEvent } from "../webview";
 
 /** First-seen URL per tab id — captured once, used as webview `src` once. */
@@ -60,14 +59,6 @@ function attachWebview(el: WebviewElement, tabId: string): void {
     try {
       void (el as unknown as { executeJavaScript(code: string): Promise<unknown> })
         .executeJavaScript(CARET_SCRIPT);
-    } catch {
-      /* non-essential */
-    }
-    // Floating picture-in-picture button on video hover. Same injection
-    // pattern; the script self-guards against double-install.
-    try {
-      void (el as unknown as { executeJavaScript(code: string): Promise<unknown> })
-        .executeJavaScript(PIP_SCRIPT);
     } catch {
       /* non-essential */
     }

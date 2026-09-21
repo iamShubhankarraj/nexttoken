@@ -50,6 +50,22 @@ const ROW_H = 36;
 const MAX_LIST_H = 440;
 const DRAG_MIME = "text/nt-tab-id";
 
+/**
+ * Read our tab id back out of a drag event's DataTransfer. Returns null for
+ * foreign drags (no nt-tab MIME type). Used as a fallback when the in-memory
+ * drag ref/state is stale — e.g. the sidebar tree remounted mid-drag.
+ */
+function tabIdFromDataTransfer(e: React.DragEvent): string | null {
+  try {
+    if (e.dataTransfer.types.includes(DRAG_MIME)) {
+      return e.dataTransfer.getData(DRAG_MIME) || null;
+    }
+  } catch {
+    /* DataTransfer may be unavailable on some synthetic events */
+  }
+  return null;
+}
+
 /* --------------------------------- shell ---------------------------------- */
 
 export function Sidebar() {
@@ -70,6 +86,14 @@ export function Sidebar() {
     dragIdRef.current = id;
     setDragIdState(id);
   };
+  /**
+   * Recover the dragged tab's id for this drag event. The live ref is the
+   * primary source; the DataTransfer payload is the fallback (e.g. if the
+   * sidebar tree remounted mid-drag). Foreign drags (no nt-tab MIME type)
+   * never resolve to an id, so they can't trigger tab moves.
+   */
+  const draggedTabId = (e: React.DragEvent): string | null =>
+    dragIdRef.current || tabIdFromDataTransfer(e);
   const clearDnd = useCallback(() => {
     dragIdRef.current = null;
     setDragIdState(null);
@@ -107,13 +131,16 @@ export function Sidebar() {
     () => ({
       onDragStart: (e: React.DragEvent, tabId: string) => {
         e.dataTransfer.setData(DRAG_MIME, tabId);
+        // Standard-type mirror: macOS drag sessions are more reliable when a
+        // standard type rides alongside the custom one.
+        e.dataTransfer.setData("text/plain", tabId);
         e.dataTransfer.effectAllowed = "move";
         setDragId(tabId);
       },
       onDragEnd: clearDnd,
       /** Row-level: show an insertion indicator above this row. */
       onRowDragOver: (e: React.DragEvent, tab: TabState, listKey: string) => {
-        const id = dragIdRef.current;
+        const id = draggedTabId(e);
         if (!id || id === tab.id) return;
         e.preventDefault();
         e.stopPropagation();
@@ -123,7 +150,7 @@ export function Sidebar() {
         setDropTarget(null);
       },
       onRowDrop: (e: React.DragEvent, tab: TabState, listKey: string) => {
-        const id = dragIdRef.current;
+        const id = draggedTabId(e);
         if (!id || id === tab.id) return;
         e.preventDefault();
         e.stopPropagation();
@@ -137,7 +164,7 @@ export function Sidebar() {
       },
       /** End-of-list zone: append to this folder/section. */
       onEndDragOver: (e: React.DragEvent, listKey: string) => {
-        if (!dragIdRef.current) return;
+        if (!draggedTabId(e)) return;
         e.preventDefault();
         e.stopPropagation();
         e.dataTransfer.dropEffect = "move";
@@ -146,7 +173,7 @@ export function Sidebar() {
         setDropTarget(null);
       },
       onEndDrop: (e: React.DragEvent, listKey: string, folderId: string | null) => {
-        const id = dragIdRef.current;
+        const id = draggedTabId(e);
         if (!id) return;
         e.preventDefault();
         e.stopPropagation();
@@ -157,7 +184,7 @@ export function Sidebar() {
       },
       /** Folder header: highlight + file on drop. */
       onFolderDragOver: (e: React.DragEvent, folderId: string) => {
-        if (!dragIdRef.current) return;
+        if (!draggedTabId(e)) return;
         e.preventDefault();
         e.stopPropagation();
         e.dataTransfer.dropEffect = "move";
@@ -166,7 +193,7 @@ export function Sidebar() {
         setDropBeforeKey(null);
       },
       onFolderDrop: (e: React.DragEvent, folderId: string) => {
-        const id = dragIdRef.current;
+        const id = draggedTabId(e);
         if (!id) return;
         e.preventDefault();
         e.stopPropagation();
@@ -197,7 +224,7 @@ export function Sidebar() {
 
   return (
     <aside
-      className="flex h-full w-[248px] shrink-0 flex-col border-r"
+      className="flex h-full w-[248px] shrink-0 select-none flex-col border-r"
       style={{ background: "var(--nt-bg-subtle)", borderColor: "var(--nt-border)" }}
     >
       {/* 2px bit-identity wash on the top edge */}
@@ -218,25 +245,19 @@ export function Sidebar() {
         {(pinned.length > 0 || dragId) && (
           <section
             className="mt-2"
-            onDragOver={
-              dragId
-                ? (e) => {
-                    e.preventDefault();
-                    setDropTarget("pinned");
-                  }
-                : undefined
-            }
+            onDragOver={(e) => {
+              if (!(dragId ?? tabIdFromDataTransfer(e))) return;
+              e.preventDefault();
+              setDropTarget("pinned");
+            }}
             onDragLeave={() => setDropTarget((t) => (t === "pinned" ? null : t))}
-            onDrop={
-              dragId
-                ? (e) => {
-                    e.preventDefault();
-                    const id = dragId;
-                    clearDnd();
-                    void nt().tabsPin(id, true);
-                  }
-                : undefined
-            }
+            onDrop={(e) => {
+              const id = dragId ?? tabIdFromDataTransfer(e);
+              if (!id) return;
+              e.preventDefault();
+              clearDnd();
+              void nt().tabsPin(id, true);
+            }}
           >
             <SectionLabel label="Pinned" />
             <div
@@ -309,30 +330,24 @@ export function Sidebar() {
 
         <section
           className="mt-3"
-          onDragOver={
-            dragId
-              ? (e) => {
-                  // Ungrouped area: dropping here ungroups the tab.
-                  if ((e.target as HTMLElement).closest("[data-tab-row],[data-folder]"))
-                    return;
-                  e.preventDefault();
-                  setDropTarget("ungrouped");
-                }
-              : undefined
-          }
+          onDragOver={(e) => {
+            // Ungrouped area: dropping here ungroups the tab.
+            if (!(dragId ?? tabIdFromDataTransfer(e))) return;
+            if ((e.target as HTMLElement).closest("[data-tab-row],[data-folder]"))
+              return;
+            e.preventDefault();
+            setDropTarget("ungrouped");
+          }}
           onDragLeave={() => setDropTarget((t) => (t === "ungrouped" ? null : t))}
-          onDrop={
-            dragId
-              ? (e) => {
-                  if ((e.target as HTMLElement).closest("[data-tab-row],[data-folder]"))
-                    return;
-                  e.preventDefault();
-                  const id = dragId;
-                  clearDnd();
-                  void nt().tabsSetFolder(id, null);
-                }
-              : undefined
-          }
+          onDrop={(e) => {
+            if ((e.target as HTMLElement).closest("[data-tab-row],[data-folder]"))
+              return;
+            const id = dragId ?? tabIdFromDataTransfer(e);
+            if (!id) return;
+            e.preventDefault();
+            clearDnd();
+            void nt().tabsSetFolder(id, null);
+          }}
         >
           <div className="flex items-center">
             <SectionLabel label="Tabs" />
@@ -493,8 +508,9 @@ function BitSwitcher({
                 setMenuBit({ x: e.clientX, y: e.clientY, id: s.id, name: s.name });
               }}
               onDragOver={
-                dragId && s.id !== activeId
+                s.id !== activeId
                   ? (e) => {
+                      if (!(dragId ?? tabIdFromDataTransfer(e))) return;
                       e.preventDefault();
                       e.dataTransfer.dropEffect = "move";
                       setDropBit(s.id);
@@ -503,10 +519,11 @@ function BitSwitcher({
               }
               onDragLeave={() => setDropBit((b) => (b === s.id ? null : b))}
               onDrop={
-                dragId && s.id !== activeId
+                s.id !== activeId
                   ? (e) => {
+                      const id = dragId ?? tabIdFromDataTransfer(e);
+                      if (!id) return;
                       e.preventDefault();
-                      const id = dragId;
                       setDropBit(null);
                       void nt().tabsMove(id, s.id);
                     }
@@ -1090,7 +1107,7 @@ function TabContextMenu({
         top: Math.min(menu.y, window.innerHeight - 380),
         background: "var(--nt-bg-overlay)",
         borderColor: "var(--nt-border)",
-        boxShadow: "0 12px 32px rgba(0,0,0,0.45)",
+        boxShadow: "var(--nt-shadow-pop)",
       }}
       role="menu"
     >
@@ -1259,7 +1276,7 @@ const TabRow = memo(function TabRow({
         {showDropBefore && (
           <div
             className="mx-2"
-            style={{ height: 2, background: "var(--nt-accent)", borderRadius: 1 }}
+            style={{ height: 3, background: "var(--nt-accent)", borderRadius: 2 }}
             aria-hidden
           />
         )}
@@ -1275,7 +1292,10 @@ const TabRow = memo(function TabRow({
           className={`nt-r-sm group relative flex h-9 cursor-pointer items-center gap-2.5 px-2.5 transition-colors ${
             active ? "nt-active-tab" : "hover:bg-[var(--nt-bg-hover)]"
           } ${splitPick ? "hover:outline hover:outline-1 hover:outline-[var(--nt-accent)]" : ""}`}
-          style={isDragging ? { opacity: 0.4 } : undefined}
+          style={{
+            ...(isDragging ? { opacity: 0.4 } : undefined),
+            ...(showDropBefore && !isDragging ? { background: "var(--nt-accent-soft)" } : undefined),
+          }}
         >
           {tab.loading ? (
             <span className="nt-shimmer" title="Loading" />

@@ -19,21 +19,19 @@
 import { Check, ChevronDown, ChevronRight, RotateCcw } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import {
+  DEFAULT_DARK_TOKENS,
+  DEFAULT_LIGHT_TOKENS,
   SPACE_PALETTE,
   TOKEN_FIELDS,
   type ThemeTokens,
 } from "../../shared/ipc";
 import { useBrowser } from "../BrowserContext";
 import { nt } from "../nt";
-import { rootThemeStyle } from "../theme";
+import { applyTokensToRoot, stampThemeTouched } from "../theme";
 
-/** Paint tokens straight onto the app root for instant live preview. */
+/** Paint tokens straight onto documentElement (:root) for instant live preview. */
 function applyPreview(tokens: ThemeTokens): void {
-  const root = document.getElementById("nt-root");
-  if (!root) return;
-  const { vars, colorScheme } = rootThemeStyle(tokens);
-  for (const [k, v] of Object.entries(vars)) root.style.setProperty(k, v);
-  root.style.setProperty("color-scheme", colorScheme);
+  applyTokensToRoot(tokens);
 }
 
 export function ThemeEditor({ spaceId }: { spaceId: string }) {
@@ -42,6 +40,8 @@ export function ThemeEditor({ spaceId }: { spaceId: string }) {
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Latest tokens waiting on the debounce; flushed (not dropped) on unmount. */
+  const pendingTokens = useRef<ThemeTokens | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -60,13 +60,23 @@ export function ThemeEditor({ spaceId }: { spaceId: string }) {
       });
     return () => {
       alive = false;
+      // Flush, don't drop: a debounced edit that hasn't fired yet is
+      // persisted immediately so closing Settings can't lose it.
+      const pending = pendingTokens.current;
+      pendingTokens.current = null;
       if (saveTimer.current) clearTimeout(saveTimer.current);
+      if (pending) {
+        nt().themesSet(spaceId, pending).catch(() => {});
+      }
     };
   }, [spaceId]);
 
   const persist = (next: ThemeTokens) => {
+    pendingTokens.current = next;
+    stampThemeTouched(spaceId);
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
+      pendingTokens.current = null;
       nt()
         .themesSet(spaceId, next)
         .then(() => refreshTheme())
@@ -87,11 +97,37 @@ export function ThemeEditor({ spaceId }: { spaceId: string }) {
   };
 
   const reset = async () => {
+    // A stale debounced edit must not overwrite the reset landing after it.
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    pendingTokens.current = null;
+    stampThemeTouched(spaceId);
     await nt().themesReset(spaceId);
     const fresh = await nt().themesGet(spaceId);
     setTokens(fresh);
     applyPreview(fresh);
     refreshTheme();
+  };
+
+  /**
+   * Appearance toggle: swap the whole surface/text palette to the mode's
+   * defaults. (Just flipping `mode` changed nothing visible — the bug the
+   * user reported.) The Bit's identity (spaceColor) and geometry
+   * (radiusScale) carry over.
+   */
+  const setMode = (mode: "dark" | "light") => {
+    setTokens((prev) => {
+      if (!prev || prev.mode === mode) return prev;
+      const base = mode === "light" ? DEFAULT_LIGHT_TOKENS : DEFAULT_DARK_TOKENS;
+      const next: ThemeTokens = {
+        ...base,
+        spaceColor: prev.spaceColor,
+        radiusScale: prev.radiusScale,
+        mode,
+      };
+      applyPreview(next); // instant chrome re-skin
+      persist(next);
+      return next;
+    });
   };
 
   if (loadError) {
@@ -215,7 +251,7 @@ export function ThemeEditor({ spaceId }: { spaceId: string }) {
               key={m}
               role="radio"
               aria-checked={tokens.mode === m}
-              onClick={() => update("mode", m)}
+              onClick={() => setMode(m)}
               className="nt-r-sm px-4 py-1.5 text-[12.5px] font-medium capitalize transition-colors"
               style={
                 tokens.mode === m

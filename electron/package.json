@@ -1,6 +1,7 @@
 {
   "author": "Next Token",
   "dependencies": {
+    "@ghostery/adblocker-electron": "^2.18.2",
     "lucide-react": "^1.47.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"
@@ -33,5 +34,5 @@
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "smoke": "node scripts/smoke.mjs"
   },
-  "version": "0.4.0"
+  "version": "0.5.0"
 }

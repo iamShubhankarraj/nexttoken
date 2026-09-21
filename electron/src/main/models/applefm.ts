@@ -18,6 +18,12 @@ import os from 'node:os';
 export interface AppleFmProbe {
   available: boolean;
   reason?: string;
+  /**
+   * True when the ONLY problem is the missing sidecar binary — i.e. the user
+   * can fix this themselves by running native/applefm/build.sh on their Mac.
+   * The UI renders a "one-time setup required" card instead of an error.
+   */
+  setupRequired?: boolean;
 }
 
 export interface AppleFmMessage {
@@ -88,7 +94,11 @@ export class AppleFmClient {
     }
     const binary = this.findBinary();
     if (!binary) {
-      this.probeCache = { available: false, reason: 'applefm-bridge binary not found' };
+      this.probeCache = {
+        available: false,
+        reason: 'applefm-bridge binary not found — one-time setup required',
+        setupRequired: true,
+      };
       return this.probeCache;
     }
 

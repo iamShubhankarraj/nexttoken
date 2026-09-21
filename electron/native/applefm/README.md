@@ -15,10 +15,14 @@ cd electron/native/applefm
 ./build.sh
 ```
 
-This runs `swift build -c release` and copies the binary to
-`electron/resources/sidecars/applefm-bridge`, which is where the Electron main
-process looks for it at runtime (`process.resourcesPath/sidecars/...` when
-packaged, with a dev fallback to the repo's `resources/sidecars`).
+This checks the environment (macOS 26+, Xcode 26+ with the macOS 26 SDK),
+runs `swift build -c release`, installs the binary into every writable
+candidate location the Electron client probes — the installed app's
+`Contents/Resources/sidecars` (both `/Applications` and
+`~/Applications`), plus the repo's `electron/resources/sidecars` dev
+fallback — and smoke-tests it with `--probe`. After a successful build,
+restart Next Token: Settings → Models shows Apple Foundation Models as
+Available (given macOS 26+ with Apple Intelligence enabled).
 
 Check it works:
 
@@ -62,8 +66,10 @@ stdin reaches EOF.
 ## Graceful degradation
 
 - **Binary missing** (not built yet, or stripped from the package): the
-  TypeScript client reports `available: false` with a reason, and the app falls
-  back to BYOK cloud providers.
+  TypeScript client reports `available: false` with `setupRequired: true`;
+  Settings → Models renders an amber "one-time setup required" card with the
+  exact build commands instead of an error, and the model router labels the
+  choice accordingly.
 - **macOS < 26 or model not ready** (Apple Intelligence off, device ineligible,
   model still downloading): `--probe` returns `available:false` with the real
   `SystemLanguageModel` unavailability reason; every chat request errors the

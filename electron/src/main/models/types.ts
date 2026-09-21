@@ -13,6 +13,12 @@ export interface ModelEntry {
   license: string;     // e.g. 'Apache-2.0'
   mmprojUrl?: string;  // vision models only: direct URL of the mmproj file
   mmprojSha256?: string;
+  /**
+   * True when the host repo is access-gated on Hugging Face (login + license
+   * acceptance required). Gated entries stay visible but are badged in the
+   * UI, and download with the user's saved HF token when one exists.
+   */
+  gated?: boolean;
 }
 
 export type ModelRef = string; // 'applefm' | 'cloud' | a ModelEntry id

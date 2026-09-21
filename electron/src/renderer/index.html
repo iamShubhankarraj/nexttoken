@@ -7,6 +7,9 @@
       content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:;"
     />
     <title>Next Token</title>
+    <!-- Pre-paint theme boot: parser-blocking, restores the last theme's
+         CSS vars before first paint (no dark→light flash on relaunch). -->
+    <script src="/theme-boot.js"></script>
   </head>
   <body>
     <div id="root"></div>

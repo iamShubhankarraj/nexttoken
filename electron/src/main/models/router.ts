@@ -25,7 +25,7 @@
  */
 
 import type { Store, ProviderPersist } from '../store';
-import type { AppleFmClient, AppleFmMessage } from './applefm';
+import type { AppleFmClient, AppleFmMessage, AppleFmProbe } from './applefm';
 import type { LlamaServer, ServerSlot } from './runtime';
 import { MODEL_CATALOG, type ModelEntry } from './index';
 import { PROVIDER_PRESETS } from '../../shared/ipc';
@@ -115,7 +115,7 @@ export class ModelRouter {
     const out: ModelChoice[] = [];
 
     // -- Local --------------------------------------------------------------
-    let probe: { available: boolean; reason?: string } = { available: false, reason: 'unavailable' };
+    let probe: AppleFmProbe = { available: false, reason: 'unavailable' };
     try {
       probe = await this.deps.appleFm.probe();
     } catch {
@@ -127,7 +127,11 @@ export class ModelRouter {
       detail: 'On-device · macOS',
       group: 'local',
       available: probe.available,
-      unavailableReason: probe.available ? undefined : (probe.reason ?? 'Unavailable on this device')
+      unavailableReason: probe.available
+        ? undefined
+        : (probe.setupRequired
+            ? 'One-time setup required — see Settings → Models'
+            : (probe.reason ?? 'Unavailable on this device'))
     });
     for (const e of MODEL_CATALOG) {
       if (e.task !== 'chat') continue;

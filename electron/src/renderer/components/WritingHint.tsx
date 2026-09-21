@@ -111,7 +111,7 @@ export function WritingHint() {
         width: 284,
         background: "var(--nt-bg-overlay)",
         borderColor: "var(--nt-border)",
-        boxShadow: "0 12px 32px rgba(0,0,0,0.45)",
+        boxShadow: "var(--nt-shadow-pop)",
       }}
       onMouseEnter={() => {
         if (hideTimer.current) clearTimeout(hideTimer.current);

@@ -4,8 +4,11 @@
  * Every case delegates to the same TabManager / Store operations the
  * `nt.tabs.*`, `nt.nav.*`, `nt.spaces.*`, and `nt.ui.*` IPC handlers use —
  * no duplicated browser logic. Intents the brain marks as sensitive
- * (terminal.run, etc.) never reach here directly: the orchestrator's safety
- * stage forces a confirmation dialog first.
+ * (terminal.run) never reach the switch directly: they route through
+ * runTerminalControl, whose native confirmation dialog (exact command +
+ * working directory) is the non-negotiable gate — the orchestrator's
+ * safety stage forces its own confirmation first, so a voice terminal
+ * command is confirmed twice before it runs.
  *
  * Renderer-only affordances (command bar, listen/stop-listening) go through
  * the ControlEnv callbacks, which main/index.ts wires to webContents events.
@@ -13,6 +16,8 @@
 
 import type { TabManager } from '../tabs';
 import type { Store } from '../store';
+import type { BrowserWindow } from 'electron';
+import { runTerminal } from '../terminal';
 
 export interface ControlResult {
   /** One-line description for the event log. */
@@ -94,6 +99,30 @@ async function runInPage(env: ControlEnv, js: string): Promise<unknown> {
 /** Escape a string for safe interpolation into executeJavaScript. */
 function jsStr(s: string): string {
   return JSON.stringify(s);
+}
+
+/**
+ * terminal.run: the ONE brain execution path for shell commands. Routes
+ * through runTerminal, whose native dialog is non-negotiable: it shows the
+ * exact command + working directory and nothing executes unless the user
+ * clicks "Run command". The brain's safety stage has already asked once
+ * (exact command + cwd in the confirm text); this dialog is the final gate.
+ */
+export async function runTerminalControl(
+  win: BrowserWindow | null,
+  slots: Slots
+): Promise<ControlResult> {
+  const command = str(slots, 'command');
+  if (!command.trim()) throw new Error('What command should I run?');
+  const cwd = str(slots, 'cwd').trim() || undefined;
+  const res = await runTerminal(win, command, cwd);
+  if (res.denied) {
+    return { summary: 'terminal command declined at the confirmation dialog', speak: "Okay, I won't run that." };
+  }
+  const out: string[] = [`exit code ${res.exitCode ?? 'unknown'}${res.timedOut ? ' (timed out at 60s)' : ''}`];
+  if (res.stdout.trim()) out.push(`stdout:\n${res.stdout.trim().slice(0, 2000)}`);
+  if (res.stderr.trim()) out.push(`stderr:\n${res.stderr.trim().slice(0, 2000)}`);
+  return { summary: `ran "${command.slice(0, 80)}" — ${out[0]}`, speak: `Command finished with ${out[0]}.` };
 }
 
 export async function executeControl(
@@ -301,6 +330,12 @@ export async function executeControl(
     // -- Voice itself -----------------------------------------------------------------
     case 'voice.listen.start': env.requestListen(true); return { summary: 'started listening' };
     case 'voice.listen.stop': env.requestListen(false); return { summary: 'stopped listening' };
+
+    // -- Terminal --------------------------------------------------------------------
+    // GATED: never run directly — use runTerminalControl, which shows the
+    // native confirmation dialog (exact command + working directory).
+    case 'terminal.run':
+      throw new Error('terminal.run must go through runTerminalControl (confirmation dialog).');
 
     default:
       throw new Error(`Voice control can't do "${intent}" yet.`);

@@ -2,35 +2,41 @@
 
 /* ------------------------------------------------------------------
    Next Token — design system (research/browser-ui-research.md §4–§5).
-   Warm-charcoal dark system, layered surfaces, ONE ember accent.
+   Calm Dia-inspired light chrome by default: warm paper surfaces,
+   hairline borders, soft warm-gray text, ONE ember accent (#E8A33D).
    NO purple/blue gradients anywhere.
 
    Real token values come from tokensToCssVars() (src/shared/ipc.ts),
-   applied inline on the app root per active space. The :root values
-   below are first-paint fallbacks only (DEFAULT_DARK_TOKENS).
+   painted onto documentElement (:root) by applyTokensToRoot() (theme.ts)
+   per active Bit. The :root values below are first-paint fallbacks only
+   (DEFAULT_LIGHT_TOKENS); theme-boot.js may override them before paint
+   from the localStorage mirror.
 ------------------------------------------------------------------- */
 
 :root {
-  --nt-bg-base: #0b0b0d;
-  --nt-bg-subtle: #101013;
-  --nt-bg-raised: #16161a;
-  --nt-bg-overlay: #1e1e24;
-  --nt-bg-hover: #232329;
-  --nt-border: rgba(255, 255, 255, 0.08);
-  --nt-border-strong: rgba(255, 255, 255, 0.14);
-  --nt-text-1: #f4f2ed;
-  --nt-text-2: rgba(244, 242, 237, 0.64);
-  --nt-text-3: rgba(244, 242, 237, 0.4);
-  --nt-text-faint: rgba(244, 242, 237, 0.24);
+  --nt-bg-base: #faf9f6;
+  --nt-bg-subtle: #f1efe9;
+  --nt-bg-raised: #ffffff;
+  --nt-bg-overlay: #ffffff;
+  --nt-bg-hover: #ece9e1;
+  --nt-border: rgba(28, 26, 21, 0.08);
+  --nt-border-strong: rgba(28, 26, 21, 0.16);
+  --nt-text-1: #1d1b16;
+  --nt-text-2: rgba(29, 27, 22, 0.66);
+  --nt-text-3: rgba(29, 27, 22, 0.44);
+  --nt-text-faint: rgba(29, 27, 22, 0.28);
   --nt-accent: #e8a33d;
-  --nt-accent-soft: rgba(232, 163, 61, 0.14);
-  --nt-accent-text: #0b0b0d;
-  --nt-accent-glow: 0 0 16px rgba(232, 163, 61, 0.28);
-  --nt-space: #7fa6a3;
+  --nt-accent-soft: rgba(232, 163, 61, 0.16);
+  --nt-accent-text: #1c1503;
+  --nt-accent-glow: 0 0 12px rgba(232, 163, 61, 0.22);
+  --nt-shadow-card: 0 16px 40px rgba(31, 28, 22, 0.1), 0 2px 8px rgba(31, 28, 22, 0.06);
+  --nt-shadow-overlay: 0 24px 64px rgba(31, 28, 22, 0.14), 0 4px 16px rgba(31, 28, 22, 0.08);
+  --nt-shadow-pop: 0 12px 32px rgba(31, 28, 22, 0.12), 0 2px 6px rgba(31, 28, 22, 0.06);
+  --nt-space: #5f7f7c;
   --nt-r-sm: 6px;
   --nt-r-md: 10px;
   --nt-r-lg: 14px;
-  color-scheme: dark;
+  color-scheme: light;
 }
 
 html,

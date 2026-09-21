@@ -57,6 +57,12 @@ interface NtModels {
   modelsAppleFm(): Promise<{ available: boolean; reason?: string }>;
   modelsDiskUsage(): Promise<number>;
   onModelEvent(cb: (e: ModelEvent) => void): () => void;
+  // HF token (registered in main/models/ipc.ts; needs the matching preload
+  // methods — the panel degrades gracefully when they're absent).
+  modelsHfTokenSet?(token: string): Promise<{ ok: true }>;
+  modelsHfTokenHas?(): Promise<boolean>;
+  modelsHfTokenClear?(): Promise<void>;
+  modelsGatedIds?(): Promise<string[]>;
 }
 
 /** Bridge handle; throws the same way nt() does when unavailable. */
@@ -100,7 +106,12 @@ function progressPct(e: ModelEntryPublic): number {
 
 export function ModelsPanel() {
   const [entries, setEntries] = useState<ModelEntryPublic[] | null>(null);
-  const [apple, setApple] = useState<{ available: boolean; reason?: string } | null>(null);
+  const [apple, setApple] = useState<{
+    available: boolean;
+    reason?: string;
+    /** True when only the sidecar binary is missing — show setup steps, not an error. */
+    setupRequired?: boolean;
+  } | null>(null);
   const [assignment, setAssignment] = useState<{ chat: string; vision: string }>({
     chat: CLOUD_REF,
     vision: CLOUD_REF,
@@ -112,6 +123,12 @@ export function ModelsPanel() {
   const [assignBusy, setAssignBusy] = useState<"" | "chat" | "vision">("");
   const [assignError, setAssignError] = useState<string | null>(null);
   const [activeModelLabel, setActiveModelLabel] = useState<string | null>(null);
+  // HF token: null = preload doesn't support it yet (older build) → hide card.
+  const [hfTokenSaved, setHfTokenSaved] = useState<boolean | null>(null);
+  const [hfTokenInput, setHfTokenInput] = useState("");
+  const [hfTokenBusy, setHfTokenBusy] = useState(false);
+  const [hfTokenError, setHfTokenError] = useState<string | null>(null);
+  const [gatedIds, setGatedIds] = useState<string[]>([]);
 
   /** The unified active model drives every LLM call — keep its label fresh. */
   const loadActiveModelLabel = useCallback(async () => {
@@ -150,6 +167,22 @@ export function ModelsPanel() {
   useEffect(() => {
     void load();
     void loadActiveModelLabel();
+    // HF token state lives behind new preload methods; a missing bridge
+    // (older build) hides the token card instead of breaking the panel.
+    void (async () => {
+      try {
+        const api = modelsApi();
+        if (!api.modelsHfTokenHas || !api.modelsGatedIds) return;
+        const [has, gated] = await Promise.all([
+          api.modelsHfTokenHas(),
+          api.modelsGatedIds(),
+        ]);
+        setHfTokenSaved(has);
+        setGatedIds(gated);
+      } catch {
+        /* token bridge unavailable — card stays hidden */
+      }
+    })();
     let off: (() => void) | undefined;
     try {
       off = nt().onActiveModel(() => void loadActiveModelLabel());
@@ -186,7 +219,18 @@ export function ModelsPanel() {
           });
           void load();
         } else {
-          setRowErrors((prev) => ({ ...prev, [e.id]: e.error }));
+          // A user-cancelled download is a quiet state reset, not an error:
+          // the main process already cleared its progress map, so the row
+          // goes back to the Download button and can be retried (resuming).
+          if (/cancelled/i.test(e.error ?? "")) {
+            setRowErrors((prev) => {
+              const next = { ...prev };
+              delete next[e.id];
+              return next;
+            });
+          } else {
+            setRowErrors((prev) => ({ ...prev, [e.id]: e.error }));
+          }
           void load();
         }
       });
@@ -276,6 +320,39 @@ export function ModelsPanel() {
     }
   };
 
+  /* ------------------------------ HF token -------------------------------- */
+
+  const saveHfToken = async () => {
+    const api = modelsApi();
+    if (!api.modelsHfTokenSet) return;
+    setHfTokenBusy(true);
+    setHfTokenError(null);
+    try {
+      await api.modelsHfTokenSet(hfTokenInput);
+      setHfTokenInput("");
+      setHfTokenSaved(true);
+    } catch (err) {
+      setHfTokenError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setHfTokenBusy(false);
+    }
+  };
+
+  const clearHfToken = async () => {
+    const api = modelsApi();
+    if (!api.modelsHfTokenClear) return;
+    setHfTokenBusy(true);
+    setHfTokenError(null);
+    try {
+      await api.modelsHfTokenClear();
+      setHfTokenSaved(false);
+    } catch (err) {
+      setHfTokenError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setHfTokenBusy(false);
+    }
+  };
+
   /* --------------------------------- render ------------------------------- */
 
   if (loadError) {
@@ -362,27 +439,166 @@ export function ModelsPanel() {
             style={{
               borderColor: apple.available
                 ? "rgba(111,162,135,0.4)"
-                : "rgba(217,115,98,0.4)",
-              color: apple.available ? "#6fa287" : "#d97362",
+                : apple.setupRequired
+                  ? "rgba(196,158,74,0.45)"
+                  : "rgba(217,115,98,0.4)",
+              color: apple.available
+                ? "#6fa287"
+                : apple.setupRequired
+                  ? "#c49e4a"
+                  : "#d97362",
               background: apple.available
                 ? "rgba(111,162,135,0.08)"
-                : "rgba(217,115,98,0.08)",
+                : apple.setupRequired
+                  ? "rgba(196,158,74,0.08)"
+                  : "rgba(217,115,98,0.08)",
             }}
           >
             {apple.available ? (
               <Check size={13} strokeWidth={2.5} />
+            ) : apple.setupRequired ? (
+              <Cpu size={13} strokeWidth={1.75} />
             ) : (
               <X size={13} strokeWidth={2.5} />
             )}
-            {apple.available ? "Available" : "Unavailable"}
+            {apple.available
+              ? "Available"
+              : apple.setupRequired
+                ? "Setup required"
+                : "Unavailable"}
           </span>
         </div>
-        {!apple.available && apple.reason && (
-          <p className="mt-2 text-[12px]" style={{ color: "#d97362" }}>
-            {apple.reason}
-          </p>
+        {apple.setupRequired ? (
+          <div className="mt-3">
+            <p className="text-[12.5px]" style={{ color: "var(--nt-text-2)" }}>
+              One-time setup — build Apple's on-device bridge on your Mac:
+            </p>
+            <ol
+              className="mt-1.5 list-decimal space-y-1 pl-5 text-[12.5px]"
+              style={{ color: "var(--nt-text-2)" }}
+            >
+              <li>Open Terminal on your Mac.</li>
+              <li>
+                Run the build script from the Next Token source:{" "}
+                <code
+                  className="nt-r-sm px-1.5 py-0.5 text-[12px]"
+                  style={{
+                    background: "var(--nt-bg-hover)",
+                    color: "var(--nt-text-1)",
+                  }}
+                >
+                  cd electron/native/applefm &amp;&amp; ./build.sh
+                </code>
+              </li>
+              <li>Restart Next Token — it picks the bridge up automatically.</li>
+            </ol>
+            <p
+              className="mt-1.5 text-[12px]"
+              style={{ color: "var(--nt-text-3)" }}
+            >
+              Requires macOS 26 (Tahoe) or later with Apple Intelligence
+              enabled, plus Xcode 26+ command line tools. The script installs
+              the bridge into the app for you — nothing else to configure.
+            </p>
+          </div>
+        ) : (
+          !apple.available &&
+          apple.reason && (
+            <p className="mt-2 text-[12px]" style={{ color: "#d97362" }}>
+              {apple.reason}
+            </p>
+          )
         )}
       </div>
+
+      {/* ------------------------- Hugging Face token ------------------------ */}
+      {hfTokenSaved !== null && (
+        <div
+          className="nt-r-md mt-4 border p-4"
+          style={{
+            borderColor: "var(--nt-border)",
+            background: "var(--nt-bg-raised)",
+          }}
+        >
+          <p
+            className="text-[13px] font-medium"
+            style={{ color: "var(--nt-text-1)" }}
+          >
+            Hugging Face token{" "}
+            <span
+              className="font-normal"
+              style={{ color: "var(--nt-text-3)" }}
+            >
+              (optional)
+            </span>
+          </p>
+          <p
+            className="mt-0.5 text-[12px]"
+            style={{ color: "var(--nt-text-3)" }}
+          >
+            Every model below downloads with no sign-in. The token is an
+            optional fallback in case a repo ever gates access. Stored in
+            your OS keychain — never leaves this device.
+          </p>
+          {hfTokenSaved ? (
+            <div className="mt-2.5 flex items-center gap-2.5">
+              <span
+                className="flex items-center gap-1.5 text-[12.5px] font-medium"
+                style={{ color: "#6fa287" }}
+              >
+                <Check size={13} strokeWidth={2.5} />
+                Token saved
+              </span>
+              <button
+                onClick={() => void clearHfToken()}
+                disabled={hfTokenBusy}
+                className="nt-r-sm border px-2.5 py-1 text-[12px] font-medium transition-colors hover:bg-[var(--nt-bg-hover)] disabled:opacity-60"
+                style={{
+                  borderColor: "var(--nt-border)",
+                  color: "var(--nt-text-2)",
+                }}
+              >
+                {hfTokenBusy ? "Working…" : "Remove"}
+              </button>
+            </div>
+          ) : (
+            <div className="mt-2.5 flex items-center gap-2">
+              <input
+                type="password"
+                value={hfTokenInput}
+                onChange={(e) => setHfTokenInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") void saveHfToken();
+                }}
+                placeholder="hf_…"
+                autoComplete="off"
+                spellCheck={false}
+                className="nt-r-sm min-w-0 flex-1 border bg-[var(--nt-bg-base)] px-3 py-1.5 text-[13px] outline-none focus:border-[var(--nt-accent)]"
+                style={{
+                  borderColor: "var(--nt-border)",
+                  color: "var(--nt-text-1)",
+                }}
+              />
+              <button
+                onClick={() => void saveHfToken()}
+                disabled={hfTokenBusy || !hfTokenInput.trim()}
+                className="nt-r-sm shrink-0 px-3 py-1.5 text-[12.5px] font-semibold transition-transform hover:scale-[1.03] disabled:opacity-60"
+                style={{
+                  background: "var(--nt-accent)",
+                  color: "var(--nt-accent-text)",
+                }}
+              >
+                {hfTokenBusy ? "Saving…" : "Save"}
+              </button>
+            </div>
+          )}
+          {hfTokenError && (
+            <p className="mt-2 text-[12.5px]" style={{ color: "#d97362" }}>
+              {hfTokenError}
+            </p>
+          )}
+        </div>
+      )}
 
       {/* --------------------------- Per-task assignment --------------------- */}
       <h3
@@ -459,6 +675,7 @@ export function ModelsPanel() {
                 <ModelRow
                   key={e.id}
                   entry={e}
+                  gated={gatedIds.includes(e.id)}
                   error={rowErrors[e.id]}
                   confirmRemove={confirmRemoveId === e.id}
                   onDownload={() => void download(e.id)}
@@ -558,6 +775,7 @@ function AssignmentSelect({
 
 function ModelRow({
   entry: e,
+  gated,
   error,
   confirmRemove,
   onDownload,
@@ -566,6 +784,7 @@ function ModelRow({
   onCancelRemove,
 }: {
   entry: ModelEntryPublic;
+  gated: boolean;
   error?: string;
   confirmRemove: boolean;
   onDownload: () => void;
@@ -585,10 +804,23 @@ function ModelRow({
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <p
-            className="text-[13.5px] font-medium"
+            className="flex flex-wrap items-center gap-2 text-[13.5px] font-medium"
             style={{ color: "var(--nt-text-1)" }}
           >
             {e.name}
+            {gated && (
+              <span
+                className="nt-r-sm border px-1.5 py-0.5 text-[11px] font-medium"
+                title="This model is access-gated on Hugging Face — add an HF token above to download it."
+                style={{
+                  borderColor: "rgba(196,158,74,0.45)",
+                  color: "#c49e4a",
+                  background: "rgba(196,158,74,0.08)",
+                }}
+              >
+                Requires HF token
+              </span>
+            )}
           </p>
           <p
             className="mt-0.5 text-[12px]"

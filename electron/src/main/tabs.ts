@@ -159,8 +159,8 @@ export class TabManager {
     // Site favicon for the sidebar — the page's own icon, cached per host.
     // No extra network requests: Electron hands us the resolved favicon.
     wc.on('page-favicon-updated', (_e, favicons) => this.onFavicon(tab, favicons));
-    // Custom context menu for guest content — the app adds a
-    // "Picture in picture" item when right-clicking a video element.
+    // Custom context menu for guest content — the app adds video actions
+    // (copy address, open in new tab) when right-clicking a video element.
     wc.on('context-menu', (_e, params) => {
       try { this.hooks?.onContextMenu?.(wc, params); } catch { /* noop */ }
     });
