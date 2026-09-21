@@ -13,13 +13,14 @@ import {
   ChevronRight,
   Columns2,
   PanelLeft,
+  PictureInPicture2,
   Plus,
   RotateCw,
   Sparkles,
   Star,
   X,
 } from "lucide-react";
-import { useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useBrowser } from "../BrowserContext";
 import { domainOf, nt } from "../nt";
 import { AppLogo } from "./AppLogo";
@@ -86,6 +87,17 @@ export function TopStrip() {
 
   const iconBtn =
     "nt-r-sm p-2 transition-colors hover:bg-[var(--nt-bg-hover)] disabled:opacity-30 disabled:hover:bg-transparent";
+
+  // Small transient PiP note (toolbar button + context-menu failures
+  // surface here instead of failing silently).
+  const [pipNote, setPipNote] = useState<string | null>(null);
+  const pipNoteTimer = useRef<number | null>(null);
+  const flashPipNote = (msg: string) => {
+    setPipNote(msg);
+    if (pipNoteTimer.current) window.clearTimeout(pipNoteTimer.current);
+    pipNoteTimer.current = window.setTimeout(() => setPipNote(null), 2600);
+  };
+  useEffect(() => nt().onPipError((m) => flashPipNote(m)), []);
 
   const bookmarked = Boolean(
     activeSpace &&
@@ -184,6 +196,26 @@ export function TopStrip() {
         </button>
       )}
 
+      {/* Picture in Picture: works on any page with a playable video,
+          no right-click needed. Failures show a brief note instead of
+          failing silently. */}
+      <button
+        title="Picture in Picture"
+        disabled={!activeTab}
+        onClick={() => {
+          void nt()
+            .tabsPip()
+            .then((r) => {
+              if (!r.ok)
+                flashPipNote(r.error ?? "No playable video found on this page.");
+            });
+        }}
+        className={iconBtn}
+        style={{ color: "var(--nt-text-3)" }}
+      >
+        <PictureInPicture2 size={15} strokeWidth={1.75} />
+      </button>
+
       {/* Ad-block shield: live blocked count + per-site toggle */}
       <ShieldButton />
 
@@ -267,6 +299,21 @@ export function TopStrip() {
       >
         <Sparkles size={16} strokeWidth={1.75} />
       </button>
+
+      {/* Transient PiP note (toolbar button / context-menu failures) */}
+      {pipNote && (
+        <span
+          role="status"
+          className="nt-popover nt-r-full absolute left-1/2 top-12 z-20 -translate-x-1/2 whitespace-nowrap border px-3 py-1.5 text-[12px] shadow-lg"
+          style={{
+            background: "var(--nt-bg-overlay)",
+            borderColor: "var(--nt-border)",
+            color: "var(--nt-text-2)",
+          }}
+        >
+          {pipNote}
+        </span>
+      )}
     </header>
   );
 }

@@ -748,6 +748,8 @@ export interface NextTokenAPI {
   onVoiceEngineState(cb: (s: VoiceEngineState) => void): () => void;
   /** Plain-language voice error for the voice surface (never a stack trace). */
   onVoiceError(cb: (message: string) => void): () => void;
+  /** Picture-in-Picture engine failure from the main process (toast, never a stack trace). */
+  onPipError(cb: (message: string) => void): () => void;
   /** Mic amplitude forwarded to the voice chip. */
   onVoiceAmplitude(cb: (level: number) => void): () => void;
   /** TTS playback started/ended in the renderer (drives the toolbar voice chip). */

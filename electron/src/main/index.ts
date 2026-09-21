@@ -1503,20 +1503,36 @@ app.whenReady().then(() => {
         }
 
         // -- video ------------------------------------------------------
-        if (params.mediaType === 'video' && params.srcURL) {
+        // The PiP item shows whenever the right-click is over a video
+        // element, even when the player hides the src (YouTube and most
+        // custom players overlay divs, so srcURL can be blank). srcURL-only
+        // actions stay gated on having a URL.
+        if (params.mediaType === 'video') {
           const srcURL = params.srcURL;
           items.push(
             { type: 'separator' },
             {
               label: 'Picture in Picture',
-              click: () => void enterPictureInPicture(),
+              // The PiP engine returns { ok, error }; surface failures as
+              // a toast instead of swallowing them.
+              click: () => {
+                void enterPictureInPicture().then((r) => {
+                  if (!r.ok && win && !win.isDestroyed()) {
+                    win.webContents.send('nt.pip-error', r.error ?? 'Picture in Picture failed.');
+                  }
+                });
+              },
             },
-            { label: 'Copy Video Address', click: () => clipboard.writeText(srcURL) },
-            {
-              label: 'Open Video in New Tab',
-              click: () => createTabActivated(store.d.activeSpaceId, srcURL, true)
-            }
           );
+          if (srcURL) {
+            items.push(
+              { label: 'Copy Video Address', click: () => clipboard.writeText(srcURL) },
+              {
+                label: 'Open Video in New Tab',
+                click: () => createTabActivated(store.d.activeSpaceId, srcURL, true)
+              }
+            );
+          }
         }
 
         // -- editing ----------------------------------------------------

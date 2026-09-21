@@ -132,6 +132,11 @@ const api: NextTokenAPI = {
     ipcRenderer.on('nt.voice-error', l);
     return () => ipcRenderer.removeListener('nt.voice-error', l);
   },
+  onPipError: (cb) => {
+    const l = (_e: unknown, m: string) => cb(m);
+    ipcRenderer.on('nt.pip-error', l);
+    return () => ipcRenderer.removeListener('nt.pip-error', l);
+  },
   onVoiceAmplitude: (cb) => {
     const l = (_e: unknown, level: number) => cb(level);
     ipcRenderer.on('nt:voice-amplitude', l);
