@@ -60,6 +60,11 @@ export interface VoiceEngineOptions {
   getSttModelFile(): string | null;
   /** Absolute path to the downloaded Kokoro model dir, or null when none. */
   getTtsModelDir(): string | null;
+  /**
+   * Self-heal the TTS model dir (espeak-ng-data) before synthesizing.
+   * A no-op when the data is already present. Awaited — never racy.
+   */
+  repairTts(): Promise<void>;
   /** Cleanup-pass config + Flow's prompt assets (null disables the LLM pass). */
   getCleanupConfig(): {
     enabled: boolean;
@@ -331,6 +336,16 @@ export class VoiceEngine {
     if (!modelDir) {
       throw new Error(
         "Voice: no text-to-speech model is downloaded. Download a Kokoro TTS model in Settings → Models first.",
+      );
+    }
+    // Await the self-heal here (not fire-and-forget at voice start): the
+    // first utterance used to race the repair and fail on a missing
+    // espeak-ng-data, surfacing as a flaky "Kokoro unavailable".
+    try {
+      await this.opts.repairTts();
+    } catch (e) {
+      throw new Error(
+        `Voice: couldn't prepare the TTS model (${e instanceof Error ? e.message : String(e)}).`
       );
     }
     const ac = new AbortController();

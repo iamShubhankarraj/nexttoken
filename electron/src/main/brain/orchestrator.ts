@@ -115,6 +115,12 @@ const CONFIRM_CONFIDENCE = 0.4;
 const ASK_CONFIDENCE = 0.4;
 /** Sensitive actions need this AND a confirmation dialog, always. */
 const SENSITIVE_CONFIDENCE = 0.85;
+/**
+ * Anti-loop window: after asking one clarifying question, a follow-up turn
+ * inside this window that still can't fill the slot never asks again — it
+ * escalates to the agent (or ends gracefully when no agent is wired).
+ */
+const ASK_AGAIN_WINDOW_MS = 120_000;
 
 /** intents -> required slot alternatives (any one alternative must be filled). */
 const REQUIRED_SLOTS: Record<string, string[][]> = {
@@ -159,6 +165,9 @@ export function createRouterChat(deps: RouterDeps): SpecialistChat {
 export class Orchestrator {
   constructor(private readonly deps: OrchestratorDeps) {}
 
+  /** Timestamp of the last clarifying question we asked aloud (anti-loop). */
+  private lastAskAt = 0;
+
   private emit(e: BrainEvent): void {
     try {
       this.deps.emit(e);
@@ -189,10 +198,33 @@ export class Orchestrator {
 
       // Missing required slot -> ask, don't guess.
       const missing = missingSlot(decision);
-      if (missing) {
-        this.emit({ kind: 'gated', outcome: 'ask', reason: `missing slot: ${missing}` });
-        await this.askAloud(slotQuestion(decision.intent, missing));
-        return;
+      if (missing || this.shouldEscalateToAgent(decision)) {
+        // Agentic fallback (the voice-is-agentic fix): the rigid
+        // classify -> gate -> ask pipeline used to loop "Where should I go?"
+        // forever — the text model asked, Kokoro spoke it, repeat. Now, when
+        // the fast path can't fill the slots (or confidence is low), the raw
+        // transcript goes to the tool-using agent, which reasons and acts
+        // directly ("open YouTube" just opens YouTube). Sensitive intents
+        // (terminal.run et al.) never take this path — they keep the strict
+        // confirmation gate below.
+        if (this.canEscalate(decision)) {
+          await this.escalateToAgent(heard, decision, page, missing);
+          return;
+        }
+        // No agent wired (shouldn't happen in the app): fall back to asking,
+        // but never ask the same thing twice in a row — a repeat ask with no
+        // new information ends the turn gracefully instead of looping.
+        const askedRecently = Date.now() - this.lastAskAt < ASK_AGAIN_WINDOW_MS;
+        if (missing && !askedRecently) {
+          this.emit({ kind: 'gated', outcome: 'ask', reason: `missing slot: ${missing}` });
+          await this.askAloud(slotQuestion(decision.intent, missing));
+          return;
+        }
+        if (missing) {
+          this.emit({ kind: 'gated', outcome: 'ask', reason: 'repeat ask suppressed' });
+          await this.speakOnly("I couldn't quite get that — try rephrasing it?");
+          return;
+        }
       }
 
       // Safety first: static rules + Jev policy check for sensitive actions.
@@ -419,8 +451,64 @@ export class Orchestrator {
     return { verdict: 'allow', checks };
   }
 
+  /**
+   * Agentic fallback predicate: the fast classifier guessed a fixed control
+   * command but isn't sure enough to run it directly. Rather than gating on
+   * a guess, the raw transcript goes to the tool-using agent. Conversational
+   * intents (agent.ask/task, dictation, screen.describe) keep their own
+   * dispatch paths — this is only for the rigid control-command pipeline.
+   */
+  private shouldEscalateToAgent(d: IntentDecision): boolean {
+    return d.confidence < EXECUTE_CONFIDENCE && d.command.specialist === 'control';
+  }
+
+  /** The agentic fallback needs a wired agent run and a non-sensitive intent. */
+  private canEscalate(d: IntentDecision): boolean {
+    return !!this.deps.startAgentRun && !d.command.requiresConfirmation;
+  }
+
+  /**
+   * Hand the raw transcript to the tool-using agent so it reasons and acts
+   * directly, instead of the fixed command pipeline guessing. The agent's
+   * system prompt carries IDENTITY_CORE and the voice style (short spoken
+   * confirmations); the renderer's brain-event wiring speaks the run's
+   * final reply via Kokoro, so no extra narration is needed here beyond
+   * the immediate "on it".
+   */
+  private async escalateToAgent(
+    heard: string,
+    d: IntentDecision,
+    _page: BrainPageState,
+    missing: string | null
+  ): Promise<void> {
+    this.lastAskAt = 0; // this turn acted — a later ask starts fresh
+    const why = missing
+      ? `the command classifier guessed "${d.intent}" but could not determine the ${missing}`
+      : `the command classifier guessed "${d.intent}" at low confidence (${d.confidence.toFixed(2)})`;
+    this.emit({ kind: 'gated', outcome: 'escalate', reason: why });
+    this.emit({ kind: 'dispatched', specialist: 'agent' });
+    const task =
+      `The user gave a voice command to their browser: "${heard}". ${why}. ` +
+      `Figure out what they want and do it with your browser tools — for example, ` +
+      `navigate to the site they named (resolving bare names like "YouTube" to their ` +
+      `real addresses), or open a new tab if that's what they meant. ` +
+      `Take your best action; do not ask the user "where should I go?" unless the ` +
+      `request is genuinely ambiguous even after trying. ` +
+      `End with one short spoken-style sentence confirming what you did.`;
+    try {
+      const runId = await this.deps.startAgentRun!(task);
+      this.emit({ kind: 'acted', intent: d.intent, summary: `agent run ${runId}` });
+      await this.speakOnly('On it.');
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      this.emit({ kind: 'error', message });
+      await this.speakOnly('Something went wrong on my side — try again?');
+    }
+  }
+
   /** Stage 3 — specialist dispatch. */
   private async dispatch(d: IntentDecision, heard: string, page: BrainPageState): Promise<void> {
+    this.lastAskAt = 0; // this turn acted — a later ask starts fresh
     const specialist = d.command.specialist;
     if (specialist === 'control' || specialist === 'dictate') {
       this.emit({ kind: 'dispatched', specialist });
@@ -543,6 +631,7 @@ export class Orchestrator {
   }
 
   private async askAloud(question: string): Promise<void> {
+    this.lastAskAt = Date.now();
     this.emit({ kind: 'ask', question });
     await this.speakOnly(question);
   }

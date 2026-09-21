@@ -141,10 +141,12 @@ export function AgentPanel() {
   const speakNow = useCallback((text: string) => {
     // A new reply interrupts any in-flight TTS — no overlapping speech.
     stopLocalSpeech();
-    // Kokoro is the only voice in the app. If it fails we stay silent and
-    // say so in the chat — the old system-voice fallback is gone for good.
-    void speakLocal(text).then((ok) => {
-      if (!ok) setVoiceFeedback("Kokoro TTS unavailable — reply shown as text.");
+    // Kokoro is the only voice in the app. A barge-in cancel is silent (the
+    // user interrupted — not an engine problem); only a genuine engine
+    // failure shows the unavailable note. The old system-voice fallback is
+    // gone for good.
+    void speakLocal(text).then((result) => {
+      if (result === 'unavailable') setVoiceFeedback("Kokoro TTS unavailable — reply shown as text.");
     });
   }, []);
 

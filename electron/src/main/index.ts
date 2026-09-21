@@ -189,6 +189,20 @@ function whisperBinaryAvailable(): boolean {
   }
 }
 
+/**
+ * Self-heal Kokoro TTS: make sure espeak-ng-data exists inside the TTS
+ * model dir (manually placed models often lack it, which used to kill TTS
+ * and trigger the old system-voice fallback). Throws when there is no TTS
+ * model or the repair itself fails. A no-op when the data is already there.
+ */
+async function repairTtsEngine(): Promise<void> {
+  const dir = ttsModelDir();
+  if (!dir) {
+    throw new Error('Voice: no text-to-speech model is downloaded. Download a Kokoro TTS model in Settings → Models first.');
+  }
+  await ensureEspeakNgData(dir);
+}
+
 /** Flow's dictation cleanup prompts (MIT — see THIRD-PARTY-NOTICES.md). Cached after first load. */
 let cleanupPrompts: CleanupPrompt | null | undefined;
 function loadCleanupPrompts(): CleanupPrompt | null {
@@ -247,6 +261,10 @@ function initModelTier() {
     },
     getSttModelFile: sttModelFile,
     getTtsModelDir: ttsModelDir,
+    // The speak path awaits the self-heal itself (instead of the old
+    // fire-and-forget at voice start), so the first utterance can never race
+    // the repair and fail on a missing espeak-ng-data.
+    repairTts: repairTtsEngine,
     getCleanupConfig: () => ({
       enabled: store.d.voice.cleanupEnabled,
       quickCleanMaxWords: store.d.voice.quickCleanMaxWords,
@@ -428,6 +446,43 @@ function emitAgent(e: AgentEvent) {
 
 /** Run ids of voice-driven agent runs still in flight (barge-in targets). */
 const voiceRunIds = new Set<string>();
+
+/**
+ * "Save Image As…" for the guest context menu: prompt for a destination,
+ * then download the image through the guest's own session so cookies/auth
+ * travel with the request.
+ */
+async function saveImageAs(wc: WebContents, srcURL: string): Promise<void> {
+  if (!win || win.isDestroyed() || wc.isDestroyed()) return;
+  let fileName = 'image';
+  try {
+    const u = new URL(srcURL);
+    const base = u.pathname.split('/').filter(Boolean).pop() ?? '';
+    if (base) fileName = decodeURIComponent(base).split('?')[0] || 'image';
+  } catch {
+    /* keep the default */
+  }
+  if (!/\.[a-z0-9]{2,5}$/i.test(fileName)) fileName += '.png';
+  const { canceled, filePath } = await dialog.showSaveDialog(win, {
+    title: 'Save Image As',
+    defaultPath: fileName,
+  });
+  if (canceled || !filePath) return;
+  const ses = wc.session;
+  const onDownload = (_e: Electron.Event, item: Electron.DownloadItem) => {
+    try {
+      item.setSavePath(filePath);
+    } catch {
+      /* fall back to the default download location */
+    }
+  };
+  ses.once('will-download', onDownload);
+  try {
+    wc.downloadURL(srcURL);
+  } catch {
+    ses.removeListener('will-download', onDownload);
+  }
+}
 
 /**
  * Nudge the model manager: open Settings → Models with the Vision slot
@@ -1242,9 +1297,7 @@ function registerIpc() {
   // TTS and trigger the old system-voice fallback). Best-effort.
   ipcMain.handle('nt.voice.repair-tts', async (): Promise<{ ok: boolean; error?: string }> => {
     try {
-      const dir = ttsModelDir();
-      if (!dir) return { ok: false, error: 'No Kokoro TTS model downloaded yet.' };
-      await ensureEspeakNgData(dir);
+      await repairTtsEngine();
       return { ok: true };
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) };
@@ -1362,29 +1415,98 @@ app.whenReady().then(() => {
       onPopup: (sourceTab, url, disposition) => {
         createTabActivated(sourceTab.spaceId, url, disposition !== 'background-tab');
       },
-      // Right-click on a video: video actions.
+      // Full right-click context menu for guest content. Electron gives
+      // webviews no menu by default, so we build the standard one here:
+      // navigation, link actions, image actions, video actions, editing,
+      // and Inspect Element. Edit commands go to the GUEST webContents
+      // (wc.copy() etc.) — menu-item roles would hit the main window.
       onContextMenu: (wc: WebContents, params) => {
-        if (params.mediaType !== 'video' || !params.srcURL) return;
-        const srcURL = params.srcURL;
-        const menu = Menu.buildFromTemplate([
-          {
-            label: 'Picture in Picture',
-            click: () => void enterPictureInPicture(),
-          },
+        if (!win || win.isDestroyed()) return;
+        const items: Electron.MenuItemConstructorOptions[] = [];
+
+        // -- navigation -------------------------------------------------
+        items.push(
+          { label: 'Back', enabled: wc.canGoBack(), click: () => { try { wc.goBack(); } catch { /* noop */ } } },
+          { label: 'Forward', enabled: wc.canGoForward(), click: () => { try { wc.goForward(); } catch { /* noop */ } } },
+          { label: 'Reload', click: () => { try { wc.reload(); } catch { /* noop */ } } },
+        );
+
+        // -- link -------------------------------------------------------
+        if (params.linkURL) {
+          const linkURL = params.linkURL;
+          items.push(
+            { type: 'separator' },
+            {
+              label: 'Open Link in New Tab',
+              click: () => createTabActivated(store.d.activeSpaceId, linkURL, true)
+            },
+            { label: 'Copy Link Address', click: () => clipboard.writeText(linkURL) }
+          );
+        }
+
+        // -- image ------------------------------------------------------
+        const isImage = params.mediaType === 'image' || params.hasImageContents;
+        if (isImage && params.srcURL) {
+          const srcURL = params.srcURL;
+          items.push(
+            { type: 'separator' },
+            {
+              label: 'Copy Image',
+              // Copies the image under the cursor to the clipboard.
+              click: () => { try { wc.copyImageAt(params.x, params.y); } catch { /* noop */ } }
+            },
+            {
+              label: 'Save Image As…',
+              click: () => void saveImageAs(wc, srcURL)
+            }
+          );
+        }
+
+        // -- video ------------------------------------------------------
+        if (params.mediaType === 'video' && params.srcURL) {
+          const srcURL = params.srcURL;
+          items.push(
+            { type: 'separator' },
+            {
+              label: 'Picture in Picture',
+              click: () => void enterPictureInPicture(),
+            },
+            { label: 'Copy Video Address', click: () => clipboard.writeText(srcURL) },
+            {
+              label: 'Open Video in New Tab',
+              click: () => createTabActivated(store.d.activeSpaceId, srcURL, true)
+            }
+          );
+        }
+
+        // -- editing ----------------------------------------------------
+        const flags = params.editFlags ?? {};
+        const canEdit = params.isEditable;
+        const hasSelection = !!params.selectionText;
+        if (canEdit || hasSelection) {
+          items.push({ type: 'separator' });
+          if (canEdit && flags.canCut) {
+            items.push({ label: 'Cut', click: () => { try { wc.cut(); } catch { /* noop */ } } });
+          }
+          if (flags.canCopy || hasSelection) {
+            items.push({ label: 'Copy', click: () => { try { wc.copy(); } catch { /* noop */ } } });
+          }
+          if (canEdit && flags.canPaste) {
+            items.push({ label: 'Paste', click: () => { try { wc.paste(); } catch { /* noop */ } } });
+          }
+          items.push({ label: 'Select All', click: () => { try { wc.selectAll(); } catch { /* noop */ } } });
+        }
+
+        // -- devtools ---------------------------------------------------
+        items.push(
           { type: 'separator' },
           {
-            label: 'Copy video address',
-            click: () => clipboard.writeText(srcURL)
-          },
-          {
-            label: 'Open video in new tab',
-            click: () => {
-              const t = tabs.create(store.d.activeSpaceId, srcURL);
-              tabs.activate(t.id);
-            }
+            label: 'Inspect Element',
+            click: () => { try { wc.inspectElement(params.x, params.y); } catch { /* noop */ } }
           }
-        ]);
-        menu.popup({ window: win ?? undefined });
+        );
+
+        Menu.buildFromTemplate(items).popup({ window: win });
       }
     }
   );

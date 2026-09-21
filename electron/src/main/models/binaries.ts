@@ -1,11 +1,15 @@
 /**
  * Sidecar binary resolution + download for Next Token's local-model runtime.
  *
- * Next Token ships no native binaries of its own (electron-builder packaging
- * can't bundle native Node modules, and we don't compile C++). Instead, on
- * first use of a local-model feature, we fetch a prebuilt macOS arm64 binary
- * from the upstream project's GitHub releases, extract it into
- * `<userData>/bin`, and reuse it from there.
+ * The llama.cpp server binary (macOS arm64) is BUNDLED with the app at
+ * `<resources>/sidecars/llama/llama-server` (plus its companion dylibs), so
+ * starting a downloaded local model needs zero network calls. The GitHub
+ * download path below remains only as a last-resort fallback (e.g. a future
+ * llama.cpp release fixing a critical bug).
+ *
+ * whisper-cli and sherpa-onnx-offline-tts are still provisioned on demand:
+ * whisper.cpp publishes no prebuilt macOS binary, and sherpa-onnx is pinned
+ * to the last release with a macOS desktop archive.
  *
  * Asset resolution is dynamic: we query the GitHub releases API for the
  * latest release and match the asset filename against a pattern, so this
@@ -58,8 +62,9 @@ interface SidecarSpec {
 const SPECS: Record<SidecarName, SidecarSpec> = {
   'llama-server': {
     repo: 'ggerganov/llama.cpp',
-    // e.g. llama-b7437-bin-macos-arm64.zip (contains build/bin/llama-server)
-    assetPatterns: [/^llama-.*-bin-macos-arm64\.zip$/i],
+    // e.g. llama-b11073-bin-macos-arm64.tar.gz (upstream switched from .zip
+    // to .tar.gz; both are matched). Contains llama-server + companion dylibs.
+    assetPatterns: [/^llama-.*-bin-macos-arm64\.(zip|tar\.gz|tgz)$/i],
     binaryName: 'llama-server',
     describe: 'llama.cpp server binary (macOS arm64)',
   },
@@ -352,13 +357,32 @@ export function whisperManualSteps(binDir: string): string {
 const inflight = new Map<SidecarName, Promise<string>>();
 
 /**
+ * Absolute path of the app-bundled sidecar binary, or null when this copy of
+ * the app doesn't ship one (dev runs, or a future build that drops it).
+ * electron-builder's extraResources lands `resources/sidecars/` at
+ * `<app>/Contents/Resources/sidecars/`.
+ */
+function bundledSidecarPath(name: SidecarName): string | null {
+  if (name !== 'llama-server') return null;
+  try {
+    // process.resourcesPath is only the app bundle in a packaged build; in
+    // dev it points at node_modules/electron/dist — which never has our
+    // sidecars dir, so the exists check below safely returns null there.
+    const p = path.join(process.resourcesPath, 'sidecars', 'llama', 'llama-server');
+    return fs.existsSync(p) ? p : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Return the path of an executable sidecar binary, downloading it first if needed.
  *
- * - If `<binDir>/<name>` already exists and is executable, it is returned as-is.
- * - Otherwise the latest GitHub release of the upstream project is queried,
- *   the matching macOS arm64 asset is downloaded to a temp dir, extracted with
- *   the macOS-bundled /usr/bin/unzip or /usr/bin/tar (no new dependencies),
- *   and the binary is installed at `<binDir>/<name>` with mode 755.
+ * Resolution order:
+ *  1. `<binDir>/<name>` when already installed and executable (user override).
+ *  2. The app-bundled copy under `<resources>/sidecars/` (llama-server only —
+ *     shipped with the app so local models start with zero network calls).
+ *  3. Last-resort download from the upstream GitHub releases into `<binDir>`.
  *
  * Throws a human-readable Error on any failure. whisper-cli has no prebuilt
  * upstream binary, so it throws with manual install steps instead.
@@ -373,6 +397,21 @@ export async function ensureSidecar(name: SidecarName, binDir: string): Promise<
 
   const dest = path.join(binDir, name);
   if (await isExecutable(dest)) return dest;
+
+  // Bundled llama.cpp server: no GitHub API call, no download, works offline.
+  if (name === 'llama-server') {
+    const bundled = bundledSidecarPath(name);
+    if (bundled) {
+      // Best-effort: packaging usually preserves the exec bit, but a
+      // quarantine strip or odd unzip can clear it — fix it here.
+      try {
+        await fsp.chmod(bundled, 0o755);
+      } catch {
+        /* not fatal — isExecutable below is the real check */
+      }
+      if (await isExecutable(bundled)) return bundled;
+    }
+  }
 
   const existing = inflight.get(name);
   if (existing) return existing;

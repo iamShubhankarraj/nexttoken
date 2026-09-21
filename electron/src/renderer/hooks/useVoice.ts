@@ -102,10 +102,14 @@ async function localSttAvailable(): Promise<boolean> {
 }
 
 /**
- * Speak via the on-device Kokoro TTS engine. Plays the returned WAV and
- * resolves true on success; resolves false when the local engine is
- * unavailable or fails. Kokoro is the only voice — there is no
- * system-voice fallback (removed per user request).
+ * Speak via the on-device Kokoro TTS engine. Plays the returned WAV.
+ *
+ * Returns 'ok' on success, 'cancelled' when a barge-in aborted the speech
+ * (not an engine problem — stay silent), and 'unavailable' only when the
+ * engine itself is genuinely broken (no model, missing sidecar, repeated
+ * synth failure). One retry on transient failures so a single hiccup never
+ * surfaces as "Kokoro TTS unavailable". Kokoro is the only voice — there is
+ * no system-voice fallback (removed per user request).
  *
  * The active <audio> element is tracked so barge-in (Alt+V / tap the chip)
  * can stop it instantly via stopLocalSpeech().
@@ -140,12 +144,24 @@ export function stopLocalSpeech(): void {
   }
 }
 
-export async function speakLocal(text: string): Promise<boolean> {
-  try {
+export type SpeakLocalResult = 'ok' | 'cancelled' | 'unavailable';
+
+/** Permanent engine problems: retrying won't help, report unavailable. */
+function isPermanentTtsError(message: string): boolean {
+  return /no text-to-speech model|sidecar unavailable|binary missing|not executable|macOS Apple Silicon/i.test(message);
+}
+
+/** Barge-in abort: the user interrupted — not an engine failure. */
+function isBargeInCancel(message: string): boolean {
+  return /barge-in/i.test(message);
+}
+
+export async function speakLocal(text: string): Promise<SpeakLocalResult> {
+  const attempt = async (): Promise<void> => {
     const api = voiceApi();
-    if (!api || typeof api.voiceSpeak !== "function") return false;
+    if (!api || typeof api.voiceSpeak !== "function") throw new Error("local voice API unavailable");
     const wav = await api.voiceSpeak(text);
-    if (!wav || wav.length === 0) return false;
+    if (!wav || wav.length === 0) throw new Error("TTS returned empty audio");
     // Copy into a fresh ArrayBuffer-backed view (structured-clone payloads
     // may ride on a SharedArrayBuffer, which Blob rejects).
     const bytes = new Uint8Array(wav);
@@ -180,13 +196,25 @@ export async function speakLocal(text: string): Promise<boolean> {
           reject(e);
         });
       });
-      return true;
     } finally {
       URL.revokeObjectURL(url);
     }
-  } catch {
-    return false;
+  };
+
+  for (let i = 0; i < 2; i++) {
+    try {
+      await attempt();
+      return 'ok';
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e ?? "");
+      if (isBargeInCancel(message)) return 'cancelled';
+      // Permanent engine failure, or the retry already ran: report it.
+      if (isPermanentTtsError(message) || i === 1) return 'unavailable';
+      // Transient hiccup — one retry before giving up.
+      await new Promise((r) => setTimeout(r, 400));
+    }
   }
+  return 'unavailable';
 }
 
 /** Active on-device capture session. */

@@ -331,6 +331,77 @@ function extractUrl(text: string): string | null {
   return m ? m[1] : null;
 }
 
+/**
+ * Well-known site names -> domains, for bare-name navigation ("open
+ * YouTube", "go to github"). The local slot extractor can't call a search
+ * engine, so this table covers the names people actually say. Anything not
+ * listed falls through to the raw remainder, which resolveInput() treats as
+ * a search query — and the orchestrator's agentic fallback handles the rest.
+ */
+const SITE_ALIASES: Record<string, string> = {
+  youtube: 'youtube.com',
+  github: 'github.com',
+  gmail: 'mail.google.com',
+  google: 'google.com',
+  twitter: 'x.com',
+  x: 'x.com',
+  reddit: 'reddit.com',
+  netflix: 'netflix.com',
+  amazon: 'amazon.com',
+  facebook: 'facebook.com',
+  instagram: 'instagram.com',
+  linkedin: 'linkedin.com',
+  whatsapp: 'web.whatsapp.com',
+  spotify: 'open.spotify.com',
+  wikipedia: 'wikipedia.org',
+  stackoverflow: 'stackoverflow.com',
+  'stack overflow': 'stackoverflow.com',
+  duckduckgo: 'duckduckgo.com',
+  bing: 'bing.com',
+  yahoo: 'yahoo.com',
+  notion: 'notion.so',
+  figma: 'figma.com',
+  discord: 'discord.com',
+  telegram: 'web.telegram.org',
+  drive: 'drive.google.com',
+  docs: 'docs.google.com',
+  calendar: 'calendar.google.com',
+  maps: 'maps.google.com',
+  hn: 'news.ycombinator.com',
+  'hacker news': 'news.ycombinator.com',
+  vercel: 'vercel.com',
+  openai: 'openai.com',
+  chatgpt: 'chatgpt.com',
+  anthropic: 'anthropic.com',
+  claude: 'claude.ai',
+  perplexity: 'perplexity.ai',
+  huggingface: 'huggingface.co',
+  'hugging face': 'huggingface.co',
+  npm: 'npmjs.com',
+  mdn: 'developer.mozilla.org',
+  apple: 'apple.com',
+  microsoft: 'microsoft.com',
+};
+
+/**
+ * Pull a bare site name out of a navigation utterance when there's no
+ * URL-like token: strip the command verbs and conversational filler, keep
+ * the remainder ("Can you open YouTube for me?" -> "youtube").
+ */
+function extractSiteName(text: string): string | null {
+  const bare = text
+    .toLowerCase()
+    .replace(/\b(hey|hi|hello|how are you( doing)?|can you|could you|would you|please|help me|for me|just|now)\b/g, ' ')
+    .replace(/\b(open|go to|take me to|navigate to|visit|launch|show me|bring up|load)\b/g, ' ')
+    .replace(/[^a-z0-9 .'-]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!bare || bare.length > 60) return null;
+  // Guard: don't mistake tab commands for sites ("open new tab").
+  if (/^(a |an |the )?(new|blank|empty) tab(s)?$/.test(bare)) return null;
+  return bare;
+}
+
 /** Best-effort slot filling from the raw utterance. Missing slots -> orchestrator asks. */
 export function extractSlots(intent: string, text: string): Record<string, string> {
   const slots: Record<string, string> = {};
@@ -353,6 +424,12 @@ export function extractSlots(intent: string, text: string): Record<string, strin
       const url = extractUrl(text);
       if (url) slots.destination = url;
       else if (quoted) slots.destination = quoted;
+      else {
+        // "open YouTube" has no URL-like token — resolve the bare site name
+        // so the fast path just works instead of gating on a missing slot.
+        const site = extractSiteName(text);
+        if (site) slots.destination = SITE_ALIASES[site] ?? site;
+      }
       break;
     }
     case 'browser.nav.search':
