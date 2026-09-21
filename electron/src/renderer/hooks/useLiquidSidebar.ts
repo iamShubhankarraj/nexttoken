@@ -49,6 +49,10 @@ interface Engine {
   gv: number;
   gTarget: number;
   gVisible: boolean;
+  /** Media-notch morph 0..1 (drives the deepened lower scoop). */
+  mt: number;
+  mvv: number;
+  mTarget: number;
   raf: number;
   running: boolean;
   h: number;
@@ -64,12 +68,18 @@ interface Engine {
  * The right edge is organic: a rounded notch (scoop) near the top around the
  * URL pill zone, and a parenthesis sweep near the bottom cradling the bottom
  * controls. Scoop depths morph subtly with the width so the seam "breathes"
- * with the spring.
+ * with the spring. When `mediaT` (0..1) rises — the media notch showing —
+ * the lower scoop deepens to cradle the video controls, and a `notch` anchor
+ * is returned so the control cluster can ride the seam.
  */
-export function buildSeamPaths(w: number, h: number): { fill: string; edge: string } {
+export function buildSeamPaths(
+  w: number,
+  h: number,
+  mediaT = 0
+): { fill: string; edge: string; notch: { x: number; y: number } } {
   const t = Math.min(1, Math.max(0, (w - SB_REST) / (SB_MAX - SB_REST)));
   const d1 = 20 + t * 9; // top notch depth: 20 -> 29
-  const d2 = 24 + t * 9; // bottom parenthesis depth: 24 -> 33
+  const d2 = 24 + t * 9 + mediaT * 18; // bottom parenthesis depth: 24 -> 33, +18 with media
   const ex = w - 2; // nominal right edge
   const rTL = 14;
   const rTR = 14;
@@ -106,13 +116,20 @@ export function buildSeamPaths(w: number, h: number): { fill: string; edge: stri
     ` C ${ex + d2},${y0 + 132} ${ex},${y0 + 146} ${ex},${y1}` +
     ` V ${h - rBR} Q ${ex},${h} ${ex - rBR},${h}`;
 
-  return { fill, edge };
+  return {
+    fill,
+    edge,
+    // Anchor for the media control cluster: inside the deepened scoop,
+    // vertically centered on it. Written to --media-x/--media-y per frame.
+    notch: { x: ex + d2 * 0.52, y: y0 + 76 },
+  };
 }
 
 export function useLiquidSidebar(
   refs: LiquidSidebarRefs,
   activeTabId: string | undefined,
   enabled: boolean,
+  mediaActive = false,
 ): void {
   const refsRef = useRef(refs);
   refsRef.current = refs;
@@ -130,6 +147,9 @@ export function useLiquidSidebar(
       gv: 0,
       gTarget: 0,
       gVisible: false,
+      mt: 0,
+      mvv: 0,
+      mTarget: 0,
       raf: 0,
       running: false,
       h: 0,
@@ -144,9 +164,14 @@ export function useLiquidSidebar(
       const aside = r.asideRef.current;
       if (aside) aside.style.setProperty("--sbw", `${s.w.toFixed(2)}px`);
       if (s.h > 0) {
-        const p = buildSeamPaths(s.w, s.h);
+        const p = buildSeamPaths(s.w, s.h, s.mt);
         r.seamFillRef.current?.setAttribute("d", p.fill);
         r.seamHiRef.current?.setAttribute("d", p.edge);
+        // Keep the media control cluster riding the deepened scoop.
+        if (s.mt > 0.02 && aside) {
+          aside.style.setProperty("--media-x", `${p.notch.x.toFixed(1)}px`);
+          aside.style.setProperty("--media-y", `${p.notch.y.toFixed(1)}px`);
+        }
       }
       const glide = r.glideRef.current;
       if (glide) {
@@ -163,6 +188,8 @@ export function useLiquidSidebar(
         s.v = 0;
         s.gy = s.gTarget;
         s.gv = 0;
+        s.mt = s.mTarget;
+        s.mvv = 0;
       } else {
         const f = -(s.w - s.target) * STIFFNESS - s.v * DAMPING;
         s.v += f * dt;
@@ -179,6 +206,15 @@ export function useLiquidSidebar(
         else {
           s.gy = s.gTarget;
           s.gv = 0;
+        }
+        // Media-notch morph: same spring language, slightly snappier.
+        const mf = -(s.mt - s.mTarget) * 200 - s.mvv * 24;
+        s.mvv += mf * dt;
+        s.mt += s.mvv * dt;
+        if (Math.abs(s.mt - s.mTarget) > 0.002 || Math.abs(s.mvv) > 0.002) settled = false;
+        else {
+          s.mt = s.mTarget;
+          s.mvv = 0;
         }
       }
       s.paint();
@@ -339,4 +375,13 @@ export function useLiquidSidebar(
     const t = requestAnimationFrame(() => s.syncGlide(true));
     return () => cancelAnimationFrame(t);
   }, [activeTabId, enabled]);
+
+  // Media notch: morph the lower scoop deeper while a video is present.
+  useEffect(() => {
+    if (!enabled) return;
+    const s = engineRef.current;
+    if (!s) return;
+    s.mTarget = mediaActive ? 1 : 0;
+    s.kick();
+  }, [mediaActive, enabled]);
 }

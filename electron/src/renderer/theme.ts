@@ -82,18 +82,35 @@ function luminance(hex: string): number {
  */
 export function repairLegacyTokens(t: ThemeTokens): ThemeTokens {
   const filled = fillMissingSidebarBg(t);
-  const bgLum = luminance(filled.bgBase);
+  const healed = healSidebarVsMode(filled);
+  const bgLum = luminance(healed.bgBase);
   const surfaceMatchesMode =
-    (filled.mode === "light" && bgLum >= 0.4) ||
-    (filled.mode === "dark" && bgLum < 0.4);
-  if (surfaceMatchesMode) return filled;
-  const base = filled.mode === "light" ? DEFAULT_LIGHT_TOKENS : DEFAULT_DARK_TOKENS;
+    (healed.mode === "light" && bgLum >= 0.4) ||
+    (healed.mode === "dark" && bgLum < 0.4);
+  if (surfaceMatchesMode) return healed;
+  const base = healed.mode === "light" ? DEFAULT_LIGHT_TOKENS : DEFAULT_DARK_TOKENS;
   return {
     ...base,
-    spaceColor: filled.spaceColor,
-    radiusScale: filled.radiusScale,
-    mode: filled.mode,
+    spaceColor: healed.spaceColor,
+    radiusScale: healed.radiusScale,
+    mode: healed.mode,
   };
+}
+
+/**
+ * Sidebar paint guard: a mid-tone gray sidebarBg on a dark theme (or a
+ * near-black one on a light theme) is a stale experiment, not intent — the
+ * design direction is warm charcoal. Heal it back to the mode default so
+ * the sidebar can never render the wrong theme. Subtle customs (Bit-color
+ * tints, near-default charcoals) are left alone.
+ */
+function healSidebarVsMode(t: ThemeTokens): ThemeTokens {
+  const lum = luminance(t.sidebarBg ?? "");
+  const darkMode = t.mode === "dark";
+  const wrong = darkMode ? lum >= 0.12 : lum <= 0.5;
+  if (!wrong) return t;
+  const base = darkMode ? DEFAULT_DARK_TOKENS : DEFAULT_LIGHT_TOKENS;
+  return { ...t, sidebarBg: base.sidebarBg };
 }
 
 /**

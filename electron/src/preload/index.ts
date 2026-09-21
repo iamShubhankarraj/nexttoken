@@ -8,6 +8,14 @@ const api: NextTokenAPI = {
   tabsActivate: (tabId) => ipcRenderer.invoke('nt.tabs.activate', tabId),
   /** Picture in Picture for the active tab's video. */
   tabsPip: () => ipcRenderer.invoke('nt.tabs.pip'),
+  /** Media notch: seek / play-pause the active tab's video. */
+  mediaSeek: (ratio) => ipcRenderer.invoke('nt.media.seek', ratio),
+  mediaToggle: () => ipcRenderer.invoke('nt.media.toggle'),
+  onMediaState: (cb) => {
+    const l = (_e: unknown, s: Parameters<Parameters<NextTokenAPI['onMediaState']>[0]>[0]) => cb(s);
+    ipcRenderer.on('nt.media.state', l);
+    return () => ipcRenderer.removeListener('nt.media.state', l);
+  },
   tabsPin: (tabId, pinned) => ipcRenderer.invoke('nt.tabs.pin', tabId, pinned),
   tabsMove: (tabId, spaceId) => ipcRenderer.invoke('nt.tabs.move', tabId, spaceId),
   tabsReorder: (tabId, beforeTabId, folderId) => ipcRenderer.invoke('nt.tabs.reorder', tabId, beforeTabId, folderId),

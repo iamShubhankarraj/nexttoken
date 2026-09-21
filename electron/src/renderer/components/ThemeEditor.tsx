@@ -236,6 +236,19 @@ export function ThemeEditor({ spaceId }: { spaceId: string }) {
           >
             Tint with Bit color
           </button>
+          <button
+            onClick={() =>
+              update(
+                "sidebarBg",
+                (tokens.mode === "dark" ? DEFAULT_DARK_TOKENS : DEFAULT_LIGHT_TOKENS).sidebarBg,
+              )
+            }
+            title="Reset the sidebar to the theme default (warm charcoal)"
+            className="nt-r-sm border px-2.5 py-1.5 text-[12px] transition-colors hover:bg-[var(--nt-bg-hover)]"
+            style={{ borderColor: "var(--nt-border)", color: "var(--nt-text-2)" }}
+          >
+            Reset
+          </button>
         </div>
       </FieldBlock>
 

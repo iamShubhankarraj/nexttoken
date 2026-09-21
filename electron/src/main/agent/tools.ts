@@ -105,6 +105,16 @@ export const TOOL_DEFS: LlmToolDef[] = [
       },
       additionalProperties: false
     }
+  },
+  {
+    name: 'picture_in_picture',
+    description: 'Put the active tab\'s best video into Picture-in-Picture (currently-playing video first, else the largest). Call again to exit PiP. You CAN trigger PiP — never tell the user it needs a manual right-click on the video or a site button.',
+    parameters: { type: 'object', properties: {}, additionalProperties: false }
+  },
+  {
+    name: 'media_toggle',
+    description: 'Toggle play/pause on the active tab\'s video.',
+    parameters: { type: 'object', properties: {}, additionalProperties: false }
   }
 ];
 
@@ -313,6 +323,21 @@ export async function executeTool(
       );
       return { ok: true, result: `Screen description (seen by ${via}):\n${text}` };
     }
+    case 'picture_in_picture': {
+      const { enterPictureInPicture } = await import('../media');
+      const r = await enterPictureInPicture(ctx.tabs);
+      return {
+        ok: r.ok,
+        result: r.ok
+          ? 'Picture-in-Picture toggled for the active tab\'s video.'
+          : `Picture-in-Picture failed: ${r.error ?? 'unknown error'}`,
+      };
+    }
+    case 'media_toggle': {
+      const { toggleMedia } = await import('../media');
+      const r = await toggleMedia(ctx.tabs);
+      return { ok: true, result: r.paused ? 'Video paused.' : 'Video playing.' };
+    }
     default:
       return fail(`Unknown tool ${name}`);
   }
@@ -326,6 +351,8 @@ export function summarizeToolCall(name: string, args: Record<string, unknown>): 
     case 'fill': return `fill [${args.ref}]: ${String(args.text ?? '').slice(0, 40)}`;
     case 'run_terminal': return `terminal: ${String(args.command ?? '').slice(0, 80)}`;
     case 'describe_screen': return `describe screen${args.question ? `: ${String(args.question).slice(0, 60)}` : ''}`;
+    case 'picture_in_picture': return 'picture in picture';
+    case 'media_toggle': return 'play/pause video';
     default: return name;
   }
 }

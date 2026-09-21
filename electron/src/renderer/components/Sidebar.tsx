@@ -51,6 +51,7 @@ import { Favicon } from "./Favicon";
 import { TidyDialog } from "./TidyDialog";
 import { VirtualList } from "./VirtualList";
 import { useLiquidSidebar, type LiquidSidebarRefs } from "../hooks/useLiquidSidebar";
+import { MediaNotch, useMediaState } from "./MediaNotch";
 
 const ROW_H = 36;
 const MAX_LIST_H = 440;
@@ -91,6 +92,9 @@ export function Sidebar() {
 
   // Liquid sidebar engine: breathing width spring + morphing seam + gliding
   // active-tab pill. All driven via refs (no React re-render per frame).
+  // The media notch subscribes to the ~1Hz video state from main and deepens
+  // the lower scoop while a video plays.
+  const media = useMediaState();
   const asideRef = useRef<HTMLElement | null>(null);
   const seamFillRef = useRef<SVGPathElement | null>(null);
   const seamHiRef = useRef<SVGPathElement | null>(null);
@@ -108,7 +112,12 @@ export function Sidebar() {
     }),
     [],
   );
-  useLiquidSidebar(liquidRefs, activeSpace?.activeTabId ?? undefined, !!snapshot && !!activeSpace);
+  useLiquidSidebar(
+    liquidRefs,
+    activeSpace?.activeTabId ?? undefined,
+    !!snapshot && !!activeSpace,
+    !!media?.hasVideo,
+  );
 
   // Stable drag id readable inside memoized callbacks.
   const dragIdRef = useRef<string | null>(null);
@@ -267,6 +276,11 @@ export function Sidebar() {
         <path ref={seamFillRef} className="nt-seam-fill" d="" />
         <path ref={seamHiRef} className="nt-seam-hi" d="" />
       </svg>
+
+      {/* Media notch: video timeline + transport, cradled in the lower scoop
+          while the active tab has a playable video. Rides the seam via
+          --media-x / --media-y written by the liquid engine. */}
+      <MediaNotch media={media} />
 
       <div className="relative z-[1] flex h-full min-h-0 flex-col">
         {/* Traffic-light / drag zone (lights are native: hiddenInset @14,14). */}

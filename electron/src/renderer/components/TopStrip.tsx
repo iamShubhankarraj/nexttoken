@@ -285,19 +285,25 @@ export function TopStrip() {
           fill={bookmarked ? "currentColor" : "none"}
         />
       </button>
+      {/* Agent: the single clearly-labeled entry point to the agent panel
+          (the panel header is the open panel's own title, not a second
+          toggle). Opens/closes with the same ⌘E shortcut. */}
       <button
-        title="Toggle agent panel"
+        title="Toggle agent panel (⌘E)"
+        aria-label="Toggle agent panel"
+        aria-expanded={snapshot?.agentPanelOpen ?? false}
         onClick={() =>
           void nt().uiSetAgentPanelOpen(!(snapshot?.agentPanelOpen ?? false))
         }
-        className={iconBtn}
+        className={`${iconBtn} flex items-center gap-1.5 !px-3`}
         style={
           snapshot?.agentPanelOpen
             ? { color: "var(--nt-accent)", background: "var(--nt-accent-soft)" }
-            : { color: "var(--nt-text-3)" }
+            : { color: "var(--nt-text-2)" }
         }
       >
-        <Sparkles size={16} strokeWidth={1.75} />
+        <Sparkles size={15} strokeWidth={1.75} />
+        <span className="text-[12.5px] font-medium">Agent</span>
       </button>
 
       {/* Transient PiP note (toolbar button / context-menu failures) */}

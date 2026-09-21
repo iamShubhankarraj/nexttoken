@@ -605,6 +605,20 @@ export interface AdBlockStats {
   count: number;
 }
 
+/**
+ * Playback state of the active tab's best video, pushed from main ~1Hz
+ * while a video is present. Drives the sidebar's media notch.
+ */
+export interface MediaState {
+  hasVideo: boolean;
+  title?: string;
+  currentTime?: number;
+  duration?: number;
+  /** Duration unknown (NaN/Infinity): a live stream — timeline hides, transport stays. */
+  live?: boolean;
+  paused?: boolean;
+}
+
 // ---------------------------------------------------------------------------
 // The window.nt API (implemented in preload via contextBridge)
 // ---------------------------------------------------------------------------
@@ -616,6 +630,12 @@ export interface NextTokenAPI {
   tabsActivate(tabId: string): Promise<void>;
   /** Picture in Picture for the active tab's video. */
   tabsPip(): Promise<{ ok: boolean; error?: string }>;
+  /** Seek the active tab's video to `ratio` (0..1) of its duration. */
+  mediaSeek(ratio: number): Promise<void>;
+  /** Toggle play/pause on the active tab's video. */
+  mediaToggle(): Promise<{ paused: boolean }>;
+  /** Media state pushed from main ~1Hz while the active tab has a video. */
+  onMediaState(cb: (s: MediaState) => void): () => void;
   tabsPin(tabId: string, pinned: boolean): Promise<void>;
   tabsMove(tabId: string, spaceId: string): Promise<void>;
   /** Reorder a tab: move it before `beforeTabId` (null = end of its folder/section). */

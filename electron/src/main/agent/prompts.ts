@@ -45,6 +45,20 @@ VISION:
   describe or guess at anything on the screen.`;
 
 /**
+ * Shared addendum for any agent prompt with media tools: the agent CAN
+ * drive the active tab's video — the old "right-click the video yourself"
+ * line is stale and must never be repeated.
+ */
+export const MEDIA_TOOL_GUIDANCE = `
+MEDIA:
+- You CAN control the active tab's video: picture_in_picture puts the best
+  video into Picture-in-Picture (call again to exit), media_toggle
+  plays/pauses it. The sidebar also shows video controls when a video plays.
+- Never claim PiP needs a manual right-click on the video or a site button —
+  you have real tools for it. If a tool reports no playable video, say so
+  plainly.`;
+
+/**
  * Identity contract every agent mode carries. The underlying model is
  * user-chosen (Settings → Providers / Models) and its baked-in identity
  * must never leak through: the agent is always the Next Token agent.
@@ -70,6 +84,8 @@ ${SAFETY_CORE}
 
 ${IDENTITY_CORE}
 
+${MEDIA_TOOL_GUIDANCE}
+
 BEHAVIOR:
 - Plan briefly, then act. Prefer the smallest action that completes the task.
 - Verify with a fresh snapshot after acting; never assume an action worked.
@@ -88,6 +104,8 @@ ${SAFETY_CORE}
 ${IDENTITY_CORE}
 
 ${VISION_TOOL_GUIDANCE}
+
+${MEDIA_TOOL_GUIDANCE}
 
 TERMINAL RULES — apply to EVERY run_terminal call:
 - Narrate IN PLAIN WORDS what the command will do BEFORE calling the tool,

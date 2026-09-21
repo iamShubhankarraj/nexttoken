@@ -26,6 +26,12 @@ import { saveImportedLogins, getStoredLogins } from './import/logins';
 import { normalizeUrlKey } from './import/util';
 import { LlamaServer } from './models/runtime';
 import { AppleFmClient } from './models/applefm';
+import {
+  enterPictureInPicture,
+  seekMedia,
+  startMediaPolling,
+  toggleMedia,
+} from './media';
 import { VoiceEngine, type CleanupPrompt } from './voice';
 import { wrapWithActing, dictateUndoJs, type LastDictation } from './voice/acting';
 import { buildTidyPlan, applyTidy } from './tidy';
@@ -617,33 +623,6 @@ function createWindow() {
 }
 
 /**
- * Put the active tab's best video into Picture-in-Picture. Picks the
- * currently-playing video first, then the largest visible one. Runs inside
- * the page, so site players (YouTube, etc.) keep working.
- */
-async function enterPictureInPicture(): Promise<{ ok: boolean; error?: string }> {
-  const wc = tabs.activeWebContents();
-  if (!wc || wc.isDestroyed()) return { ok: false, error: 'No active tab.' };
-  try {
-    const ok = await wc.executeJavaScript(`(() => {
-      const vids = [...document.querySelectorAll('video')].filter(v => v.readyState >= 2 && !v.disablePictureInPicture);
-      if (!vids.length) return 'none';
-      if (document.pictureInPictureElement) { document.exitPictureInPicture().catch(() => {}); return 'toggled-off'; }
-      const playing = vids.find(v => !v.paused && !v.ended);
-      const scored = (playing ? [playing] : vids).concat(vids.filter(v => v !== playing));
-      const best = scored.sort((a, b) => (b.videoWidth * b.videoHeight) - (a.videoWidth * a.videoHeight))[0];
-      return best.requestPictureInPicture().then(() => 'ok').catch(e => 'err:' + (e && e.message ? e.message : e));
-    })()`);
-    if (ok === 'ok') return { ok: true };
-    if (ok === 'toggled-off') return { ok: true };
-    if (ok === 'none') return { ok: false, error: 'No playable video found on this page.' };
-    return { ok: false, error: typeof ok === 'string' && ok.startsWith('err:') ? ok.slice(4) : 'Picture in Picture failed.' };
-  } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : String(e) };
-  }
-}
-
-/**
  * Create + (optionally) activate a tab. Rapid same-URL creates are
  * deduped: a single click can reach main through both the
  * setWindowOpenHandler path and the renderer's legacy `new-window`
@@ -695,8 +674,11 @@ function registerIpc() {
   // (playing > largest > first) is put into PiP. Chromium handles the
   // floating window; nothing extra to manage in main.
   ipcMain.handle('nt.tabs.pip', async (): Promise<{ ok: boolean; error?: string }> => {
-    return enterPictureInPicture();
+    return enterPictureInPicture(tabs);
   });
+  // Media notch: the sidebar's video controls for the active tab.
+  ipcMain.handle('nt.media.seek', (_e, ratio: number) => seekMedia(tabs, Number(ratio)));
+  ipcMain.handle('nt.media.toggle', () => toggleMedia(tabs));
   ipcMain.handle('nt.tabs.pin', (_e, tabId: string, pinned: boolean) => {
     const t = tabs.tabs.get(tabId);
     if (t) { t.pinned = pinned; tabs.persistPinned(); sendSnapshot(); }
@@ -1516,7 +1498,7 @@ app.whenReady().then(() => {
               // The PiP engine returns { ok, error }; surface failures as
               // a toast instead of swallowing them.
               click: () => {
-                void enterPictureInPicture().then((r) => {
+                void enterPictureInPicture(tabs).then((r) => {
                   if (!r.ok && win && !win.isDestroyed()) {
                     win.webContents.send('nt.pip-error', r.error ?? 'Picture in Picture failed.');
                   }
@@ -1568,6 +1550,17 @@ app.whenReady().then(() => {
   );
   initModelTier();
   registerIpc();
+  // Sidebar media notch: poll the active tab's video state ~1Hz and push
+  // it to the renderer. The poll is cheap — it no-ops unless the active
+  // tab's URL looks video-plausible or the last tick found a video, and it
+  // resets on active-tab changes and while the window is hidden.
+  startMediaPolling(tabs, {
+    send: (s) => {
+      if (win && !win.isDestroyed()) win.webContents.send('nt.media.state', s);
+    },
+    isHidden: () => !win || win.isDestroyed() || !win.isVisible(),
+    activeTabKey: () => tabs.activeTabId,
+  });
   setupUpdater();
   Menu.setApplicationMenu(
     Menu.buildFromTemplate([
