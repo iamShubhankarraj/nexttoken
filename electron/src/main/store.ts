@@ -131,6 +131,12 @@ interface Persisted {
   chatSessions: ChatSessionPersist[];
   /** Native ad blocker: global switch + per-site allowlist (by hostname). */
   adblock: { enabled: boolean; allowedHosts: string[] };
+  /**
+   * In-app updater (custom feed checker, not electron-updater — the app is
+   * unsigned so Squirrel.Mac can't install). feedUrl is the static HTTPS
+   * base serving latest-mac.yml + the mac zip; empty = updates dormant.
+   */
+  updates: { feedUrl: string; autoCheck: boolean; lastCheckedAt: number | null };
   /** Privacy & security: per-site permissions, popup/autoplay/sound policies. */
   privacy: PrivacyPersist;
   /** Browsing history (URL + title + time), capped — per-site settings + clear-data. */
@@ -230,6 +236,7 @@ function defaults(): Persisted {
     skills: defaultSkills(),
     chatSessions: [],
     adblock: { enabled: true, allowedHosts: [] },
+    updates: { feedUrl: '', autoCheck: true, lastCheckedAt: null },
     privacy: {
       permissions: {},
       defaults: {},
@@ -299,6 +306,14 @@ export class Store {
       if (!Array.isArray(parsed.history)) parsed.history = [];
       // Backfill local-model metrics for installs that predate them.
       if (!('localMetrics' in parsed.models)) parsed.models.localMetrics = null;
+      // Backfill the updater settings for installs that predate them.
+      if (!parsed.updates || typeof parsed.updates !== 'object') {
+        parsed.updates = defaults().updates;
+      } else {
+        if (typeof parsed.updates.feedUrl !== 'string') parsed.updates.feedUrl = '';
+        if (typeof parsed.updates.autoCheck !== 'boolean') parsed.updates.autoCheck = true;
+        if (typeof parsed.updates.lastCheckedAt !== 'number') parsed.updates.lastCheckedAt = null;
+      }
       // Backfill the multi-provider manager for installs that predate it.
       if (!Array.isArray(parsed.providers)) {
         const legacy = parsed.provider ?? defaults().providers[0];

@@ -487,6 +487,90 @@ export interface AppleFmStatus {
   reason?: string;
 }
 
+/** One step of an Apple FM diagnostic run (see main/models/applefm.ts). */
+export interface AppleFmDiagStep {
+  name: string;
+  label: string;
+  ok: boolean;
+  ms: number;
+  detail: string;
+}
+
+/** Full result of the Apple FM step-by-step diagnostics. */
+export interface AppleFmDiagnosis {
+  ok: boolean;
+  summary: string;
+  steps: AppleFmDiagStep[];
+}
+
+/** Device capabilities for the Model Advisor (see main/models/device.ts). */
+export interface DeviceInfo {
+  platform: string;
+  chipLabel: string;
+  cpuCores: number;
+  totalRamBytes: number;
+  budgetBytes: number;
+  bandwidthGBps: number | null;
+  note: string | null;
+  fullyDetected: boolean;
+}
+
+/** One ranked Model Advisor recommendation. */
+export interface AdvisorPick {
+  entry: {
+    id: string;
+    name: string;
+    params: string;
+    quant: string;
+    sizeBytes: number;
+    description: string;
+    license: string;
+  };
+  weightsBytes: number;
+  kvBytes: number;
+  overheadBytes: number;
+  requiredBytes: number;
+  utilization: number;
+  verdict: 'comfortable' | 'fits' | 'tight' | 'too-big';
+  verdictLabel: string;
+  estTokPerSec: number | null;
+  kvEstimated: boolean;
+  score: number;
+  reasons: string[];
+}
+
+/** Ranked chat-model recommendations for the detected device. */
+export interface AdvisorResult {
+  device: DeviceInfo;
+  picks: AdvisorPick[];
+  considered: number;
+  nothingFits: boolean;
+}
+
+/** In-app updater status (see main/updater.ts). */
+export interface UpdateStatus {
+  version: string;
+  feedUrl: string;
+  autoCheck: boolean;
+  lastCheckedAt: number | null;
+  state: 'idle' | 'checking' | 'available' | 'downloading' | 'downloaded' | 'error' | 'no-feed';
+  availableVersion?: string;
+  availableSize?: number;
+  progressPct?: number;
+  detail?: string;
+  stagedAppPath?: string;
+}
+
+/** Push events from the updater to the renderer. */
+export type UpdateEvent =
+  | { type: 'checking' }
+  | { type: 'available'; version: string; size: number }
+  | { type: 'not-available'; version: string }
+  | { type: 'progress'; pct: number; bytesPerSec: number }
+  | { type: 'downloaded'; version: string }
+  | { type: 'error'; message: string }
+  | { type: 'no-feed' };
+
 /**
  * Latest measured local-model (llama-server) turn. genTokens is estimated
  * from streamed characters (~4 chars/token) because the SSE stream carries
@@ -869,6 +953,20 @@ export interface NextTokenAPI {
   /** Assign the vision slot: 'none', 'cloud', or a downloaded vision catalog id. */
   modelsSetVision(ref: string): Promise<void>;
   modelsAppleFm(): Promise<AppleFmStatus>;
+  /** Step-by-step Apple FM diagnostics with the bridge's real stderr. */
+  modelsAppleFmDiagnose(): Promise<AppleFmDiagnosis>;
+  /** Device capabilities for the Model Advisor. */
+  modelsDeviceInfo(): Promise<DeviceInfo>;
+  /** Ranked chat-model recommendations for the detected device. */
+  modelsAdvisor(): Promise<AdvisorResult>;
+  /** In-app updater (custom feed checker — the app is unsigned). */
+  updatesStatus(): Promise<UpdateStatus>;
+  updatesCheck(): Promise<void>;
+  updatesDownload(): Promise<void>;
+  updatesInstall(): Promise<void>;
+  updatesSetFeedUrl(url: string): Promise<UpdateStatus>;
+  updatesSetAutoCheck(on: boolean): Promise<UpdateStatus>;
+  onUpdateEvent(cb: (e: UpdateEvent) => void): () => void;
   modelsDiskUsage(): Promise<number>;
   /** Latest measured local-model turn (llama-server). Null until the first local turn completes. */
   modelsLocalMetrics(): Promise<LocalModelMetrics | null>;

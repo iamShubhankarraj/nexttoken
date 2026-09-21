@@ -14,6 +14,19 @@ export interface ModelEntry {
   mmprojUrl?: string;  // vision models only: direct URL of the mmproj file
   mmprojSha256?: string;
   /**
+   * Model Advisor metadata (all optional; the advisor degrades gracefully).
+   * contextTokens: native context length. toolCalling grades the chat
+   * template + benchmarked agentic ability: 'excellent' (native tool calls,
+   * strong BFCL-class scores), 'good', 'partial' (template hacks), 'none'.
+   * layers/kvHeads/headDim enable exact KV-cache math; without them the
+   * advisor uses a conservative per-parameter estimate and says so.
+   */
+  contextTokens?: number;
+  toolCalling?: 'excellent' | 'good' | 'partial' | 'none';
+  layers?: number;
+  kvHeads?: number;
+  headDim?: number;
+  /**
    * True when the host repo is access-gated on Hugging Face (login + license
    * acceptance required). Gated entries stay visible but are badged in the
    * UI, and download with the user's saved HF token when one exists.

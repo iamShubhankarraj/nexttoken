@@ -18,6 +18,8 @@ import {
   Loader2,
   Mic,
   RefreshCw,
+  Sparkles,
+  Stethoscope,
   Trash2,
   Volume2,
   X,
@@ -48,8 +50,59 @@ type ModelEvent =
   | { kind: "done"; id: string }
   | { kind: "error"; id: string; error: string };
 
-interface NtModels {
-  modelsList(): Promise<ModelEntryPublic[]>;
+/** Step-by-step Apple FM diagnostic result (main/models/applefm.ts). */
+interface AppleFmDiagStep {
+  name: string;
+  label: string;
+  ok: boolean;
+  ms: number;
+  detail: string;
+}
+interface AppleFmDiagnosis {
+  ok: boolean;
+  summary: string;
+  steps: AppleFmDiagStep[];
+}
+/** Model Advisor types (main/models/advisor.ts). */
+interface AdvisorPickEntry {
+  id: string;
+  name: string;
+  params: string;
+  quant: string;
+  sizeBytes: number;
+  description: string;
+  license: string;
+}
+interface AdvisorPick {
+  entry: AdvisorPickEntry;
+  weightsBytes: number;
+  kvBytes: number;
+  overheadBytes: number;
+  requiredBytes: number;
+  utilization: number;
+  verdict: "comfortable" | "fits" | "tight" | "too-big";
+  verdictLabel: string;
+  estTokPerSec: number | null;
+  kvEstimated: boolean;
+  score: number;
+  reasons: string[];
+}
+interface AdvisorResult {
+  device: {
+    chipLabel: string;
+    cpuCores: number;
+    totalRamBytes: number;
+    budgetBytes: number;
+    bandwidthGBps: number | null;
+    note: string | null;
+    fullyDetected: boolean;
+  };
+  picks: AdvisorPick[];
+  considered: number;
+  nothingFits: boolean;
+}
+
+interface NtModels {  modelsList(): Promise<ModelEntryPublic[]>;
   modelsDownload(id: string): Promise<void>;
   modelsCancelDownload(id: string): Promise<void>;
   modelsRemove(id: string): Promise<void>;
@@ -59,6 +112,12 @@ interface NtModels {
   modelsTaskModels?(): Promise<TaskModelSlotInfo[]>;
   modelsSetVision?(ref: string): Promise<void>;
   modelsAppleFm(): Promise<{ available: boolean; reason?: string }>;
+  /** Step-by-step diagnostics with the bridge's real stderr (newer builds). */
+  modelsAppleFmDiagnose?(): Promise<AppleFmDiagnosis>;
+  /** Device capabilities for the Model Advisor (newer builds). */
+  modelsDeviceInfo?(): Promise<AdvisorResult["device"]>;
+  /** Ranked chat-model recommendations for the detected device (newer builds). */
+  modelsAdvisor?(): Promise<AdvisorResult>;
   modelsDiskUsage(): Promise<number>;
   onModelEvent(cb: (e: ModelEvent) => void): () => void;
   // HF token (registered in main/models/ipc.ts; needs the matching preload
@@ -142,6 +201,14 @@ export function ModelsPanel({ focusTask }: { focusTask?: string }) {
   const [hfTokenError, setHfTokenError] = useState<string | null>(null);
   const [gatedIds, setGatedIds] = useState<string[]>([]);
   const [metrics, setMetrics] = useState<LocalModelMetrics | null>(null);
+  // Apple FM diagnostics: null = not run yet.
+  const [diag, setDiag] = useState<AppleFmDiagnosis | null>(null);
+  const [diagRunning, setDiagRunning] = useState(false);
+  // Model Advisor: null = not loaded yet (or bridge too old).
+  const [advisor, setAdvisor] = useState<AdvisorResult | null>(null);
+  const [advisorLoading, setAdvisorLoading] = useState(false);
+  // Advisor one-click flow: model id being downloaded so it can be activated.
+  const [pendingUseId, setPendingUseId] = useState<string | null>(null);
 
   /** The unified active model drives every LLM call — keep its label fresh. */
   const loadActiveModelLabel = useCallback(async () => {
@@ -158,9 +225,28 @@ export function ModelsPanel({ focusTask }: { focusTask?: string }) {
     }
   }, []);
 
-  const load = useCallback(async () => {
-    setLoadError(null);
+  /** Run the Apple FM step-by-step diagnostics (probe + test inference). */
+  const runDiagnostics = useCallback(async () => {
+    const api = modelsApi();
+    if (!api.modelsAppleFmDiagnose) return;
+    setDiagRunning(true);
+    setDiag(null);
     try {
+      const result = await api.modelsAppleFmDiagnose();
+      setDiag(result);
+    } catch (err) {
+      setDiag({
+        ok: false,
+        summary: `Diagnostics themselves failed: ${err instanceof Error ? err.message : String(err)}`,
+        steps: [],
+      });
+    } finally {
+      setDiagRunning(false);
+    }
+  }, []);
+
+  const load = useCallback(async () => {
+    setLoadError(null);    try {
       const api = modelsApi();
       const [list, fm, assign, usage, taskSlots, lm] = await Promise.all([
         api.modelsList(),
@@ -206,6 +292,21 @@ export function ModelsPanel({ focusTask }: { focusTask?: string }) {
     } catch {
       /* no bridge */
     }
+    // Model Advisor (newer builds): device detection spawns sysctl, so load
+    // it separately from the main list — the panel stays usable if it's slow.
+    void (async () => {
+      try {
+        const api = modelsApi();
+        if (!api.modelsAdvisor) return;
+        setAdvisorLoading(true);
+        const result = await api.modelsAdvisor();
+        setAdvisor(result);
+      } catch {
+        /* advisor bridge unavailable — card stays hidden */
+      } finally {
+        setAdvisorLoading(false);
+      }
+    })();
     return () => off?.();
   }, [load, loadActiveModelLabel]);
 
@@ -298,6 +399,23 @@ export function ModelsPanel({ focusTask }: { focusTask?: string }) {
     }
   };
 
+  /**
+   * Advisor one-click flow: download the recommended model if needed, then
+   * make it the agent's chat model. When a download is required, the
+   * pendingUseId effect below activates it as soon as the entry flips to
+   * downloaded.
+   */
+  const useRecommended = async (pick: AdvisorPick) => {
+    const id = pick.entry.id;
+    const already = entries?.find((e) => e.id === id)?.downloaded === true;
+    if (already) {
+      await setAssign("chat", id);
+      return;
+    }
+    setPendingUseId(id);
+    await download(id);
+  };
+
   const remove = async (id: string) => {
     setConfirmRemoveId(null);
     try {
@@ -336,6 +454,21 @@ export function ModelsPanel({ focusTask }: { focusTask?: string }) {
       setAssignBusy("");
     }
   };
+
+  // Advisor one-click flow, part 2: when the pending model's entry flips to
+  // downloaded, make it the agent's chat model automatically.
+  useEffect(() => {
+    if (!pendingUseId || !entries) return;
+    const entry = entries.find((e) => e.id === pendingUseId);
+    if (entry?.downloaded) {
+      const id = pendingUseId;
+      setPendingUseId(null);
+      void setAssign("chat", id);
+    } else if (entry && !entry.downloading && !entry.downloaded) {
+      // Download failed or was cancelled — stop waiting.
+      setPendingUseId(null);
+    }
+  }, [entries, pendingUseId]);
 
   // Vision slot assignment goes through the task-model registry (not the
   // legacy chat/vision assignment setter).
@@ -440,6 +573,209 @@ export function ModelsPanel({ focusTask }: { focusTask?: string }) {
 
   return (
     <div>
+      {/* --------------------------- Model Advisor --------------------------- */}
+      {(advisorLoading || advisor) && (
+        <div
+          className="nt-r-md mb-4 border p-4"
+          style={{
+            borderColor: "var(--nt-border)",
+            background: "var(--nt-bg-raised)",
+          }}
+        >
+          <div className="mb-1 flex items-center gap-2">
+            <Sparkles
+              size={15}
+              strokeWidth={1.75}
+              style={{ color: "var(--nt-accent)" }}
+            />
+            <h3
+              className="text-[13px] font-semibold"
+              style={{ color: "var(--nt-text-1)" }}
+            >
+              Recommended for this device
+            </h3>
+          </div>
+          {advisorLoading && !advisor ? (
+            <p
+              className="flex items-center gap-1.5 text-[12px]"
+              style={{ color: "var(--nt-text-3)" }}
+            >
+              <Loader2 size={12} strokeWidth={2} className="animate-spin" />
+              Detecting your hardware…
+            </p>
+          ) : (
+            advisor && (
+              <>
+                <p
+                  className="mb-3 text-[12px]"
+                  style={{ color: "var(--nt-text-3)" }}
+                >
+                  {advisor.device.chipLabel} ·{" "}
+                  {formatBytes(advisor.device.totalRamBytes)} memory ·{" "}
+                  {formatBytes(advisor.device.budgetBytes)} usable for models
+                  {advisor.device.note ? ` — ${advisor.device.note}` : ""}
+                </p>
+                {advisor.nothingFits ? (
+                  <p
+                    className="text-[12.5px]"
+                    style={{ color: "var(--nt-text-2)" }}
+                  >
+                    Nothing in the catalog fits this device comfortably right
+                    now. The smallest options need more headroom than is
+                    available — you can still download any model manually
+                    below, or keep using the cloud fallback.
+                  </p>
+                ) : (
+                  <div className="space-y-2.5">
+                    {advisor.picks.map((pick, i) => {
+                      const row = entries?.find((e) => e.id === pick.entry.id);
+                      const busy =
+                        pendingUseId === pick.entry.id || row?.downloading;
+                      const chipColor =
+                        pick.verdict === "comfortable" || pick.verdict === "fits"
+                          ? ["rgba(111,162,135,0.4)", "#6fa287", "rgba(111,162,135,0.08)"]
+                          : pick.verdict === "tight"
+                            ? ["rgba(196,158,74,0.45)", "#c49e4a", "rgba(196,158,74,0.08)"]
+                            : ["rgba(217,115,98,0.4)", "#d97362", "rgba(217,115,98,0.08)"];
+                      const total = pick.requiredBytes || 1;
+                      const dlPct =
+                        row && row.downloading
+                          ? progressPct({
+                              ...row,
+                              totalBytes:
+                                row.totalBytes || pick.entry.sizeBytes,
+                            })
+                          : 0;
+                      return (
+                        <div
+                          key={pick.entry.id}
+                          className="nt-r-sm border p-3"
+                          style={{ borderColor: "var(--nt-border)" }}
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="min-w-0">
+                              <p
+                                className="truncate text-[13px] font-medium"
+                                style={{ color: "var(--nt-text-1)" }}
+                              >
+                                {i === 0 && (
+                                  <span
+                                    className="mr-1.5"
+                                    style={{ color: "var(--nt-accent)" }}
+                                  >
+                                    ★
+                                  </span>
+                                )}
+                                {pick.entry.name}
+                                <span
+                                  className="ml-1.5 font-normal"
+                                  style={{ color: "var(--nt-text-3)" }}
+                                >
+                                  {pick.entry.params} · {pick.entry.quant} ·{" "}
+                                  {formatBytes(pick.entry.sizeBytes)}
+                                </span>
+                              </p>
+                            </div>
+                            <span
+                              className="nt-r-sm shrink-0 border px-2 py-0.5 text-[11.5px] font-medium"
+                              style={{
+                                borderColor: chipColor[0],
+                                color: chipColor[1],
+                                background: chipColor[2],
+                              }}
+                            >
+                              {pick.verdictLabel}
+                            </span>
+                          </div>
+                          {/* memory breakdown: weights / KV cache / overhead */}
+                          <div
+                            className="nt-r-sm mt-2 flex h-1.5 w-full overflow-hidden"
+                            style={{ background: "var(--nt-bg-hover)" }}
+                            title={`Weights ${formatBytes(pick.weightsBytes)} · KV cache ${formatBytes(pick.kvBytes)}${pick.kvEstimated ? " (estimated)" : ""} · Overhead ${formatBytes(pick.overheadBytes)}`}
+                          >
+                            <div
+                              style={{
+                                width: `${(pick.weightsBytes / total) * 100}%`,
+                                background: "var(--nt-accent)",
+                              }}
+                            />
+                            <div
+                              style={{
+                                width: `${(pick.kvBytes / total) * 100}%`,
+                                background: "#7aa2c9",
+                              }}
+                            />
+                            <div
+                              style={{
+                                width: `${(pick.overheadBytes / total) * 100}%`,
+                                background: "var(--nt-text-3)",
+                                opacity: 0.5,
+                              }}
+                            />
+                          </div>
+                          <ul className="mt-2 space-y-0.5">
+                            {pick.reasons.slice(0, 3).map((r, j) => (
+                              <li
+                                key={j}
+                                className="text-[12px]"
+                                style={{ color: "var(--nt-text-2)" }}
+                              >
+                                • {r}
+                              </li>
+                            ))}
+                            {pick.estTokPerSec !== null && (
+                              <li
+                                className="text-[12px]"
+                                style={{ color: "var(--nt-text-3)" }}
+                              >
+                                • About {Math.round(pick.estTokPerSec)} tok/s
+                                estimated on your chip
+                                {pick.kvEstimated ? " · memory math estimated" : ""}
+                              </li>
+                            )}
+                          </ul>
+                          <div className="mt-2">
+                            <button
+                              onClick={() => void useRecommended(pick)}
+                              disabled={busy || assignBusy !== ""}
+                              className="nt-r-sm flex items-center gap-1.5 border px-2.5 py-1 text-[12px] font-medium transition-colors hover:bg-[var(--nt-bg-hover)] disabled:opacity-60"
+                              style={{
+                                borderColor: "var(--nt-border)",
+                                color: "var(--nt-text-1)",
+                              }}
+                            >
+                              {busy ? (
+                                <Loader2
+                                  size={13}
+                                  strokeWidth={2}
+                                  className="animate-spin"
+                                />
+                              ) : row?.downloaded ? (
+                                <Check size={13} strokeWidth={2} />
+                              ) : (
+                                <Download size={13} strokeWidth={1.75} />
+                              )}
+                              {busy
+                                ? row?.downloading
+                                  ? `Downloading… ${dlPct}%`
+                                  : "Preparing…"
+                                : row?.downloaded
+                                  ? "Use as agent model"
+                                  : i === 0
+                                    ? "Use recommended"
+                                    : "Download & use"}
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </>
+            )
+          )}
+        </div>
+      )}
       {/* --------------------------- Task models --------------------------- */}
       {slots && (
         <>
@@ -607,6 +943,93 @@ export function ModelsPanel({ focusTask }: { focusTask?: string }) {
             </p>
           )
         )}
+        {/* ------------------- Apple FM diagnostics ------------------- */}
+        <div
+          className="mt-3 border-t pt-3"
+          style={{ borderColor: "var(--nt-border)" }}
+        >
+          <div className="flex items-center justify-between gap-3">
+            <p
+              className="text-[12.5px] font-medium"
+              style={{ color: "var(--nt-text-2)" }}
+            >
+              Diagnostics
+            </p>
+            <button
+              onClick={() => void runDiagnostics()}
+              disabled={diagRunning}
+              className="nt-r-sm flex items-center gap-1.5 border px-2.5 py-1 text-[12px] font-medium transition-colors hover:bg-[var(--nt-bg-hover)] disabled:opacity-60"
+              style={{
+                borderColor: "var(--nt-border)",
+                color: "var(--nt-text-2)",
+              }}
+            >
+              {diagRunning ? (
+                <Loader2 size={13} strokeWidth={2} className="animate-spin" />
+              ) : (
+                <Stethoscope size={13} strokeWidth={1.75} />
+              )}
+              {diagRunning ? "Running…" : "Run diagnostics"}
+            </button>
+          </div>
+          <p
+            className="mt-1 text-[12px]"
+            style={{ color: "var(--nt-text-3)" }}
+          >
+            Probes the bridge and runs a tiny test inference, then shows the
+            real error text — useful when chat fails even though the probe
+            says “Available”.
+          </p>
+          {diagRunning && !diag && (
+            <p
+              className="mt-2 flex items-center gap-1.5 text-[12px]"
+              style={{ color: "var(--nt-text-3)" }}
+            >
+              <Loader2 size={12} strokeWidth={2} className="animate-spin" />
+              Probing bridge, then running a test inference (up to ~90s)…
+            </p>
+          )}
+          {diag && (
+            <div className="mt-2 space-y-1.5">
+              <p
+                className="text-[12.5px] font-medium"
+                style={{ color: diag.ok ? "#6fa287" : "#d97362" }}
+              >
+                {diag.ok ? <Check size={13} className="mr-1 inline" /> : <X size={13} className="mr-1 inline" />}
+                {diag.summary}
+              </p>
+              {diag.steps.map((s) => (
+                <div
+                  key={s.name}
+                  className="nt-r-sm border p-2.5"
+                  style={{ borderColor: "var(--nt-border)" }}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <p
+                      className="flex items-center gap-1.5 text-[12.5px] font-medium"
+                      style={{ color: s.ok ? "#6fa287" : "#d97362" }}
+                    >
+                      {s.ok ? <Check size={13} /> : <X size={13} />}
+                      {s.label}
+                    </p>
+                    <span
+                      className="shrink-0 text-[11px]"
+                      style={{ color: "var(--nt-text-3)" }}
+                    >
+                      {(s.ms / 1000).toFixed(1)}s
+                    </span>
+                  </div>
+                  <pre
+                    className="mt-1.5 max-h-40 overflow-auto whitespace-pre-wrap text-[11.5px] leading-relaxed"
+                    style={{ color: "var(--nt-text-2)" }}
+                  >
+                    {s.detail}
+                  </pre>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* ------------------- Local model performance -------------------- */}

@@ -18,7 +18,7 @@ import { MODEL_CATALOG, ModelDownloader, targetPathFor, ensureEspeakNgData, type
 import { ensureSidecar, whisperManualSteps } from './models/binaries';
 import { registerModelsIpc } from './models/ipc';
 import { setVisionRef, describeTaskModels, resolveVisionModel } from './models/task-models';
-import { setupUpdater, checkForUpdatesManually } from './updater';
+import { setupUpdater, checkForUpdatesManually, updateStatus, checkForUpdates, downloadUpdate, installUpdate, setFeedUrl, setAutoCheck } from './updater';
 import { detectBrowsers, type DetectedBrowser } from './import/browsers';
 import { importBookmarks, importTabs, type ImportDeps, type ImportReport } from './import/index';
 import { importChromiumPasswords, passwordImportGuidance } from './import/passwords';
@@ -26,6 +26,8 @@ import { saveImportedLogins, getStoredLogins } from './import/logins';
 import { normalizeUrlKey } from './import/util';
 import { LlamaServer } from './models/runtime';
 import { AppleFmClient } from './models/applefm';
+import { getDeviceInfo } from './models/device';
+import { recommendForDevice } from './models/advisor';
 import {
   captureMediaThumb,
   seekMedia,
@@ -1392,9 +1394,28 @@ function registerIpc() {
     store.saveSoon();
     return probe;
   });
+  // Step-by-step Apple FM diagnostics (Settings → Models → "Run diagnostics"):
+  // timed probe + tiny inference with the bridge's REAL stderr surfaced.
+  ipcMain.handle('nt.models.applefm-diagnose', () => appleFm.diagnose());
+  // Model Advisor: device capabilities + ranked chat-model recommendations.
+  ipcMain.handle('nt.models.device-info', () => getDeviceInfo());
+  ipcMain.handle('nt.models.advisor', async () => recommendForDevice(MODEL_CATALOG, await getDeviceInfo()));
   ipcMain.handle('nt.models.disk-usage', () => downloader.diskUsage());
   // Latest measured local-model (llama-server) turn; null until the first one completes.
   ipcMain.handle('nt.models.local-metrics', (): LocalModelMetrics | null => store.d.models.localMetrics);
+  // In-app updater (custom feed checker — see main/updater.ts).
+  ipcMain.handle('nt.updates.status', () => updateStatus());
+  ipcMain.handle('nt.updates.check', () => checkForUpdates(true));
+  ipcMain.handle('nt.updates.download', () => downloadUpdate());
+  ipcMain.handle('nt.updates.install', () => installUpdate());
+  ipcMain.handle('nt.updates.set-feed-url', (_e, url: string) => {
+    setFeedUrl(typeof url === 'string' ? url : '');
+    return updateStatus();
+  });
+  ipcMain.handle('nt.updates.set-auto-check', (_e, on: boolean) => {
+    setAutoCheck(on === true);
+    return updateStatus();
+  });
   // Optional HF token for gated repos (safeStorage; registered from models/ipc).
   registerModelsIpc();
 
@@ -1761,7 +1782,16 @@ app.whenReady().then(() => {
       }
     })();
   }, 400);
-  setupUpdater();
+  setupUpdater({
+    store,
+    send: (channel, payload) => {
+      try {
+        win?.webContents.send(channel, payload);
+      } catch {
+        /* window gone */
+      }
+    },
+  });
   Menu.setApplicationMenu(
     Menu.buildFromTemplate([
       {

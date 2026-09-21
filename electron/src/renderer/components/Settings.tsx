@@ -9,6 +9,7 @@
  */
 
 import {
+  ArrowDownToLine,
   Check,
   ChevronRight,
   Database,
@@ -42,8 +43,9 @@ import { PrivacyAdvanced } from "./PrivacyAdvanced";
 import { AppLogo } from "./AppLogo";
 import { SkillsSection } from "./SettingsSkills";
 import { ThemeEditor } from "./ThemeEditor";
+import { UpdatesSection } from "./UpdatesSection";
 
-type Section = "provider" | "models" | "skills" | "voice" | "theme" | "privacy" | "import";
+type Section = "provider" | "models" | "skills" | "voice" | "theme" | "privacy" | "import" | "updates";
 
 const SECTIONS: Array<{ id: Section; label: string; icon: typeof Plug }> = [
   { id: "provider", label: "AI Provider", icon: Plug },
@@ -52,6 +54,7 @@ const SECTIONS: Array<{ id: Section; label: string; icon: typeof Plug }> = [
   { id: "voice", label: "Voice & Search", icon: Mic },
   { id: "privacy", label: "Privacy", icon: Shield },
   { id: "import", label: "Import", icon: Import },
+  { id: "updates", label: "Updates", icon: ArrowDownToLine },
   { id: "theme", label: "Theme", icon: Palette },
 ];
 
@@ -146,6 +149,7 @@ export function Settings({
             {section === "voice" && <VoiceSearchSection />}
             {section === "privacy" && <PrivacySection />}
             {section === "import" && <ImportSection />}
+            {section === "updates" && <UpdatesSection />}
             {section === "theme" &&
               (activeSpace ? (
                 <ThemeEditor spaceId={activeSpace.id} />

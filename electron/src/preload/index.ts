@@ -148,6 +148,9 @@ const api: NextTokenAPI = {
   modelsTaskModels: () => ipcRenderer.invoke('nt.models.task-models'),
   modelsSetVision: (ref) => ipcRenderer.invoke('nt.models.set-vision', ref),
   modelsAppleFm: () => ipcRenderer.invoke('nt.models.applefm'),
+  modelsAppleFmDiagnose: () => ipcRenderer.invoke('nt.models.applefm-diagnose'),
+  modelsDeviceInfo: () => ipcRenderer.invoke('nt.models.device-info'),
+  modelsAdvisor: () => ipcRenderer.invoke('nt.models.advisor'),
   modelsDiskUsage: () => ipcRenderer.invoke('nt.models.disk-usage'),
   modelsLocalMetrics: () => ipcRenderer.invoke('nt.models.local-metrics'),
   onModelEvent: (cb) => {
@@ -159,6 +162,18 @@ const api: NextTokenAPI = {
   modelsHfTokenHas: () => ipcRenderer.invoke('nt.models.hf-token.has'),
   modelsHfTokenClear: () => ipcRenderer.invoke('nt.models.hf-token.clear'),
   modelsGatedIds: () => ipcRenderer.invoke('nt.models.gated-ids'),
+  // in-app updater (custom feed checker)
+  updatesStatus: () => ipcRenderer.invoke('nt.updates.status'),
+  updatesCheck: () => ipcRenderer.invoke('nt.updates.check'),
+  updatesDownload: () => ipcRenderer.invoke('nt.updates.download'),
+  updatesInstall: () => ipcRenderer.invoke('nt.updates.install'),
+  updatesSetFeedUrl: (url) => ipcRenderer.invoke('nt.updates.set-feed-url', url),
+  updatesSetAutoCheck: (on) => ipcRenderer.invoke('nt.updates.set-auto-check', on),
+  onUpdateEvent: (cb) => {
+    const l = (_e: unknown, e: Parameters<Parameters<NextTokenAPI['onUpdateEvent']>[0]>[0]) => cb(e);
+    ipcRenderer.on('nt.update-event', l);
+    return () => ipcRenderer.removeListener('nt.update-event', l);
+  },
   // voice engine
   voiceSttAvailable: () => ipcRenderer.invoke('nt.voice.stt-available'),
   voiceSttStatus: () => ipcRenderer.invoke('nt.voice.stt-status'),

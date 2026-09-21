@@ -23,8 +23,7 @@ import os from 'node:os';
 
 export interface AppleFmProbe {
   available: boolean;
-  reason?: string;
-  /**
+  reason?: string;  /**
    * True when the ONLY problem is the missing sidecar binary — i.e. the user
    * can fix this themselves by running native/applefm/build.sh on their Mac.
    * The UI renders a "one-time setup required" card instead of an error.
@@ -72,9 +71,34 @@ export interface AppleFmToolChatOpts extends AppleFmChatOpts {
   onToolCall: (name: string, argsJson: string) => Promise<string>;
 }
 
+/** One step of an Apple FM diagnostic run (Settings → Models → Run diagnostics). */
+export interface AppleFmDiagStep {
+  /** Machine key: 'environment' | 'probe' | 'inference'. */
+  name: string;
+  /** Human label: 'Environment', 'Bridge probe', 'Test inference'. */
+  label: string;
+  ok: boolean;
+  /** Wall-clock milliseconds this step took. */
+  ms: number;
+  /**
+   * Human-readable detail. On failure this is the REAL underlying text —
+   * bridge stderr, exit codes, timeouts — never a generic "unavailable".
+   */
+  detail: string;
+}
+
+/** Full result of AppleFmClient.diagnose(). */
+export interface AppleFmDiagnosis {
+  ok: boolean;
+  summary: string;
+  steps: AppleFmDiagStep[];
+}
+
 const PROBE_TIMEOUT_MS = 10_000;
 const CHAT_TIMEOUT_MS = 120_000;
+const DIAG_INFERENCE_TIMEOUT_MS = 90_000;
 const MAX_LINE_BYTES = 4 * 1024 * 1024; // 4MB response cap
+const MAX_STDERR_BYTES = 64 * 1024; // 64KB stderr cap for diagnostics
 
 interface BridgeChatResponse {
   id: unknown;
@@ -223,6 +247,198 @@ export class AppleFmClient {
   /** Whether chat() can be called right now (true only after a successful probe). */
   get ready(): boolean {
     return this.probeCache?.available === true;
+  }
+
+  /** Resolved bridge binary path, or null when none of the candidates exists. */
+  binaryPath(): string | null {
+    return this.findBinary();
+  }
+
+  /**
+   * Step-by-step diagnostic run for Settings → Models → "Run diagnostics".
+   *
+   * Unlike probe()/chat(), every step is timed and failures carry the REAL
+   * underlying text: the bridge's stderr output, exit codes, and exactly
+   * which phase timed out. This exists to diagnose the live failure mode
+   * where --probe reports available:true but chat() times out waiting for
+   * the bridge — stderr capture is the key signal there, because the normal
+   * chat path pipes stderr and never reads it.
+   */
+  async diagnose(): Promise<AppleFmDiagnosis> {
+    const steps: AppleFmDiagStep[] = [];
+    const step = (name: string, label: string, t0: number, ok: boolean, detail: string) => {
+      steps.push({ name, label, ok, ms: Date.now() - t0, detail });
+    };
+
+    // -- step 1: environment -------------------------------------------------
+    {
+      const t0 = Date.now();
+      if (os.platform() !== 'darwin') {
+        step('environment', 'Environment', t0, false,
+          `Apple Foundation Models requires macOS; this machine reports platform "${os.platform()}".`);
+        return this.summarize(steps);
+      }
+      const binary = this.findBinary();
+      if (!binary) {
+        step('environment', 'Environment', t0, false,
+          'No applefm-bridge binary found in any candidate location. ' +
+          `Tried:\n${this.binaryCandidates.map((c) => `  • ${c || '(empty)'}`).join('\n')}\n` +
+          'Fix: build the bridge on this Mac (Settings → Models shows the one-time setup steps).');
+        return this.summarize(steps);
+      }
+      let sizeNote = '';
+      try {
+        const { statSync } = await import('node:fs');
+        sizeNote = ` (${Math.round(statSync(binary).size / 1024)} KB)`;
+      } catch { /* size is best-effort */ }
+      step('environment', 'Environment', t0, true,
+        `macOS ${os.release()}, ${os.arch()}. Bridge binary: ${binary}${sizeNote}.`);
+    }
+
+    // -- step 2: probe --------------------------------------------------------
+    let probeOk = false;
+    {
+      const t0 = Date.now();
+      try {
+        // Bypass the cache: diagnostics must test the bridge right now.
+        this.probeCache = null;
+        const probe = await this.probe();
+        probeOk = probe.available;
+        step('probe', 'Bridge probe', t0, probe.available,
+          probe.available
+            ? `--probe answered in ${Date.now() - t0}ms: available=true, toolCalling=${probe.toolCalling === true}.`
+            : `--probe failed: ${probe.reason ?? 'unknown reason'}.`);
+      } catch (e) {
+        step('probe', 'Bridge probe', t0, false,
+          `probe() threw: ${e instanceof Error ? e.message : String(e)}`);
+      }
+      if (!probeOk) return this.summarize(steps);
+    }
+
+    // -- step 3: tiny inference with stderr capture ---------------------------
+    {
+      const t0 = Date.now();
+      try {
+        const r = await this.runInferenceCapture(
+          [{ role: 'user', content: 'Reply with exactly: ok' }],
+          DIAG_INFERENCE_TIMEOUT_MS
+        );
+        step('inference', 'Test inference', t0, true,
+          `Bridge answered in ${r.ms}ms (first byte after ${r.firstByteMs}ms): "${r.text.slice(0, 200)}"` +
+          (r.stderr ? `\nBridge stderr (informational):\n${r.stderr.slice(0, 2000)}` : ''));
+      } catch (e) {
+        const err = e as { message?: string; stderr?: string; phase?: string };
+        step('inference', 'Test inference', t0, false,
+          `${err.phase ? `[${err.phase}] ` : ''}${err.message ?? String(e)}` +
+          (err.stderr ? `\n\nBridge stderr:\n${err.stderr.slice(0, 4000)}` : '\n\nBridge stderr: (empty — the bridge printed nothing before failing)'));
+      }
+    }
+
+    return this.summarize(steps);
+  }
+
+  private summarize(steps: AppleFmDiagStep[]): AppleFmDiagnosis {
+    const ok = steps.every((s) => s.ok);
+    const failed = steps.filter((s) => !s.ok);
+    return {
+      ok,
+      steps,
+      summary: ok
+        ? 'All checks passed — the bridge probes and answers inference.'
+        : `Failed at: ${failed.map((s) => s.label).join(', ')}. See step details below.`,
+    };
+  }
+
+  /**
+   * Minimal chat turn used ONLY by diagnose(): spawns the bridge, sends one
+   * request, and — unlike chat() — captures stderr so the real failure text
+   * survives. Throws an Error with .phase ('spawn'|'write'|'wait'|'parse')
+   * and .stderr attached.
+   */
+  private runInferenceCapture(
+    messages: AppleFmMessage[],
+    timeoutMs: number
+  ): Promise<{ text: string; stderr: string; ms: number; firstByteMs: number }> {
+    return new Promise((resolve, reject) => {
+      const t0 = Date.now();
+      const binary = this.findBinary();
+      if (!binary) {
+        const e = new Error('bridge binary disappeared between probe and inference') as Error & { phase: string };
+        e.phase = 'spawn';
+        reject(e);
+        return;
+      }
+      const id = this.nextId++;
+      const child = spawn(binary, [], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+      let stdout = '';
+      let stderr = '';
+      let firstByteAt = 0;
+      let settled = false;
+
+      const fail = (phase: string, message: string) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        this.kill(child);
+        const e = new Error(message) as Error & { phase: string; stderr: string };
+        e.phase = phase;
+        e.stderr = stderr;
+        reject(e);
+      };
+      const done = (text: string) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        this.kill(child);
+        resolve({ text, stderr, ms: Date.now() - t0, firstByteMs: firstByteAt ? firstByteAt - t0 : Date.now() - t0 });
+      };
+
+      const timer = setTimeout(() => {
+        fail('wait',
+          `timed out after ${timeoutMs}ms waiting for the bridge ` +
+          `(child ${child.exitCode === null && !child.killed ? 'still running' : 'already exited'}; ` +
+          `stdout so far: ${stdout.length} bytes, stderr so far: ${stderr.length} bytes). ` +
+          'This is the live failure mode: the bridge accepts the request but never answers. ' +
+          'Common causes: Apple Intelligence disabled, the on-device model still downloading, ' +
+          'or the bridge hanging in session creation — check the stderr text above.');
+      }, timeoutMs);
+      timer.unref?.();
+
+      child.on('error', (err) => fail('spawn', `failed to spawn bridge: ${(err as Error)?.message ?? String(err)}`));
+      child.stdout!.on('data', (d: Buffer) => {
+        if (!firstByteAt) firstByteAt = Date.now();
+        stdout += d.toString('utf8');
+        if (stdout.length > MAX_LINE_BYTES) {
+          fail('wait', 'bridge response exceeded 4MB');
+          return;
+        }
+        const nl = stdout.indexOf('\n');
+        if (nl >= 0) {
+          try {
+            const json = JSON.parse(stdout.slice(0, nl)) as BridgeChatResponse;
+            if (typeof json.error === 'string') fail('parse', `bridge returned error: ${json.error}`);
+            else if (typeof json.text === 'string') done(json.text);
+            else fail('parse', 'bridge returned a JSON line with no "text" or "error" field');
+          } catch {
+            fail('parse', `bridge returned invalid JSON: ${stdout.slice(0, 200)}`);
+          }
+        }
+      });
+      child.stderr!.on('data', (d: Buffer) => {
+        if (stderr.length < MAX_STDERR_BYTES) stderr += d.toString('utf8').slice(0, MAX_STDERR_BYTES - stderr.length);
+      });
+      child.on('close', (code) => {
+        fail('wait', code === 0
+          ? 'bridge exited (code 0) without answering — it likely crashed before writing a response line'
+          : `bridge exited with code ${code} without answering`);
+      });
+
+      const request = JSON.stringify({ id, op: 'chat', system: '', messages }) + '\n';
+      child.stdin!.write(request, (err) => {
+        if (err) fail('write', `failed to write request to bridge: ${String(err)}`);
+        else child.stdin!.end();
+      });
+    });
   }
 
   /**
