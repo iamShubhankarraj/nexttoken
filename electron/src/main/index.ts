@@ -17,7 +17,7 @@ import { executeControl, runTerminalControl, type ControlEnv } from './brain/con
 import { MODEL_CATALOG, ModelDownloader, targetPathFor, ensureEspeakNgData, type DownloadEvent } from './models';
 import { ensureSidecar, whisperManualSteps } from './models/binaries';
 import { registerModelsIpc } from './models/ipc';
-import { setVisionRef, describeTaskModels } from './models/task-models';
+import { setVisionRef, describeTaskModels, resolveVisionModel } from './models/task-models';
 import { setupUpdater, checkForUpdatesManually } from './updater';
 import { detectBrowsers, type DetectedBrowser } from './import/browsers';
 import { importBookmarks, importTabs, type ImportDeps, type ImportReport } from './import/index';
@@ -374,6 +374,43 @@ function initModelTier() {
       }
     }
   });
+}
+
+/**
+ * Warm the llama-server slot for a downloaded GGUF model in the background.
+ * Idempotent: ensureWarm no-ops when the model is already serving, and each
+ * slot holds exactly one server. Never throws — failures only log, since
+ * prewarm must never break launch or model switching.
+ */
+async function prewarmLocalModel(entryId: string, slot: 'chat' | 'vision'): Promise<void> {
+  try {
+    const entry = MODEL_CATALOG.find((e) => e.id === entryId);
+    if (!entry || entry.task !== (slot === 'vision' ? 'vision' : 'chat')) return;
+    if (!store.d.models.downloaded[entryId]) return;
+    const w = await llama.ensureWarm(entry, slot);
+    console.log(
+      `[local-model] prewarm model=${entryId} slot=${slot} warm=${w.warm} ` +
+      `spawnMs=${w.spawnMs} loadMs=${w.loadMs}`
+    );
+  } catch (e) {
+    console.warn(`[local-model] prewarm failed for ${entryId}:`, e instanceof Error ? e.message : e);
+  }
+}
+
+/**
+ * Prewarm the assigned local models after app initialization. Called with a
+ * short delay so it never contends with launch; the first agent/voice turn
+ * then starts warm instead of paying spawn + model-load latency.
+ */
+function prewarmAssignedLocalModels(): void {
+  const active = store.d.models.activeModel;
+  if (active?.kind === 'local' && active.id) {
+    void prewarmLocalModel(active.id, 'chat');
+  }
+  const vision = resolveVisionModel(store);
+  if (vision.kind === 'local') {
+    void prewarmLocalModel(vision.entry.id, 'vision');
+  }
 }
 
 /** Push the active model to the renderer (Agent tab switcher stays in sync). */
@@ -1064,6 +1101,9 @@ function registerIpc() {
   ipcMain.handle('nt.models.active.set', (_e, ref: ActiveModelRef): ActiveModelRef => {
     const saved = modelRouter.setActive(ref);
     emitActiveModel();
+    // Switching to a downloaded local model warms its server now, in the
+    // background, so the next turn starts warm instead of cold.
+    if (saved.kind === 'local' && saved.id) void prewarmLocalModel(saved.id, 'chat');
     return saved;
   });
   ipcMain.handle('nt.settings.voice.get', () => store.d.voice);
@@ -1578,6 +1618,11 @@ app.whenReady().then(() => {
 
   // Auto-archive sweep every minute.
   setInterval(() => tabs.sweepIdle(), 60_000);
+
+  // Prewarm the assigned local GGUF model(s) shortly after launch, in the
+  // background: the first agent/voice turn must not pay spawn + model-load.
+  // The delay keeps startup itself snappy; failures only log.
+  setTimeout(() => prewarmAssignedLocalModels(), 5_000);
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

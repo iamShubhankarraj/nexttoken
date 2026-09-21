@@ -33,7 +33,7 @@ import type {
   ActiveModelRef, ModelChoice, ProviderValidateInput
 } from '../../shared/ipc';
 import {
-  chatComplete, messagesHaveImages, testConnection,
+  chatComplete, messagesHaveImages, openAiStreamComplete, testConnection,
   type LlmMessage, type LlmResult, type LlmToolCall, type LlmToolDef
 } from '../agent/llm';
 import {
@@ -52,6 +52,12 @@ export interface CompleteOpts {
   messages: LlmMessage[];
   tools?: LlmToolDef[];
   signal?: AbortSignal;
+  /**
+   * Incremental content deltas, fired only by streaming local (llama-server)
+   * turns. Lets the caller paint tokens as they arrive instead of waiting
+   * for the full completion.
+   */
+  onToken?: (delta: string) => void;
 }
 
 export interface CompleteResult {
@@ -172,8 +178,8 @@ export class ModelRouter {
     // text model that would hallucinate about images it cannot see).
     if ((opts.task ?? 'chat') === 'vision') return this.completeVision(opts);
     const tools = opts.tools ?? [];
-    const primary = await this.primaryAttempt(opts.messages, tools, opts.signal);
-    const fallbacks = this.fallbackAttempts(primary.viaRef, tools, opts.messages, opts.signal);
+    const primary = await this.primaryAttempt(opts.messages, tools, opts.signal, opts.onToken);
+    const fallbacks = this.fallbackAttempts(primary.viaRef, tools, opts.messages, opts.signal, opts.onToken);
     const errors: string[] = [];
     const attempts = [primary, ...fallbacks];
     for (let i = 0; i < attempts.length; i++) {
@@ -227,7 +233,7 @@ export class ModelRouter {
     if (resolved.kind === 'local') {
       push({
         label: resolved.entry.name, viaRef: `local:${resolved.entry.id}`,
-        run: () => this.localTurn(resolved.entry, 'vision', opts.messages, [], opts.signal)
+        run: () => this.localTurn(resolved.entry, 'vision', opts.messages, [], opts.signal, opts.onToken)
       });
     } else if (resolved.kind === 'applefm') {
       push({
@@ -252,7 +258,7 @@ export class ModelRouter {
       if (e.task !== 'vision' || !this.deps.store.d.models.downloaded[e.id]) continue;
       push({
         label: e.name, viaRef: `local:${e.id}`,
-        run: () => this.localTurn(e, 'vision', opts.messages, [], opts.signal)
+        run: () => this.localTurn(e, 'vision', opts.messages, [], opts.signal, opts.onToken)
       });
     }
     if (attempts.length === 0) {
@@ -366,7 +372,8 @@ export class ModelRouter {
   private async primaryAttempt(
     messages: LlmMessage[],
     tools: LlmToolDef[],
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    onToken?: (delta: string) => void
   ): Promise<Attempt> {
     const active = this.deps.store.d.models.activeModel ?? { kind: 'local-applefm' as const };
     switch (active.kind) {
@@ -380,7 +387,7 @@ export class ModelRouter {
         if (entry && this.deps.store.d.models.downloaded[active.id!]) {
           return {
             label: entry.name, viaRef: `local:${entry.id}`,
-            run: () => this.localTurn(entry, 'chat', messages, tools, signal)
+            run: () => this.localTurn(entry, 'chat', messages, tools, signal, onToken)
           };
         }
         return failing(active.id ?? 'model', `local:${active.id ?? ''}`,
@@ -404,7 +411,8 @@ export class ModelRouter {
     excludeViaRef: string,
     tools: LlmToolDef[],
     messages: LlmMessage[],
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    onToken?: (delta: string) => void
   ): Attempt[] {
     const out: Attempt[] = [];
     // 1. Other enabled cloud providers with keys.
@@ -428,7 +436,7 @@ export class ModelRouter {
     if (dl && `local:${dl.id}` !== excludeViaRef) {
       out.push({
         label: dl.name, viaRef: `local:${dl.id}`,
-        run: () => this.localTurn(dl, 'chat', messages, tools, signal)
+        run: () => this.localTurn(dl, 'chat', messages, tools, signal, onToken)
       });
     }
     return out;
@@ -482,23 +490,32 @@ export class ModelRouter {
     task: 'chat' | 'vision',
     messages: LlmMessage[],
     tools: LlmToolDef[],
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    onToken?: (delta: string) => void
   ): Promise<LlmResult> {
     const slot: ServerSlot = task === 'vision' ? 'vision' : 'chat';
-    const st = this.deps.llama.status(slot);
-    let base = this.deps.llama.url(slot);
-    if (!base || st.modelId !== entry.id) {
-      base = await this.deps.llama.start(entry, slot);
-    }
-    return chatComplete({
-      baseUrl: base,
+    const t0 = Date.now();
+    // Idempotent warm-up: a no-op when this exact model is already serving,
+    // so repeated turns never pay spawn + model-load again.
+    const warmed = await this.deps.llama.ensureWarm(entry, slot);
+    const { result, firstTokenMs } = await openAiStreamComplete({
+      baseUrl: warmed.baseUrl,
       api: 'openai',
       apiKey: '',
       model: entry.id,
       messages,
       tools,
-      signal
+      signal,
+      onToken,
     });
+    const totalMs = Date.now() - t0;
+    // Stable timing line for diagnosing local-model latency on the user's Mac.
+    console.log(
+      `[local-model] model=${entry.id} warm=${warmed.warm} ` +
+      `spawnMs=${warmed.spawnMs} loadMs=${warmed.loadMs} ` +
+      `firstTokenMs=${firstTokenMs} totalMs=${totalMs}`
+    );
+    return result;
   }
 
   private async cloudTurn(

@@ -205,7 +205,9 @@ function Shell() {
     >
       {!snapshot.sidebarCollapsed && <Sidebar />}
 
-      <div className="flex min-w-0 flex-1 flex-col">
+      {/* Content shell: rounded left corners interlock with the sidebar's
+          liquid scoops (puzzle pieces, no straight seam). */}
+      <div className="nt-content-liquid flex min-w-0 flex-1 flex-col">
         <TopStrip />
         {/* Real tab content: webview guests mounted by <TabViews/>. */}
         <main

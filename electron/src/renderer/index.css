@@ -467,3 +467,214 @@ input[type="color"].nt-color::-webkit-color-swatch {
   }
   .acting-cursor { transition: none; }
 }
+
+/* ------------------------------------------------------------------
+   Liquid sidebar (v0.5.7) — breathing width, organic seam, gliding pill.
+   Warm charcoal + ember only. No violet, no indigo.
+------------------------------------------------------------------- */
+
+/* The breathing shell: width comes from --sbw, written per frame by the
+   rAF spring in useLiquidSidebar (never a CSS transition, never React). */
+.nt-liquid-sidebar {
+  --sbw: 180px;
+  width: var(--sbw);
+  background: transparent;
+  border: none;
+  z-index: 20;
+  contain: layout style;
+}
+
+/* The seam SVG paints the whole sidebar background, including the organic
+   right edge. It overflows visibly into the content area; it never takes
+   pointer events. */
+.nt-seam-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+  z-index: 0;
+}
+.nt-seam-fill {
+  fill: var(--nt-sidebar-bg);
+}
+.nt-seam-hi {
+  fill: none;
+  stroke: var(--nt-seam-hi, rgba(255, 255, 255, 0.09));
+  stroke-width: 1.5;
+  stroke-linecap: round;
+}
+
+/* Window drag region (traffic lights are native, hiddenInset, at 14,14). */
+.nt-drag {
+  -webkit-app-region: drag;
+}
+.nt-no-drag {
+  -webkit-app-region: no-drag;
+}
+
+/* Small pill icon buttons (back, reload, tune, layout). */
+.nt-ctrl-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 999px;
+  color: var(--nt-text-2);
+  transition: background-color 160ms ease, color 160ms ease, transform 160ms ease;
+}
+.nt-ctrl-pill:hover {
+  background: var(--nt-bg-hover);
+  color: var(--nt-text-1);
+}
+.nt-ctrl-pill:active {
+  transform: scale(0.93);
+}
+.nt-ctrl-pill:disabled {
+  opacity: 0.35;
+  pointer-events: none;
+}
+
+/* URL pill: globe + domain, opens the command bar. */
+.nt-url-pill {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 36px;
+  padding: 0 12px;
+  border-radius: 999px;
+  background: var(--nt-bg-raised);
+  border: 1px solid var(--nt-border);
+  color: var(--nt-text-2);
+  cursor: pointer;
+  transition: border-color 160ms ease, background-color 160ms ease;
+  min-width: 0;
+}
+.nt-url-pill:hover {
+  border-color: var(--nt-border-strong);
+  background: var(--nt-bg-hover);
+}
+.nt-url-pill .nt-url-domain {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+}
+
+/* Tab rows: full-width fully-rounded pills. The row itself is transparent;
+   the gliding pill behind it carries the active fill. */
+.nt-tab-pill {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  height: 36px;
+  padding: 0 12px;
+  margin: 0 8px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background-color 160ms ease;
+}
+.nt-tab-pill:hover {
+  background: var(--nt-bg-hover);
+}
+.nt-tab-pill .nt-tab-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+/* The gliding active-tab pill: absolutely positioned in the tab-list
+   content, moved per frame by the spring (translate3d, GPU-composited). */
+.nt-glide-pill {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  top: 0;
+  height: 36px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--nt-text-1) 9%, var(--nt-sidebar-bg));
+  box-shadow: inset 0 0 0 1px var(--nt-border);
+  z-index: 0;
+  will-change: transform;
+  pointer-events: none;
+}
+
+/* Inner virtualized tab list keeps its own scroll viewport (glue hook). */
+.nt-tablist-scroll {
+  scrollbar-width: thin;
+}
+
+/* Archive / + Add Tab pill rows. */
+.nt-side-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  height: 36px;
+  padding: 0 12px;
+  margin: 0 8px;
+  border-radius: 999px;
+  font-size: 13px;
+  color: var(--nt-text-2);
+  cursor: pointer;
+  transition: background-color 160ms ease, color 160ms ease;
+  user-select: none;
+}
+.nt-side-row:hover {
+  background: var(--nt-bg-hover);
+  color: var(--nt-text-1);
+}
+
+/* Bottom cutout cluster: centered "•••" pill + trash button. */
+.nt-bottom-cutout {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 14px 0 18px;
+}
+.nt-more-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 34px;
+  padding: 0 18px;
+  border-radius: 999px;
+  background: var(--nt-bg-raised);
+  border: 1px solid var(--nt-border);
+  color: var(--nt-text-2);
+  transition: border-color 160ms ease, color 160ms ease, transform 160ms ease;
+}
+.nt-more-pill:hover {
+  border-color: var(--nt-border-strong);
+  color: var(--nt-text-1);
+}
+.nt-more-pill:active {
+  transform: scale(0.95);
+}
+
+/* Content panel: rounded left corners slot into the sidebar's scoops,
+   interlocking like puzzle pieces. overflow hidden clips webviews to it. */
+.nt-content-liquid {
+  border-top-left-radius: 22px;
+  border-bottom-left-radius: 28px;
+  overflow: hidden;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nt-ctrl-pill,
+  .nt-url-pill,
+  .nt-tab-pill,
+  .nt-side-row,
+  .nt-more-pill {
+    transition: none;
+  }
+}

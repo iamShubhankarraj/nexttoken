@@ -82,7 +82,10 @@ async function runLoop(runId: string, userText: string, rt: AgentRuntime, signal
         task: 'chat',
         messages: [...convo, { role: 'user', content: perception }],
         tools: TOOL_DEFS,
-        signal
+        signal,
+        // Local models stream tokens; the panel already accumulates
+        // done:false deltas, so the reply paints as it's generated.
+        onToken: (t) => emit({ kind: 'message', runId, text: t, done: false }),
       });
       const { text, toolCalls } = routed.result;
 

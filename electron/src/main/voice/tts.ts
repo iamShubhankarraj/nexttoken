@@ -207,6 +207,9 @@ async function synthChunk(
     await execFileAsync(bin, args, {
       timeout: CHUNK_TIMEOUT_MS,
       maxBuffer: 16 * 1024 * 1024,
+      // Defensive: the TTS child must never surface a console/Terminal
+      // window on macOS.
+      windowsHide: true,
       ...(signal ? { signal } : {}),
     });
   } catch (err) {

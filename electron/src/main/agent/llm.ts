@@ -110,6 +110,24 @@ async function openAiComplete(o: LlmOpts): Promise<LlmResult> {
   const url = o.baseUrl.replace(/\/+$/, '') + '/chat/completions';
   const headers: Record<string, string> = {};
   if (o.apiKey) headers['Authorization'] = `Bearer ${o.apiKey}`;
+  const body = openAiBody(o, false);
+  const json = await postJson(url, headers, body, o.signal);
+  const choice = asRecord((json.choices as unknown[])?.[0]);
+  const msg = asRecord(choice.message);
+  const toolCalls: LlmToolCall[] = ((msg.tool_calls as unknown[]) ?? []).map((tc) => {
+    const r = asRecord(tc); const fn = asRecord(r.function);
+    let args: Record<string, unknown> = {};
+    try { args = JSON.parse(String(fn.arguments ?? '{}')); } catch { /* keep {} */ }
+    return { id: String(r.id ?? ''), name: String(fn.name ?? ''), args };
+  });
+  return { text: String(msg.content ?? ''), toolCalls };
+}
+
+/**
+ * Shared /chat/completions body builder. `stream: true` asks for
+ * OpenAI-compatible SSE chunks (llama-server supports it natively).
+ */
+function openAiBody(o: LlmOpts, stream: boolean): Record<string, unknown> {
   const messages = o.messages.map((m) => {
     if (m.role === 'tool') return { role: 'tool', tool_call_id: m.toolCallId, content: m.content };
     if (m.role === 'assistant' && m.toolCalls?.length) {
@@ -127,21 +145,108 @@ async function openAiComplete(o: LlmOpts): Promise<LlmResult> {
   // with HTTP 400 — omit the field, and tool_choice with it, when there
   // are no tools to offer.
   const toolDefs = o.tools.map((t) => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.parameters } }));
-  const body: Record<string, unknown> = {
+  return {
     model: o.model,
     messages,
+    stream,
     ...(toolDefs.length > 0 ? { tools: toolDefs, tool_choice: 'auto' } : {}),
   };
-  const json = await postJson(url, headers, body, o.signal);
-  const choice = asRecord((json.choices as unknown[])?.[0]);
-  const msg = asRecord(choice.message);
-  const toolCalls: LlmToolCall[] = ((msg.tool_calls as unknown[]) ?? []).map((tc) => {
-    const r = asRecord(tc); const fn = asRecord(r.function);
-    let args: Record<string, unknown> = {};
-    try { args = JSON.parse(String(fn.arguments ?? '{}')); } catch { /* keep {} */ }
-    return { id: String(r.id ?? ''), name: String(fn.name ?? ''), args };
+}
+
+export interface StreamResult {
+  result: LlmResult;
+  /** Milliseconds from request send to the first nonempty content or tool-call delta. */
+  firstTokenMs: number;
+}
+
+export interface StreamOpts extends LlmOpts {
+  /** Called per content delta as it streams in (tool-call fragments excluded). */
+  onToken?: (delta: string) => void;
+}
+
+/**
+ * SSE streaming completion against a local llama-server. Parses the
+ * OpenAI-compatible event stream (`data: {...}` / `data: [DONE]`), fires
+ * onToken per content delta, and accumulates the final text + tool calls
+ * into the same LlmResult shape the non-streaming path returns — so
+ * callers keep their contract while gaining first-token timing.
+ */
+export async function openAiStreamComplete(o: StreamOpts): Promise<StreamResult> {
+  const url = o.baseUrl.replace(/\/+$/, '') + '/chat/completions';
+  const headers: Record<string, string> = { Accept: 'text/event-stream' };
+  if (o.apiKey) headers['Authorization'] = `Bearer ${o.apiKey}`;
+  const tSent = Date.now();
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...headers },
+    body: JSON.stringify(openAiBody(o, true)),
+    signal: o.signal ?? AbortSignal.timeout(300_000),
   });
-  return { text: String(msg.content ?? ''), toolCalls };
+  if (!res.ok || !res.body) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`Local model error ${res.status}: ${text.slice(0, 300)}`);
+  }
+
+  let text = '';
+  let firstTokenMs = -1;
+  const markFirstToken = () => {
+    if (firstTokenMs < 0) firstTokenMs = Date.now() - tSent;
+  };
+  // Tool-call fragments arrive per index; accumulate id/name/arguments.
+  const tcParts = new Map<number, { id: string; name: string; args: string }>();
+  let buf = '';
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+
+  const handleEvent = (payload: string) => {
+    if (!payload || payload === '[DONE]') return;
+    let json: unknown = null;
+    try { json = JSON.parse(payload); } catch { return; }
+    const delta = asRecord(asRecord((asRecord(json).choices as unknown[])?.[0]).delta);
+    const content = delta.content;
+    if (typeof content === 'string' && content) {
+      text += content;
+      markFirstToken();
+      try { o.onToken?.(content); } catch { /* listener must never break the stream */ }
+    }
+    const tcs = delta.tool_calls as unknown[] | undefined;
+    if (Array.isArray(tcs)) {
+      for (const raw of tcs) {
+        const r = asRecord(raw);
+        const idx = typeof r.index === 'number' ? r.index : 0;
+        const fn = asRecord(r.function);
+        const part = tcParts.get(idx) ?? { id: '', name: '', args: '' };
+        if (r.id) part.id = String(r.id);
+        if (fn.name) part.name = String(fn.name);
+        if (fn.arguments) part.args += String(fn.arguments);
+        tcParts.set(idx, part);
+        markFirstToken();
+      }
+    }
+  };
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let nl: number;
+    while ((nl = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (line.startsWith('data:')) handleEvent(line.slice(5).trim());
+    }
+  }
+  // Trailing payload without a final newline.
+  const tail = buf.trim();
+  if (tail.startsWith('data:')) handleEvent(tail.slice(5).trim());
+  try { reader.releaseLock(); } catch { /* already released */ }
+
+  const toolCalls: LlmToolCall[] = [...tcParts.values()].map((p) => {
+    let args: Record<string, unknown> = {};
+    try { args = JSON.parse(p.args || '{}'); } catch { /* keep {} */ }
+    return { id: p.id, name: p.name, args };
+  });
+  return { result: { text, toolCalls }, firstTokenMs };
 }
 
 async function anthropicComplete(o: LlmOpts): Promise<LlmResult> {

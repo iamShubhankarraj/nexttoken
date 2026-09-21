@@ -257,7 +257,8 @@ function downloadFile(url: string, destPath: string, redirectsLeft = MAX_REDIREC
 
 function execFileAsync(file: string, args: string[], cwd: string): Promise<void> {
   return new Promise((resolve, reject) => {
-    execFile(file, args, { cwd, timeout: 120_000 }, (err, _stdout, stderr) => {
+    // windowsHide: archive extraction must never surface a console window.
+    execFile(file, args, { cwd, timeout: 120_000, windowsHide: true }, (err, _stdout, stderr) => {
       if (err) {
         const detail = String(stderr ?? '').trim().slice(-500);
         reject(new Error(`Extraction failed (${path.basename(file)}): ${detail || err.message}`));

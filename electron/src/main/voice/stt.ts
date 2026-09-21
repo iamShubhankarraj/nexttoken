@@ -108,7 +108,13 @@ export class SttEngine {
       const { stdout } = await execFileAsync(
         bin,
         args,
-        { timeout: TRANSCRIBE_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024 },
+        {
+          timeout: TRANSCRIBE_TIMEOUT_MS,
+          maxBuffer: 16 * 1024 * 1024,
+          // Defensive: the STT child must never surface a console/Terminal
+          // window (notably on macOS when the voice button is pressed).
+          windowsHide: true,
+        },
       );
 
       try {

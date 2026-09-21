@@ -62,7 +62,7 @@ export function VirtualList<T>({
     <div
       ref={containerRef}
       onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
-      className="relative h-full overflow-y-auto"
+      className="nt-tablist-scroll relative h-full overflow-y-auto"
     >
       <div style={{ height: items.length * rowHeight, position: "relative" }}>
         {rows}

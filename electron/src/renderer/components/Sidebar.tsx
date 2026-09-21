@@ -15,17 +15,22 @@
 import {
   Archive,
   ArchiveRestore,
+  ArrowLeft,
   Bookmark as BookmarkIcon,
   BookmarkPlus,
   ChevronDown,
   ChevronRight,
   Folder,
   FolderPlus,
+  Globe,
+  MoreHorizontal,
   Pencil,
   Pin,
   PinOff,
   Plus,
+  RotateCw,
   Settings,
+  SlidersHorizontal,
   Sparkles,
   Star,
   Trash2,
@@ -45,6 +50,7 @@ import { domainOf, nt } from "../nt";
 import { Favicon } from "./Favicon";
 import { TidyDialog } from "./TidyDialog";
 import { VirtualList } from "./VirtualList";
+import { useLiquidSidebar, type LiquidSidebarRefs } from "../hooks/useLiquidSidebar";
 
 const ROW_H = 36;
 const MAX_LIST_H = 440;
@@ -80,6 +86,29 @@ export function Sidebar() {
   const [collapsedFolders, setCollapsedFolders] = useState<Set<string>>(new Set());
   const [pinnedCollapsed, setPinnedCollapsed] = useState(false);
   const [bookmarksOpen, setBookmarksOpen] = useState(true);
+  const [archiveOpen, setArchiveOpen] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
+
+  // Liquid sidebar engine: breathing width spring + morphing seam + gliding
+  // active-tab pill. All driven via refs (no React re-render per frame).
+  const asideRef = useRef<HTMLElement | null>(null);
+  const seamFillRef = useRef<SVGPathElement | null>(null);
+  const seamHiRef = useRef<SVGPathElement | null>(null);
+  const glideRef = useRef<HTMLDivElement | null>(null);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const tabContentRef = useRef<HTMLDivElement | null>(null);
+  const liquidRefs: LiquidSidebarRefs = useMemo(
+    () => ({
+      asideRef,
+      seamFillRef,
+      seamHiRef,
+      glideRef,
+      scrollRef,
+      contentRef: tabContentRef,
+    }),
+    [],
+  );
+  useLiquidSidebar(liquidRefs, activeSpace?.activeTabId ?? undefined, !!snapshot && !!activeSpace);
 
   // Stable drag id readable inside memoized callbacks.
   const dragIdRef = useRef<string | null>(null);
@@ -223,24 +252,114 @@ export function Sidebar() {
       return next;
     });
 
+  const activeTab =
+    activeSpace.tabs.find((t) => t.id === activeSpace.activeTabId) ?? null;
+
   return (
     <aside
-      className="flex h-full w-[248px] shrink-0 select-none flex-col border-r"
-      style={{ background: "var(--nt-sidebar-bg)", borderColor: "var(--nt-border)" }}
+      ref={asideRef}
+      className="nt-liquid-sidebar relative flex h-full shrink-0 select-none flex-col"
     >
-      {/* 2px bit-identity wash on the top edge */}
-      <div className="nt-space-wash shrink-0" />
+      {/* Liquid seam: the sidebar's organic right edge (two scoop cutouts).
+          The path is rebuilt per frame by the breathing spring — see
+          useLiquidSidebar. pointer-events none; it never blocks content. */}
+      <svg className="nt-seam-svg" aria-hidden="true">
+        <path ref={seamFillRef} className="nt-seam-fill" d="" />
+        <path ref={seamHiRef} className="nt-seam-hi" d="" />
+      </svg>
 
-      <BitSwitcher
-        spaces={snapshot.spaces}
-        activeId={activeSpace.id}
-        activeName={activeSpace.name}
-        dragId={dragId}
-      />
+      <div className="relative z-[1] flex h-full min-h-0 flex-col">
+        {/* Traffic-light / drag zone (lights are native: hiddenInset @14,14). */}
+        <div className="nt-drag h-[50px] shrink-0" />
 
-      <FavoritesDock space={activeSpace} />
+        {/* Control pills: back, reload | tune, layout. */}
+        <div className="nt-no-drag flex shrink-0 items-center gap-1 px-3">
+          <button
+            title="Back"
+            onClick={() => void nt().navBack()}
+            className="nt-ctrl-pill"
+          >
+            <ArrowLeft size={16} strokeWidth={1.75} />
+          </button>
+          <button
+            title="Reload"
+            onClick={() => void nt().navReload()}
+            className="nt-ctrl-pill"
+          >
+            <RotateCw size={15} strokeWidth={1.75} />
+          </button>
+          <span
+            className="mx-1 h-4 w-px"
+            style={{ background: "var(--nt-border)" }}
+            aria-hidden
+          />
+          <button
+            title="Appearance & settings"
+            onClick={() => void nt().uiSetSettingsOpen(true)}
+            className="nt-ctrl-pill"
+          >
+            <SlidersHorizontal size={15} strokeWidth={1.75} />
+          </button>
+          <button
+            title="Hide sidebar (⌘S)"
+            onClick={() => void nt().uiSetSidebarCollapsed(true)}
+            className="nt-ctrl-pill"
+          >
+            <PanelLeftClose size={16} strokeWidth={1.75} />
+          </button>
+        </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
+        {/* URL pill: globe + domain, opens the command bar. */}
+        <div className="nt-no-drag shrink-0 px-3 pt-2.5">
+          <button
+            className="nt-url-pill w-full"
+            title={
+              activeTab
+                ? `${activeTab.title || "New tab"}\n${activeTab.url}`
+                : "Open the command bar (⌘K)"
+            }
+            onClick={() =>
+              window.dispatchEvent(new CustomEvent("nt:open-command-bar"))
+            }
+          >
+            {activeTab && !activeTab.loading ? (
+              <Favicon url={activeTab.url} favicon={activeTab.favicon} size={15} />
+            ) : (
+              <Globe
+                size={15}
+                strokeWidth={1.75}
+                style={{ color: "var(--nt-text-3)" }}
+              />
+            )}
+            <span className="nt-url-domain">
+              {activeTab
+                ? domainOf(activeTab.url) || "New tab"
+                : "Search or enter address"}
+            </span>
+          </button>
+        </div>
+
+        {/* 2px bit-identity wash on the top edge */}
+        <div className="nt-space-wash mt-2.5 shrink-0" />
+
+        <BitSwitcher
+          spaces={snapshot.spaces}
+          activeId={activeSpace.id}
+          activeName={activeSpace.name}
+          dragId={dragId}
+        />
+
+        <FavoritesDock space={activeSpace} />
+
+        <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto pb-2">
+          <div ref={tabContentRef} className="relative">
+            {/* Gliding active-tab pill (spring-driven, never a jump cut). */}
+            <div
+              ref={glideRef}
+              className="nt-glide-pill"
+              style={{ opacity: 0 }}
+              aria-hidden
+            />
         {/* Pinned section doubles as the pin drop zone — visible while
             dragging even when there are no pinned tabs yet. */}
         {(pinned.length > 0 || dragId) && (
@@ -449,23 +568,130 @@ export function Sidebar() {
           open={bookmarksOpen}
           onToggle={() => setBookmarksOpen((o) => !o)}
         />
+          </div>
+        </div>
 
-        <ArchiveSection />
+        {/* Archive / + Add Tab pill rows */}
+        <div className="shrink-0 pb-1">
+          <ArchiveSection open={archiveOpen} onToggle={() => setArchiveOpen((o) => !o)} />
+          <button
+            onClick={() => void nt().tabsCreate({})}
+            className="nt-side-row w-[calc(100%-16px)]"
+            title="New tab (⌘T)"
+          >
+            <Plus size={15} strokeWidth={1.75} style={{ color: "var(--nt-text-3)" }} />
+            <span className="font-medium">Add Tab</span>
+          </button>
+        </div>
+
+        {/* Bottom cutout: centered ••• pill + trash, cradled by the
+            parenthesis curve of the liquid seam. */}
+        <div className="nt-bottom-cutout shrink-0">
+          <button
+            className="nt-more-pill"
+            title="Sidebar options"
+            onClick={() => setMoreOpen((o) => !o)}
+          >
+            <MoreHorizontal size={16} strokeWidth={1.75} />
+          </button>
+          <button
+            className="nt-ctrl-pill"
+            title={activeTab ? `Close tab — ${activeTab.title || "New tab"}` : "Close tab"}
+            disabled={!activeTab}
+            onClick={() => {
+              if (activeTab) void nt().tabsClose(activeTab.id);
+            }}
+          >
+            <Trash2 size={15} strokeWidth={1.75} />
+          </button>
+        </div>
       </div>
 
-      <button
-        onClick={() => void nt().tabsCreate({})}
-        className="nt-r-sm mx-2 mb-2 flex items-center justify-center gap-1.5 border py-2 text-[13px] font-medium transition-colors hover:bg-[var(--nt-bg-hover)]"
-        style={{ borderColor: "var(--nt-border)", color: "var(--nt-text-2)" }}
-      >
-        <Plus size={14} strokeWidth={1.75} /> New tab
-      </button>
-
-      <SidebarFooter />
+      {moreOpen && <MoreMenu onClose={() => setMoreOpen(false)} />}
       {tidyOpen && (
         <TidyDialog spaceId={activeSpace.id} onClose={() => setTidyOpen(false)} />
       )}
     </aside>
+  );
+}
+
+/** The ••• popover: sidebar-level actions that used to live in the footer. */
+function MoreMenu({ onClose }: { onClose: () => void }) {
+  const { snapshot } = useBrowser();
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const onDown = (e: MouseEvent) => {
+      if (!ref.current?.contains(e.target as Node)) onClose();
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("mousedown", onDown);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", onDown);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [onClose]);
+  const itemCls =
+    "nt-r-sm flex w-full items-center gap-2.5 px-3 py-2 text-left text-[13px] transition-colors hover:bg-[var(--nt-bg-hover)]";
+  return (
+    <div
+      ref={ref}
+      className="nt-popover nt-r-md fixed z-[70] w-52 border p-1.5"
+      style={{
+        left: 24,
+        bottom: 76,
+        background: "var(--nt-bg-overlay)",
+        borderColor: "var(--nt-border)",
+        boxShadow: "var(--nt-shadow-pop)",
+      }}
+      role="menu"
+    >
+      <button
+        className={itemCls}
+        style={{ color: "var(--nt-text-1)" }}
+        onClick={() => {
+          onClose();
+          void nt().uiSetSidebarCollapsed(true);
+        }}
+        role="menuitem"
+      >
+        <PanelLeftClose size={15} strokeWidth={1.75} style={{ color: "var(--nt-text-3)" }} />
+        Hide sidebar
+        <kbd className="ml-auto text-[11px]" style={{ color: "var(--nt-text-faint)" }}>⌘S</kbd>
+      </button>
+      <button
+        className={itemCls}
+        style={{ color: "var(--nt-text-1)" }}
+        onClick={() => {
+          onClose();
+          void nt().uiSetAgentPanelOpen(!(snapshot?.agentPanelOpen ?? false));
+        }}
+        role="menuitem"
+      >
+        <Sparkles
+          size={15}
+          strokeWidth={1.75}
+          style={{
+            color: snapshot?.agentPanelOpen ? "var(--nt-accent)" : "var(--nt-text-3)",
+          }}
+        />
+        Agent panel
+      </button>
+      <button
+        className={itemCls}
+        style={{ color: "var(--nt-text-1)" }}
+        onClick={() => {
+          onClose();
+          void nt().uiSetSettingsOpen(true);
+        }}
+        role="menuitem"
+      >
+        <Settings size={15} strokeWidth={1.75} style={{ color: "var(--nt-text-3)" }} />
+        Settings
+      </button>
+    </div>
   );
 }
 
@@ -1310,8 +1536,8 @@ const TabRow = memo(function TabRow({
           onDragOver={(e) => dnd.onRowDragOver(e, tab, listKey)}
           onDrop={(e) => dnd.onRowDrop(e, tab, listKey)}
           title={`${tab.title || "New tab"}\n${tab.url}`}
-          className={`nt-r-sm group relative flex h-9 cursor-pointer items-center gap-2.5 px-2.5 transition-colors ${
-            active ? "nt-active-tab" : "hover:bg-[var(--nt-bg-hover)]"
+          className={`nt-tab-pill group ${
+            active ? "" : "hover:bg-[var(--nt-bg-hover)]"
           } ${splitPick ? "hover:outline hover:outline-1 hover:outline-[var(--nt-accent)]" : ""}`}
           style={{
             ...(isDragging ? { opacity: 0.4 } : undefined),
@@ -1323,20 +1549,14 @@ const TabRow = memo(function TabRow({
           ) : (
             <Favicon url={tab.url} favicon={tab.favicon} size={16} />
           )}
-          <div className="min-w-0 flex-1 leading-tight">
-            <p
-              className="truncate text-[13px] font-medium"
-              style={{ color: "var(--nt-text-1)" }}
-            >
-              {tab.title || "New tab"}
-            </p>
-            <p
-              className="nt-mono truncate text-[11px]"
-              style={{ color: "var(--nt-text-3)" }}
-            >
-              {tab.loading ? "Loading…" : domainOf(tab.url)}
-            </p>
-          </div>
+          <p
+            className="nt-tab-title font-medium"
+            style={{
+              color: active ? "var(--nt-text-1)" : "var(--nt-text-2)",
+            }}
+          >
+            {tab.title || "New tab"}
+          </p>
           <span className="hidden shrink-0 items-center gap-0.5 group-hover:flex">
             <button
               title={tab.pinned ? "Unpin" : "Pin"}
@@ -1604,33 +1824,34 @@ function BookmarkMenu({
 
 /* ------------------------------ auto-archive ----------------------------- */
 
-function ArchiveSection() {
+function ArchiveSection({
+  open,
+  onToggle,
+}: {
+  open: boolean;
+  onToggle: () => void;
+}) {
   const { snapshot } = useBrowser();
-  const [open, setOpen] = useState(false);
   const archived: ArchivedTab[] = snapshot?.archived ?? [];
 
   return (
-    <section className="mt-3">
-      <button
-        onClick={() => setOpen((o) => !o)}
-        className="nt-r-sm flex w-full items-center gap-1.5 px-1 py-1 text-left transition-colors hover:bg-[var(--nt-bg-hover)]"
-      >
+    <div>
+      <button onClick={onToggle} className="nt-side-row w-[calc(100%-16px)]">
         {open ? (
-          <ChevronDown size={13} strokeWidth={1.75} style={{ color: "var(--nt-text-3)" }} />
+          <ChevronDown size={15} strokeWidth={1.75} style={{ color: "var(--nt-text-3)" }} />
         ) : (
-          <ChevronRight size={13} strokeWidth={1.75} style={{ color: "var(--nt-text-3)" }} />
+          <Archive size={15} strokeWidth={1.75} style={{ color: "var(--nt-text-3)" }} />
         )}
-        <Archive size={13} strokeWidth={1.75} style={{ color: "var(--nt-text-3)" }} />
-        <span className="nt-micro">Archive</span>
+        <span className="font-medium">Archive</span>
         <span
-          className="nt-num ml-auto pr-1 text-[11px]"
+          className="nt-num ml-auto text-[11px]"
           style={{ color: "var(--nt-text-faint)" }}
         >
           {archived.length}
         </span>
       </button>
       {open && (
-        <div className="nt-fade-in mt-1 space-y-1">
+        <div className="nt-fade-in mx-2 mb-1 mt-1 max-h-48 space-y-0.5 overflow-y-auto">
           {archived.length === 0 && (
             <p className="px-2.5 py-2 text-[12px]" style={{ color: "var(--nt-text-3)" }}>
               Nothing archived yet. Idle tabs sweep here automatically.
@@ -1639,82 +1860,30 @@ function ArchiveSection() {
           {archived.map((a) => (
             <div
               key={a.id}
-              className="nt-r-sm group flex items-center gap-2.5 px-2.5 py-2 transition-colors hover:bg-[var(--nt-bg-hover)]"
+              className="nt-tab-pill group"
+              style={{ height: 32 }}
             >
               <Favicon url={a.url} size={14} />
               <div className="min-w-0 flex-1 leading-tight">
                 <p
-                  className="truncate text-[12px]"
+                  className="nt-tab-title text-[12px]"
                   style={{ color: "var(--nt-text-2)" }}
                 >
                   {a.title || "Untitled"}
-                </p>
-                <p
-                  className="truncate text-[10px]"
-                  style={{ color: "var(--nt-text-faint)" }}
-                >
-                  {a.spaceName} ·{" "}
-                  {new Date(a.archivedAt).toLocaleTimeString([], {
-                    hour: "2-digit",
-                    minute: "2-digit",
-                  })}
                 </p>
               </div>
               <button
                 title="Restore tab"
                 onClick={() => void nt().tabsRestore(a.id)}
-                className="nt-r-sm p-1 opacity-0 transition-all group-hover:opacity-100 hover:bg-[var(--nt-bg-hover)]"
+                className="nt-r-sm shrink-0 p-1 opacity-0 transition-all group-hover:opacity-100 hover:bg-[var(--nt-bg-hover)]"
                 style={{ color: "var(--nt-text-3)" }}
               >
-                <ArchiveRestore size={14} strokeWidth={1.75} />
+                <ArchiveRestore size={13} strokeWidth={1.75} />
               </button>
             </div>
           ))}
         </div>
       )}
-    </section>
-  );
-}
-
-/* --------------------------------- footer --------------------------------- */
-
-function SidebarFooter() {
-  const { snapshot } = useBrowser();
-  return (
-    <div
-      className="flex items-center gap-1 border-t px-3 py-2"
-      style={{ borderColor: "var(--nt-border)" }}
-    >
-      <button
-        title="Collapse sidebar (⌘S)"
-        onClick={() => void nt().uiSetSidebarCollapsed(true)}
-        className="nt-r-sm p-2 transition-colors hover:bg-[var(--nt-bg-hover)]"
-        style={{ color: "var(--nt-text-3)" }}
-      >
-        <PanelLeftClose size={16} strokeWidth={1.75} />
-      </button>
-      <button
-        title="Toggle agent panel"
-        onClick={() =>
-          void nt().uiSetAgentPanelOpen(!(snapshot?.agentPanelOpen ?? false))
-        }
-        className="nt-r-sm p-2 transition-colors hover:bg-[var(--nt-bg-hover)]"
-        style={{
-          color: snapshot?.agentPanelOpen
-            ? "var(--nt-accent)"
-            : "var(--nt-text-3)",
-        }}
-      >
-        <Sparkles size={16} strokeWidth={1.75} />
-      </button>
-      <button
-        title="Settings"
-        onClick={() => void nt().uiSetSettingsOpen(true)}
-        className="nt-r-sm ml-auto p-2 transition-colors hover:bg-[var(--nt-bg-hover)]"
-        style={{ color: "var(--nt-text-3)" }}
-      >
-        <Settings size={16} strokeWidth={1.75} />
-      </button>
     </div>
   );
 }

@@ -35,14 +35,15 @@ export interface RouteResult {
  */
 export async function routeChat(
   deps: RouterDeps,
-  opts: { task: AgentTask; messages: LlmMessage[]; tools: LlmToolDef[]; signal?: AbortSignal }
+  opts: { task: AgentTask; messages: LlmMessage[]; tools: LlmToolDef[]; signal?: AbortSignal; onToken?: (delta: string) => void }
 ): Promise<RouteResult> {
   const router = new ModelRouter(deps);
   const r = await router.complete({
     task: opts.task,
     messages: opts.messages,
     tools: opts.tools,
-    signal: opts.signal
+    signal: opts.signal,
+    onToken: opts.onToken
   });
   return {
     result: { text: r.text, toolCalls: r.toolCalls },

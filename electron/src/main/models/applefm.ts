@@ -102,7 +102,12 @@ export class AppleFmClient {
       return this.probeCache;
     }
 
-    const child = spawn(binary, ['--probe'], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(binary, ['--probe'], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      // Defensive: the bridge child must never surface a console/Terminal
+      // window on macOS.
+      windowsHide: true,
+    });
     const result = await this.readFirstJsonLine<BridgeProbeOutput>(child, PROBE_TIMEOUT_MS);
     this.probeCache = result.ok
       ? { available: result.json.available, reason: result.json.reason }
@@ -138,7 +143,12 @@ export class AppleFmClient {
       messages: messages.map((m) => ({ role: m.role, content: m.content })),
     });
 
-    const child = spawn(binary, [], { stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(binary, [], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      // Defensive: the bridge child must never surface a console/Terminal
+      // window on macOS.
+      windowsHide: true,
+    });
     const writeErr = await new Promise<string | null>((resolve) => {
       child.stdin!.write(request + '\n', (err) => resolve(err ? String(err) : null));
     });

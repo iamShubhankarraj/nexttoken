@@ -161,77 +161,117 @@ export class LlamaServer {
    * Returns the base URL, e.g. http://127.0.0.1:8080.
    */
   async start(entry: ModelEntry, slot: ServerSlot): Promise<string> {
+    const r = await this.withLock(slot, () => this.spawnLocked(entry, slot));
+    return r.baseUrl;
+  }
+
+  /**
+   * Idempotent warm-up: returns the running server when `entry` is already
+   * serving on `slot` — no stop, no respawn. A *different* model still
+   * replaces the old one (each slot holds exactly one server), so the
+   * single-server-per-slot invariant is unchanged; we just stop paying
+   * spawn + model-load latency when the right model is already up.
+   */
+  async ensureWarm(entry: ModelEntry, slot: ServerSlot): Promise<{
+    baseUrl: string;
+    /** True when the model was already serving — zero spawn/load cost. */
+    warm: boolean;
+    /** Overhead before the process existed: stop old server, sidecar, port. */
+    spawnMs: number;
+    /** Model load time: spawn → /health ready. */
+    loadMs: number;
+  }> {
     return this.withLock(slot, async () => {
-      const ggufPath = path.join(this.modelsDir, `${entry.id}.gguf`);
-      if (!fs.existsSync(ggufPath)) {
-        throw new Error(`Model "${entry.name}" is not downloaded`);
+      const st = this.slots.get(slot);
+      if (st && st.alive && st.proc.exitCode === null && st.modelId === entry.id) {
+        return { baseUrl: st.baseUrl, warm: true, spawnMs: 0, loadMs: 0 };
       }
-      let mmprojPath: string | null = null;
-      if (slot === 'vision') {
-        mmprojPath = mmprojPathFor(this.modelsDir, entry);
-        if (!fs.existsSync(mmprojPath)) {
-          throw new Error(
-            `Vision projector for model "${entry.name}" is not downloaded ` +
-              `(expected ${path.basename(mmprojPath)})`
-          );
-        }
-      }
-
-      // Restart semantics: an occupied slot kills the old server first.
-      await this.stopLocked(slot);
-
-      const serverBin = await this.ensureSidecarFn('llama-server', this.binDir);
-      const port = await freePort();
-      const baseUrl = `http://127.0.0.1:${port}`;
-
-      const args = [
-        '-m', ggufPath,
-        '--host', '127.0.0.1',
-        '--port', String(port),
-        '--ctx-size', String(CTX_SIZE),
-        // Offload all layers to the Apple Silicon GPU (unified memory).
-        '-ngl', '99',
-        '--threads', String(Math.max(1, os.cpus().length - 1)),
-      ];
-      if (slot === 'vision' && mmprojPath) {
-        args.push('--mmproj', mmprojPath);
-      }
-
-      const proc = spawn(serverBin, args, {
-        stdio: ['ignore', 'ignore', 'pipe'],
-        windowsHide: true,
-      });
-
-      const state: SlotState = {
-        proc,
-        modelId: entry.id,
-        port,
-        baseUrl,
-        alive: true,
-        stderrTail: '',
-      };
-      proc.stderr?.on('data', (d: Buffer) => appendTail(state, d));
-      proc.on('error', (err) => {
-        appendTail(state, Buffer.from(`spawn error: ${err.message}\n`));
-      });
-      proc.on('exit', () => {
-        state.alive = false;
-      });
-      this.slots.set(slot, state);
-
-      try {
-        await this.waitReady(state, entry);
-      } catch (e) {
-        state.alive = false;
-        this.slots.delete(slot);
-        await killProc(proc);
-        const tail = state.stderrTail.trim();
-        const detail = tail ? `\nllama-server stderr:\n${tail}` : '';
-        const msg = e instanceof Error ? e.message : String(e);
-        throw new Error(`Failed to start local model "${entry.name}" on slot "${slot}": ${msg}${detail}`);
-      }
-      return baseUrl;
+      const r = await this.spawnLocked(entry, slot);
+      return { ...r, warm: false };
     });
+  }
+
+  private async spawnLocked(
+    entry: ModelEntry,
+    slot: ServerSlot
+  ): Promise<{ baseUrl: string; spawnMs: number; loadMs: number }> {
+    const t0 = Date.now();
+    const ggufPath = path.join(this.modelsDir, `${entry.id}.gguf`);
+    if (!fs.existsSync(ggufPath)) {
+      throw new Error(`Model "${entry.name}" is not downloaded`);
+    }
+    let mmprojPath: string | null = null;
+    if (slot === 'vision') {
+      mmprojPath = mmprojPathFor(this.modelsDir, entry);
+      if (!fs.existsSync(mmprojPath)) {
+        throw new Error(
+          `Vision projector for model "${entry.name}" is not downloaded ` +
+            `(expected ${path.basename(mmprojPath)})`
+        );
+      }
+    }
+
+    // Restart semantics: an occupied slot kills the old server first.
+    await this.stopLocked(slot);
+
+    const serverBin = await this.ensureSidecarFn('llama-server', this.binDir);
+    const port = await freePort();
+    const baseUrl = `http://127.0.0.1:${port}`;
+
+    const args = [
+      '-m', ggufPath,
+      '--host', '127.0.0.1',
+      '--port', String(port),
+      '--ctx-size', String(CTX_SIZE),
+      '--threads', String(Math.max(1, os.cpus().length - 1)),
+    ];
+    // GPU offload: Metal on macOS (Apple Silicon unified memory), CUDA on
+    // Linux where a GPU exists. llama.cpp falls back to CPU automatically
+    // when there is nothing to offload to, so this is safe on CPU-only
+    // machines too.
+    if (process.platform === 'darwin' || process.platform === 'linux') {
+      args.push('-ngl', '99');
+    }
+    if (slot === 'vision' && mmprojPath) {
+      args.push('--mmproj', mmprojPath);
+    }
+
+    const proc = spawn(serverBin, args, {
+      stdio: ['ignore', 'ignore', 'pipe'],
+      windowsHide: true,
+    });
+    const tSpawned = Date.now();
+
+    const state: SlotState = {
+      proc,
+      modelId: entry.id,
+      port,
+      baseUrl,
+      alive: true,
+      stderrTail: '',
+    };
+    proc.stderr?.on('data', (d: Buffer) => appendTail(state, d));
+    proc.on('error', (err) => {
+      appendTail(state, Buffer.from(`spawn error: ${err.message}\n`));
+    });
+    proc.on('exit', () => {
+      state.alive = false;
+    });
+    this.slots.set(slot, state);
+
+    try {
+      await this.waitReady(state, entry);
+    } catch (e) {
+      state.alive = false;
+      this.slots.delete(slot);
+      await killProc(proc);
+      const tail = state.stderrTail.trim();
+      const detail = tail ? `\nllama-server stderr:\n${tail}` : '';
+      const msg = e instanceof Error ? e.message : String(e);
+      throw new Error(`Failed to start local model "${entry.name}" on slot "${slot}": ${msg}${detail}`);
+    }
+    const tReady = Date.now();
+    return { baseUrl, spawnMs: tSpawned - t0, loadMs: tReady - tSpawned };
   }
 
   private async waitReady(state: SlotState, entry: ModelEntry): Promise<void> {
