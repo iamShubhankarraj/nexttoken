@@ -2,27 +2,31 @@
  * MediaViewfinder — the sidebar's lower scoop becomes a curved video
  * viewfinder for background media (video playing in a NON-active tab).
  *
- * The progress line is the scoop's curve itself: an SVG path sampling the
- * EXACT Bézier geometry of the liquid seam's right edge (published per
- * frame by the liquid engine as --scoop-d), so the timeline bends with the
- * sidebar — never a straight vertical segment. The played portion glows
- * ember #E8A33D; the track is a thin translucent line hugging the edge.
+ * There is NO card, bubble, or background rect: the viewfinder is ONLY
+ *   timeline bar | control buttons | thumbnail film
+ * laid out across the sidebar's liquid curve.
+ *
+ * The timeline IS the scoop's curve: every frame (while visible) the exact
+ * Bézier geometry is rebuilt from the live sidebar width (--sbw) and morph
+ * (--media-t) with the same getScoopMetrics() the seam builder uses, and
+ * written straight onto the paths' `d` attributes. No CSS-var indirection,
+ * so the played ember line (#E8A33D) can never render as a straight segment.
+ *
+ * Layout (right to left, from the seam inward — all inside the curve):
+ *   timeline (on the curve) | play/pause + PiP buttons | thin curved
+ *   thumbnail film (a 36px film strip whose BOTH edges follow the curve).
+ * The film shows live ~2.5fps capturePage frames; it renders nothing at all
+ * until a frame arrives (no placeholder rect, ever).
  *
  * Drag-to-seek works on the curve (nearest-point hit testing), with a
- * current/total tooltip at the pointer. A live miniature preview
- * (~2.5fps frames captured in main via webContents.capturePage) sits
- * inside the curve, and play/pause + PiP controls are seated at its base.
+ * current/total tooltip at the pointer.
  *
  * Appears ONLY when the user is not on the media tab (media.background).
- * Fades with the sidebar's spring language via data-on.
- *
- * State arrives ~1Hz from main; the progress arc glides between polls
- * with a 1s linear transition (no React rerender per frame). Dragging
- * writes the arc directly through refs on a rAF throttle.
  */
 import { useEffect, useRef, useState } from "react";
 import { Pause, PictureInPicture2, Play } from "lucide-react";
 import type { MediaState } from "../../shared/ipc";
+import { getScoopMetrics } from "../hooks/useLiquidSidebar";
 import { nt } from "../nt";
 
 /** Subscribe to the ~1Hz background-media state pushed from main. */
@@ -52,6 +56,13 @@ function formatTime(sec: number): string {
 
 /** pathLength normalisation: progress is 0..100 along the curve. */
 const ARC_UNITS = 100;
+/** Film strip: width in px; offsets are measured leftwards from the curve. */
+const FILM_NEAR = 69;
+const FILM_FAR = 105;
+/** Button row: center offset leftwards from the curve at notch height. */
+const BTN_OFFSET = 34;
+/** Curve samples for the film strip polygon. */
+const FILM_SAMPLES = 48;
 
 export function MediaViewfinder({ media }: { media: MediaState | null }) {
   // Only for background media — never while the media tab is active.
@@ -61,13 +72,23 @@ export function MediaViewfinder({ media }: { media: MediaState | null }) {
   const paused = !!media?.paused;
   const tabId = media?.tabId;
 
+  const rootRef = useRef<HTMLDivElement>(null);
+  const trackRef = useRef<SVGPathElement>(null);
   const progressRef = useRef<SVGPathElement>(null);
   const hitRef = useRef<SVGPathElement>(null);
+  /** Always-mounted invisible path: the geometry source for the film strip
+      and button row, even when the timeline itself is hidden (live). */
+  const geoRef = useRef<SVGPathElement>(null);
+  const filmPolyRef = useRef<SVGPolygonElement>(null);
+  const filmEdgeRef = useRef<SVGPolygonElement>(null);
+  const filmImgRef = useRef<SVGImageElement>(null);
+  const btnsRef = useRef<HTMLDivElement>(null);
   const tipRef = useRef<HTMLDivElement>(null);
   const [thumb, setThumb] = useState<string | null>(null);
   const dragRatio = useRef(0);
   const dragging = useRef(false);
   const raf = useRef(0);
+  const geoRaf = useRef(0);
   const [dragOn, setDragOn] = useState(false);
   const [hoverOn, setHoverOn] = useState(false);
   const [tip, setTip] = useState("");
@@ -94,7 +115,122 @@ export function MediaViewfinder({ media }: { media: MediaState | null }) {
     setTip(`${formatTime(media?.position ?? 0)} / ${formatTime(duration)}`);
   }, [media?.position, duration, on]);
 
-  useEffect(() => () => cancelAnimationFrame(raf.current), []);
+  useEffect(() => () => {
+    cancelAnimationFrame(raf.current);
+    cancelAnimationFrame(geoRaf.current);
+  }, []);
+
+  /**
+   * Geometry loop: rebuild the EXACT scoop curve every frame from the live
+   * sidebar width and morph (same function, same params the seam uses) and
+   * write it directly onto the paths. The film strip polygon and the button
+   * row are derived from the same metrics, so timeline | buttons | film can
+   * never drift apart or from the sidebar's curve.
+   */
+  useEffect(() => {
+    if (!on) {
+      cancelAnimationFrame(geoRaf.current);
+      geoRaf.current = 0;
+      return;
+    }
+    const root = rootRef.current;
+    const aside = root?.closest("aside.nt-liquid-sidebar") as HTMLElement | null;
+    if (!root || !aside) return;
+
+    const paint = () => {
+      geoRaf.current = requestAnimationFrame(paint);
+      let w = 0;
+      let mt = 1;
+      try {
+        const cs = getComputedStyle(aside);
+        w = parseFloat(cs.getPropertyValue("--sbw")) || 0;
+        const m = parseFloat(cs.getPropertyValue("--media-t"));
+        if (Number.isFinite(m)) mt = Math.min(1, Math.max(0, m));
+      } catch {
+        /* fall through to fallbacks */
+      }
+      if (!w) w = aside.clientWidth || 180;
+      const h = aside.clientHeight || 600;
+      const m = getScoopMetrics(w, h, mt);
+
+      const d = m.d;
+      geoRef.current?.setAttribute("d", d);
+      trackRef.current?.setAttribute("d", d);
+      progressRef.current?.setAttribute("d", d);
+      hitRef.current?.setAttribute("d", d);
+
+      // Film strip: sample the curve; both edges are constant leftward
+      // offsets, so the strip hugs the curve exactly — curved on both sides.
+      // Sampled from the always-mounted geometry path (the timeline paths
+      // unmount for live streams).
+      const path = geoRef.current;
+      let total = 0;
+      try {
+        total = path?.getTotalLength() ?? 0;
+      } catch {
+        total = 0;
+      }
+      if (total > 0 && filmPolyRef.current) {
+        const near: string[] = [];
+        const far: string[] = [];
+        let minY = Infinity;
+        let maxY = -Infinity;
+        let minX = Infinity;
+        for (let i = 0; i <= FILM_SAMPLES; i++) {
+          let p: DOMPoint;
+          try {
+            p = path!.getPointAtLength((total * i) / FILM_SAMPLES);
+          } catch {
+            break;
+          }
+          near.push(`${(p.x - FILM_NEAR).toFixed(1)},${p.y.toFixed(1)}`);
+          far.push(`${(p.x - FILM_FAR).toFixed(1)},${p.y.toFixed(1)}`);
+          if (p.y < minY) minY = p.y;
+          if (p.y > maxY) maxY = p.y;
+          if (p.x - FILM_FAR < minX) minX = p.x - FILM_FAR;
+        }
+        far.reverse();
+        const pts = [...near, ...far].join(" ");
+        filmPolyRef.current.setAttribute("points", pts);
+        filmEdgeRef.current?.setAttribute("points", pts);
+        // Fit the live frame into the strip's bounding box (slice-cropped).
+        const img = filmImgRef.current;
+        if (img && minY < maxY) {
+          img.setAttribute("x", minX.toFixed(1));
+          img.setAttribute("y", minY.toFixed(1));
+          img.setAttribute("width", (FILM_FAR - FILM_NEAR).toFixed(1));
+          img.setAttribute("height", (maxY - minY).toFixed(1));
+        }
+      }
+
+      // Button row: between the timeline and the film, at notch height.
+      // Sample the curve at the notch to sit exactly on the local geometry.
+      if (btnsRef.current && total > 0 && path) {
+        let cx = m.notch.x + m.d2 * 0.48;
+        try {
+          // Binary search the curve for the point nearest the notch height.
+          let lo = 0;
+          let hi = total;
+          for (let k = 0; k < 24; k++) {
+            const mid = (lo + hi) / 2;
+            const p = path.getPointAtLength(mid);
+            if (p.y < m.notch.y) lo = mid;
+            else hi = mid;
+          }
+          cx = path.getPointAtLength((lo + hi) / 2).x;
+        } catch {
+          /* keep the estimate */
+        }
+        btnsRef.current.style.transform =
+          `translate(${(cx - BTN_OFFSET).toFixed(1)}px, ${m.notch.y.toFixed(1)}px) translate(-50%, -50%)`;
+      }
+    };
+    paint();
+    return () => {
+      cancelAnimationFrame(geoRaf.current);
+      geoRaf.current = 0;
+    };
+  }, [on]);
 
   /**
    * Map a pointer position to the nearest point on the scoop curve.
@@ -209,10 +345,13 @@ export function MediaViewfinder({ media }: { media: MediaState | null }) {
   const showTip = on && duration > 0 && (dragOn || hoverOn);
 
   return (
-    <div className="nt-media-viewfinder" data-on={on ? "true" : "false"} aria-hidden={!on}>
-      {/* Seam-hugging progress: the scoop's exact curve, published per
-          frame by the liquid engine as --scoop-d. */}
+    <div ref={rootRef} className="nt-media-viewfinder" data-on={on ? "true" : "false"} aria-hidden={!on}>
+      {/* Seam timeline: the scoop's exact curve, written per frame by the
+          geometry loop above — the played portion glows ember. */}
       <svg className="nt-vf-seam" aria-hidden={!showTimeline}>
+        {/* Invisible geometry source: always mounted while on, so the film
+            strip and button row track the curve even for live streams. */}
+        {on && <path ref={geoRef} className="nt-vf-seam-geo" />}
         {showTimeline && (
           <g
             role="slider"
@@ -222,10 +361,9 @@ export function MediaViewfinder({ media }: { media: MediaState | null }) {
             aria-valuenow={Math.round(media?.position ?? 0)}
             aria-valuetext={tip}
           >
-            <path pathLength={ARC_UNITS} className="nt-vf-seam-track" />
+            <path ref={trackRef} pathLength={ARC_UNITS} className="nt-vf-seam-track" />
             <path
               ref={progressRef}
-             
               pathLength={ARC_UNITS}
               className="nt-vf-seam-progress"
               strokeDasharray={ARC_UNITS}
@@ -235,7 +373,6 @@ export function MediaViewfinder({ media }: { media: MediaState | null }) {
             {/* Wide invisible hit lane for drag-seek along the curve. */}
             <path
               ref={hitRef}
-             
               className="nt-vf-seam-hit"
               onPointerDown={beginDrag}
               onPointerMove={moveDrag}
@@ -246,39 +383,32 @@ export function MediaViewfinder({ media }: { media: MediaState | null }) {
             />
           </g>
         )}
-      </svg>
-
-      {/* Live miniature preview + transport, seated inside the curve. */}
-      <div className="nt-vf-cluster">
-        <svg className="nt-vf-thumb-svg" width="96" height="128" viewBox="0 0 96 128">
-          <defs>
-            <clipPath id="nt-vf-clip">
-              <rect x="12" y="16" width="72" height="96" rx="12" />
-            </clipPath>
-          </defs>
-          {thumb ? (
-            <g clipPath="url(#nt-vf-clip)">
+        {/* Thumbnail film: a thin strip hugging the curve, both edges
+            curved. Renders ONLY when a live frame has arrived — no
+            placeholder, no card, no bubble. */}
+        {on && thumb && (
+          <g>
+            <defs>
+              <clipPath id="nt-vf-film-clip">
+                <polygon ref={filmPolyRef} points="" />
+              </clipPath>
+            </defs>
+            <g clipPath="url(#nt-vf-film-clip)">
               <image
+                ref={filmImgRef}
                 href={thumb}
-                x="12"
-                y="16"
-                width="72"
-                height="96"
                 preserveAspectRatio="xMidYMid slice"
               />
-              <rect x="12" y="16" width="72" height="96" rx="12" className="nt-vf-frame-edge" />
             </g>
-          ) : (
-            <rect x="12" y="16" width="72" height="96" rx="12" className="nt-vf-empty" />
-          )}
-          {on && live && (
-            <g>
-              <circle cx="26" cy="28" r="4" className="nt-vf-live-dot" />
-              <text x="34" y="32" className="nt-vf-live-text">LIVE</text>
-            </g>
-          )}
-        </svg>
-        <div className="nt-vf-controls">
+            <polygon ref={filmEdgeRef} points="" className="nt-vf-film-edge" />
+          </g>
+        )}
+      </svg>
+
+      {/* Transport: play/pause + PiP, seated between the timeline and the
+          film — inside the curve, never outside or below. */}
+      {on && (
+        <div ref={btnsRef} className="nt-vf-btns">
           <button
             className="nt-vf-btn nt-vf-play"
             title={paused ? "Play" : "Pause"}
@@ -300,7 +430,7 @@ export function MediaViewfinder({ media }: { media: MediaState | null }) {
             <PictureInPicture2 size={14} strokeWidth={1.75} />
           </button>
         </div>
-      </div>
+      )}
 
       {/* Seek tooltip riding the curve. */}
       {showTip && (

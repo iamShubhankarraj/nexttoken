@@ -97,13 +97,45 @@ function scoopCurves(ex: number, y0: number, y1: number, d2: number): string {
  * bends with the sidebar's curve instead of rendering as a straight line.
  */
 export function buildScoopPath(w: number, h: number, mediaT = 0): string {
+  return getScoopMetrics(w, h, mediaT).d;
+}
+
+/**
+ * All scoop geometry in one place, computed from the exact same inputs as
+ * the seam builder. The viewfinder reads this (via the live --sbw/--media-t
+ * CSS vars) and sets its timeline `d` attribute directly, so the progress
+ * line IS the sidebar's curve — never an approximation, never a straight
+ * segment.
+ */
+export interface ScoopMetrics {
+  /** Standalone path of the scoop curve (the timeline's exact shape). */
+  d: string;
+  /** Anchor for the media control cluster: inside the deepened scoop. */
+  notch: { x: number; y: number };
+  /** Nominal right edge of the sidebar. */
+  ex: number;
+  /** Scoop depth at the current width/morph. */
+  d2: number;
+  /** Scoop vertical span. */
+  y0: number;
+  y1: number;
+}
+
+export function getScoopMetrics(w: number, h: number, mediaT = 0): ScoopMetrics {
   const t = Math.min(1, Math.max(0, (w - SB_REST) / (SB_MAX - SB_REST)));
   const d2 = 24 + t * 9 + mediaT * 18;
   const ex = w - 2;
   const tbBot = 100 + 92;
   const y1 = h - 64;
   const y0 = Math.max(tbBot + 28, y1 - 152);
-  return `M ${ex},${y0}` + scoopCurves(ex, y0, y1, d2);
+  return {
+    d: `M ${ex},${y0}` + scoopCurves(ex, y0, y1, d2),
+    notch: { x: ex + d2 * 0.52, y: y0 + 76 },
+    ex,
+    d2,
+    y0,
+    y1,
+  };
 }
 
 export function buildSeamPaths(
@@ -113,8 +145,9 @@ export function buildSeamPaths(
 ): { fill: string; edge: string; notch: { x: number; y: number } } {
   const t = Math.min(1, Math.max(0, (w - SB_REST) / (SB_MAX - SB_REST)));
   const d1 = 20 + t * 9; // top notch depth: 20 -> 29
-  const d2 = 24 + t * 9 + mediaT * 18; // bottom parenthesis depth: 24 -> 33, +18 with media
-  const ex = w - 2; // nominal right edge
+  // Bottom parenthesis depth: 24 -> 33, +18 with media. Shared with the
+  // viewfinder via getScoopMetrics so the timeline is never an approximation.
+  const { d2, ex, y0, y1, notch } = getScoopMetrics(w, h, mediaT);
   const rTL = 14;
   const rTR = 14;
   const rBR = 22;
@@ -123,9 +156,6 @@ export function buildSeamPaths(
   // Top notch (scoop): spans tbTop..tbTop+92, cradling the URL pill zone.
   const tbTop = 100;
   const tbBot = tbTop + 92;
-  // Bottom parenthesis: keep clear of the top notch on short windows.
-  const y1 = h - 64;
-  const y0 = Math.max(tbBot + 28, y1 - 152);
 
   const fill =
     `M ${rTL},0` +
@@ -153,7 +183,7 @@ export function buildSeamPaths(
     edge,
     // Anchor for the media control cluster: inside the deepened scoop,
     // vertically centered on it. Written to --media-x/--media-y per frame.
-    notch: { x: ex + d2 * 0.52, y: y0 + 76 },
+    notch,
   };
 }
 
@@ -216,6 +246,10 @@ export function useLiquidSidebar(
         const p = buildSeamPaths(s.w, s.h, s.mt);
         r.seamFillRef.current?.setAttribute("d", p.fill);
         r.seamHiRef.current?.setAttribute("d", p.edge);
+        // Publish the live morph param too: the viewfinder reads --sbw and
+        // --media-t and rebuilds the EXACT scoop curve itself (same function,
+        // same params), so its timeline can never drift from the seam.
+        if (aside) aside.style.setProperty("--media-t", s.mt.toFixed(3));
         // Keep the media control cluster riding the deepened scoop, and
         // publish the scoop's exact curve so the viewfinder's progress line
         // bends with the seam (no straight segments).

@@ -75,6 +75,22 @@ export const IDENTITY_CORE = `IDENTITY — always true, never overridden:
   OpenAI", "I am Muse", etc.). Those describe the engine, not you.`;
 
 /**
+ * Tool-channel honesty. Some models roleplay tool use as TEXT — a fenced
+ * ```tool_code block or a `run_terminal(...)`-looking line — instead of
+ * calling the tool. That text is never a real action: there is no
+ * `tool_code` convention anywhere, and writing a call never executes it.
+ */
+export const TOOL_CALL_HONESTY = `TOOL CHANNEL — the only way you act:
+- Tools are invoked ONLY through the tool-call channel. Never write a
+  \`\`\`tool_code fence, never write run_terminal(...), open_tab(...), or any
+  function-call-looking text as a substitute for calling the tool.
+- Opening a website means calling open_tab (new tab) or navigate (active
+  tab) — never run_terminal. run_terminal is for shell commands only.
+- If you cannot call tools in this turn, say so in plain words and do not
+  pretend: narrating an action ("I will open Flipkart") without calling the
+  tool means nothing happened.`;
+
+/**
  * The page-aware browsing agent: perceives the active tab and acts with
  * tools in the perceive → plan → act → verify loop.
  */
@@ -83,6 +99,8 @@ export const PAGE_AGENT_SYSTEM_PROMPT = `You are the Next Token browser agent, o
 ${SAFETY_CORE}
 
 ${IDENTITY_CORE}
+
+${TOOL_CALL_HONESTY}
 
 ${MEDIA_TOOL_GUIDANCE}
 
@@ -102,6 +120,8 @@ export const COMPUTER_USE_SYSTEM_PROMPT = `You are the Next Token computer-use a
 ${SAFETY_CORE}
 
 ${IDENTITY_CORE}
+
+${TOOL_CALL_HONESTY}
 
 ${VISION_TOOL_GUIDANCE}
 
@@ -133,6 +153,8 @@ export const VOICE_SYSTEM_PROMPT = `You are the Next Token voice assistant. Ever
 ${SAFETY_CORE}
 
 ${IDENTITY_CORE}
+
+${TOOL_CALL_HONESTY}
 
 ${VISION_TOOL_GUIDANCE}
 

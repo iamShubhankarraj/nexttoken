@@ -543,7 +543,15 @@ input[type="color"].nt-color::-webkit-color-swatch {
 .nt-vf-seam-hit {
   fill: none;
   stroke-linecap: round;
-  d: var(--scoop-d);
+  /* NOTE: the `d` attribute is written per frame by the geometry loop in
+     MediaViewfinder (exact scoop curve). Do NOT add a CSS `d` rule here —
+     it would override the attribute and could render a straight segment. */
+}
+/* Invisible geometry source for the film strip + button row. */
+.nt-vf-seam-geo {
+  fill: none;
+  stroke: none;
+  pointer-events: none;
 }
 .nt-vf-seam-track {
   stroke: rgba(255, 255, 255, 0.16);
@@ -566,36 +574,27 @@ input[type="color"].nt-color::-webkit-color-swatch {
   cursor: pointer;
   touch-action: none;
 }
-/* Live miniature preview + transport cluster, seated inside the curve.
-   Rides the seam via --media-x / --media-y written by the liquid engine. */
-.nt-vf-cluster {
+/* Transport: play/pause + PiP, seated between the timeline and the film —
+   inside the curve, never outside or below. Positioned per frame by the
+   geometry loop (left/top via transform). No card, no bubble, no background. */
+.nt-vf-btns {
   position: absolute;
-  left: var(--media-x, 190px);
-  top: var(--media-y, 50%);
-  transform: translate(-50%, -56%) scale(var(--media-scale, 0.85));
+  left: 0;
+  top: 0;
   display: flex;
-  flex-direction: column;
   align-items: center;
-  transition: transform 240ms cubic-bezier(0.34, 1.4, 0.64, 1);
+  gap: 6px;
   pointer-events: none;
 }
-.nt-media-viewfinder[data-on="true"] .nt-vf-cluster {
-  --media-scale: 1;
+.nt-media-viewfinder[data-on="true"] .nt-vf-btns {
   pointer-events: auto;
 }
-.nt-vf-thumb-svg {
-  display: block;
-  overflow: visible;
-}
-/* Live miniature preview masked into the curve. */
-.nt-vf-empty {
-  fill: rgba(255, 255, 255, 0.06);
-  stroke: rgba(255, 255, 255, 0.1);
-  stroke-width: 1;
-}
-.nt-vf-frame-edge {
+/* Thin curved thumbnail film hugging the timeline. The image is clipped to
+   the strip polygon; the edge is a hairline ember stroke. Nothing renders
+   until a live frame arrives. */
+.nt-vf-film-edge {
   fill: none;
-  stroke: rgba(232, 163, 61, 0.35);
+  stroke: rgba(232, 163, 61, 0.4);
   stroke-width: 1;
 }
 .nt-vf-live-dot {
@@ -607,7 +606,8 @@ input[type="color"].nt-color::-webkit-color-swatch {
   font-weight: 700;
   letter-spacing: 0.08em;
 }
-/* Transport seated at the base of the curve. */
+/* Transport seated at the base of the curve. (Legacy: superseded by
+   .nt-vf-btns, kept for no-longer-mounted markup safety.) */
 .nt-vf-controls {
   display: flex;
   align-items: center;

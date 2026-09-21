@@ -29,7 +29,7 @@ export const TOOL_DEFS: LlmToolDef[] = [
   },
   {
     name: 'navigate',
-    description: 'Navigate the active tab to a URL (or search query).',
+    description: 'Navigate the active tab to a URL (or search query). For opening a website, use open_tab or navigate — NEVER run_terminal; the terminal cannot open websites.',
     parameters: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'], additionalProperties: false }
   },
   {
@@ -70,7 +70,7 @@ export const TOOL_DEFS: LlmToolDef[] = [
   },
   {
     name: 'open_tab',
-    description: 'Open a URL in a new tab and switch to it.',
+    description: 'Open a URL in a new tab and switch to it. THIS is how you open a website — never use run_terminal for URLs or websites; run_terminal runs shell commands only and cannot open a browser tab.',
     parameters: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'], additionalProperties: false }
   },
   {
@@ -85,7 +85,7 @@ export const TOOL_DEFS: LlmToolDef[] = [
   },
   {
     name: 'run_terminal',
-    description: 'Run a shell command on the user\'s computer (timeout 60s). ALWAYS shows the user a confirmation dialog first — if they cancel, accept it gracefully and suggest alternatives. Never attempt to bypass the dialog.',
+    description: 'Run a shell command on the user\'s computer (timeout 60s). SHELL COMMANDS ONLY — it cannot open websites or URLs; use open_tab for those. ALWAYS shows the user a confirmation dialog first — if they cancel, accept it gracefully and suggest alternatives. Never attempt to bypass the dialog.',
     parameters: {
       type: 'object',
       properties: {

@@ -8,6 +8,7 @@ import { routeChat, type RouterDeps } from './router';
 import { COMPUTER_USE_SYSTEM_PROMPT, VOICE_SYSTEM_PROMPT } from './prompts';
 import { snapshotPage, formatSnapshot } from './perceive';
 import { TOOL_DEFS, executeTool, summarizeToolCall, type ToolCtx, type ToolOutcome } from './tools';
+import { detectFakeToolCalls, stripFakeToolCalls, hasUnparsedToolCodeFence } from './fakeToolCall';
 import { isVisionRequiredError } from '../models/task-models';
 
 export interface AgentRuntime {
@@ -28,6 +29,9 @@ export interface AgentRuntime {
 
 const activeRuns = new Map<string, AbortController>();
 const MAX_STEPS = 12;
+
+/** Tool names the fake-call detector may match (every real tool). */
+const TOOL_NAMES: readonly string[] = TOOL_DEFS.map((t) => t.name);
 
 /**
  * THE single place tool calls get executed. Used by the outer agent loop for
@@ -155,7 +159,33 @@ async function runLoop(runId: string, userText: string, rt: AgentRuntime, signal
       const { text, toolCalls } = routed.result;
 
       if (toolCalls.length === 0) {
-        const final = text.trim() || '(no response)';
+        // Fake tool-call neutralization (applies to EVERY model): a turn
+        // with no real tool calls whose text roleplays one — a fenced
+        // ```tool_code block or `name(...)` syntax for a known tool — must
+        // never render as a completed action. A parseable call is routed
+        // through the REAL approval-gated executor and the loop continues
+        // so the model verifies the result; an ambiguous fence gets an
+        // honest message instead of silent roleplay.
+        const fakes = detectFakeToolCalls(text, TOOL_NAMES);
+        if (fakes.length > 0) {
+          const fake = fakes[0];
+          const narration = stripFakeToolCalls(text);
+          emit({
+            kind: 'message', runId, done: true,
+            text: '_(The model wrote that action as text instead of calling the tool — running it properly:)_',
+          });
+          if (narration) emit({ kind: 'message', runId, text: narration, done: true });
+          const content = await serveToolCall(ctx, emit, rt, runId, fake.name, fake.args);
+          convo.push({ role: 'assistant', content: narration || text });
+          convo.push({ role: 'tool', toolCallId: `fake-${randomUUID()}`, content });
+          continue;
+        }
+        const ambiguousFence = hasUnparsedToolCodeFence(text, TOOL_NAMES);
+        const cleanText = ambiguousFence ? stripFakeToolCalls(text) : text;
+        const final = (cleanText.trim() || '(no response)') +
+          (ambiguousFence
+            ? '\n\n_(The model described an action as text instead of taking it — nothing was executed.)_'
+            : '');
         const withNote = routed.fallbackNote ? `${final}\n\n_(${routed.fallbackNote})_` : final;
         emit({ kind: 'message', runId, text: withNote, done: true });
         store.pushHistory({ id: randomUUID(), role: 'assistant', text: withNote, at: Date.now() });
