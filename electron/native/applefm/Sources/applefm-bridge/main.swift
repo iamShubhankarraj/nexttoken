@@ -149,8 +149,9 @@ struct Bridge {
     // MARK: Availability
 
     /// Checks `#available(macOS 26, *)` AND the real model availability gate.
-    /// The `#available` branch is unreachable given the macOS 26 deployment
-    /// target; it is kept so the intent is explicit if the target ever changes.
+    /// The `#available` fallback is live when the deployment target is older
+    /// than macOS 26 (build.sh only ever builds on 26+, so in practice the
+    /// first branch is taken).
     static func modelAvailability() -> (available: Bool, reason: String?) {
         if #available(macOS 26, *) {
             switch SystemLanguageModel.default.availability {
@@ -243,7 +244,7 @@ struct Bridge {
             }
             return text
         } else {
-            // Unreachable with the macOS 26 deployment target.
+            // Only reachable with a deployment target older than macOS 26.
             throw BridgeError.modelUnavailable("requires macOS 26 (Tahoe) or later")
         }
     }

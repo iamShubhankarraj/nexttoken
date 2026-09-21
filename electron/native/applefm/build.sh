@@ -1,8 +1,10 @@
 #!/bin/bash
 # Build applefm-bridge and install it where Next Token looks for it.
 #
-# Run on a Mac with Xcode 26+ (the macOS 26 SDK ships the FoundationModels
-# framework). The script:
+# Run on a Mac with the macOS 26 SDK (ships with Xcode 26+ or the macOS 26 /
+# Tahoe command line tools). The Swift toolchain itself may be older than 6.2:
+# the package targets macOS 13+ and gates every FoundationModels API behind
+# #available(macOS 26, *). The script:
 #   1. checks the environment (macOS 26+, Swift/Xcode CLT, macOS 26 SDK),
 #   2. builds the release binary with `swift build`,
 #   3. installs it into every writable candidate location the Electron app
@@ -36,11 +38,17 @@ fi
 command -v swift >/dev/null 2>&1 || die "Swift not found — install Xcode 26+ from the App Store, or run: xcode-select --install"
 command -v xcrun >/dev/null 2>&1 || die "xcrun not found — install the Xcode 26+ command line tools: xcode-select --install"
 
-# The FoundationModels framework ships with the macOS 26 SDK (Xcode 26+).
+# The FoundationModels framework ships with the macOS 26 SDK (via Xcode 26+ or
+# the macOS 26 / Tahoe command line tools).
 SDK_VER="$(xcrun --show-sdk-version 2>/dev/null || echo "0")"
 SDK_MAJOR="${SDK_VER%%.*}"
 if [[ "$SDK_MAJOR" =~ ^[0-9]+$ ]] && [[ "$SDK_MAJOR" -lt 26 ]]; then
   die "macOS 26 SDK not found (SDK reports $SDK_VER) — install Xcode 26+ and select it: sudo xcode-select -s /Applications/Xcode.app"
+fi
+
+SDK_PATH="$(xcrun --show-sdk-path 2>/dev/null || true)"
+if [[ -z "$SDK_PATH" || ! -e "$SDK_PATH/System/Library/Frameworks/FoundationModels.framework" ]]; then
+  die "FoundationModels.framework not found in the macOS SDK (${SDK_PATH:-unknown}) — install Xcode 26+ from the App Store, then select it: sudo xcode-select -s /Applications/Xcode.app"
 fi
 
 # -- build --------------------------------------------------------------------

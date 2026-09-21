@@ -8,14 +8,17 @@ app can't touch from Node.
 
 ## Build (on a Mac)
 
-Requires Xcode 26+ (the macOS 26 SDK ships `FoundationModels`).
+Requires the macOS 26 SDK, which ships `FoundationModels` — via Xcode 26+ or
+the macOS 26 (Tahoe) command line tools. The Swift toolchain itself may be
+older than 6.2: the package targets macOS 13+ and every FoundationModels API
+use is guarded by `#available(macOS 26, *)`.
 
 ```bash
 cd electron/native/applefm
 ./build.sh
 ```
 
-This checks the environment (macOS 26+, Xcode 26+ with the macOS 26 SDK),
+This checks the environment (macOS 26+, macOS 26 SDK with FoundationModels),
 runs `swift build -c release`, installs the binary into every writable
 candidate location the Electron client probes — the installed app's
 `Contents/Resources/sidecars` (both `/Applications` and
