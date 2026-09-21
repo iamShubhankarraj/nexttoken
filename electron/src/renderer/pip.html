@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Next Token PiP</title>
+<style>
+  :root {
+    --ember: #e8a33d;
+    --charcoal: #211d18;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 100%; height: 100%;
+    background: transparent;
+    overflow: hidden;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+    -webkit-app-region: drag;
+    user-select: none;
+  }
+  .pip-shell {
+    position: absolute; inset: 0;
+    border-radius: 14px;
+    overflow: hidden;
+    background: var(--charcoal);
+    border: 1px solid rgba(232, 163, 61, 0.28);
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55);
+  }
+  #frame {
+    position: absolute; inset: 0;
+    width: 100%; height: 100%;
+    object-fit: cover;
+    background: #14110d;
+    pointer-events: none;
+  }
+  .pip-empty {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    color: rgba(255, 255, 255, 0.45);
+    font-size: 12px; letter-spacing: 0.04em;
+  }
+  .pip-bar {
+    position: absolute; left: 0; right: 0; bottom: 0;
+    display: flex; align-items: center; justify-content: center;
+    gap: 10px;
+    padding: 10px 12px 12px;
+    background: linear-gradient(to top, rgba(10, 8, 6, 0.82), rgba(10, 8, 6, 0));
+    opacity: 0;
+    transition: opacity 180ms ease;
+    -webkit-app-region: no-drag;
+  }
+  .pip-shell:hover .pip-bar { opacity: 1; }
+  .pip-btn {
+    -webkit-app-region: no-drag;
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 34px; height: 34px;
+    border: none; border-radius: 999px;
+    background: rgba(255, 255, 255, 0.1);
+    color: #fff;
+    cursor: pointer;
+    transition: background-color 150ms ease, transform 150ms ease;
+  }
+  .pip-btn:hover { background: rgba(232, 163, 61, 0.35); }
+  .pip-btn:active { transform: scale(0.92); }
+  .pip-btn.primary {
+    background: rgba(232, 163, 61, 0.22);
+    border: 1px solid rgba(232, 163, 61, 0.55);
+    color: var(--ember);
+  }
+  .pip-btn.primary:hover { background: rgba(232, 163, 61, 0.4); }
+  .pip-btn svg { display: block; }
+  .pip-title {
+    position: absolute; top: 8px; left: 12px;
+    font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase;
+    color: rgba(232, 163, 61, 0.75);
+    opacity: 0; transition: opacity 180ms ease;
+    pointer-events: none;
+  }
+  .pip-shell:hover .pip-title { opacity: 1; }
+</style>
+</head>
+<body>
+  <div class="pip-shell">
+    <div class="pip-empty" id="empty">Connecting…</div>
+    <img id="frame" alt="" />
+    <div class="pip-title">Next Token</div>
+    <div class="pip-bar">
+      <button class="pip-btn primary" id="playBtn" title="Play / pause" aria-label="Play or pause">
+        <svg id="iconPause" width="15" height="15" viewBox="0 0 16 16" fill="currentColor">
+          <rect x="2.5" y="2" width="4" height="12" rx="1.2"/><rect x="9.5" y="2" width="4" height="12" rx="1.2"/>
+        </svg>
+        <svg id="iconPlay" width="15" height="15" viewBox="0 0 16 16" fill="currentColor" style="display:none">
+          <path d="M4.5 2.6c0-.9 1-1.5 1.8-1L13 7c.8.5.8 1.6 0 2.1l-6.7 5.3c-.8.5-1.8-.1-1.8-1V2.6z"/>
+        </svg>
+      </button>
+      <button class="pip-btn" id="closeBtn" title="Close" aria-label="Close picture in picture">
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+          <path d="M2.5 2.5l9 9M11.5 2.5l-9 9"/>
+        </svg>
+      </button>
+    </div>
+  </div>
+<script>
+  (function () {
+    var api = window.ntPip;
+    var img = document.getElementById('frame');
+    var empty = document.getElementById('empty');
+    var playBtn = document.getElementById('playBtn');
+    var iconPlay = document.getElementById('iconPlay');
+    var iconPause = document.getElementById('iconPause');
+    var paused = false;
+
+    function setPaused(p) {
+      paused = p;
+      iconPlay.style.display = p ? 'block' : 'none';
+      iconPause.style.display = p ? 'none' : 'block';
+      playBtn.title = p ? 'Play' : 'Pause';
+    }
+
+    if (api && api.onFrame) {
+      api.onFrame(function (dataUrl) {
+        if (empty) { empty.style.display = 'none'; empty = null; }
+        img.src = dataUrl;
+      });
+    }
+    playBtn.addEventListener('click', function () {
+      if (!api) return;
+      api.toggle().then(function (r) {
+        setPaused(!!(r && r.paused));
+      }).catch(function () {});
+    });
+    document.getElementById('closeBtn').addEventListener('click', function () {
+      if (api) api.close().catch(function () {});
+    });
+    // Space toggles too.
+    document.addEventListener('keydown', function (e) {
+      if (e.code === 'Space') { e.preventDefault(); playBtn.click(); }
+      if (e.key === 'Escape' && api) { api.close().catch(function () {}); }
+    });
+  })();
+</script>
+</body>
+</html>

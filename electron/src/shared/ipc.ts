@@ -487,6 +487,25 @@ export interface AppleFmStatus {
   reason?: string;
 }
 
+/**
+ * Latest measured local-model (llama-server) turn. genTokens is estimated
+ * from streamed characters (~4 chars/token) because the SSE stream carries
+ * no server-side usage counters; tokensPerSec is measured over the
+ * generation window (first token → stream end).
+ */
+export interface LocalModelMetrics {
+  modelId: string;
+  at: number;
+  warm: boolean;
+  spawnMs: number;
+  loadMs: number;
+  firstTokenMs: number;
+  totalMs: number;
+  genChars: number;
+  genTokens: number;
+  tokensPerSec: number;
+}
+
 export type VoiceEngineState = 'idle' | 'listening' | 'transcribing' | 'thinking' | 'acting' | 'speaking';
 
 /** Voice settings. voiceControl routes STT transcripts into the brain (voice commands). */
@@ -609,17 +628,63 @@ export interface AdBlockStats {
 }
 
 /**
- * Playback state of the active tab's best video, pushed from main ~1Hz
- * while a video is present. Drives the sidebar's media notch.
+ * Playback state of the background media tab's best video, pushed from
+ * main ~1Hz while a video plays in a NON-active tab. Drives the sidebar's
+ * curved media viewfinder, which renders only while `background` is true.
  */
 export interface MediaState {
   hasVideo: boolean;
-  title?: string;
-  currentTime?: number;
-  duration?: number;
+  tabId?: string;
+  background?: boolean;
+  paused: boolean;
+  position: number;
+  duration: number;
   /** Duration unknown (NaN/Infinity): a live stream — timeline hides, transport stays. */
-  live?: boolean;
-  paused?: boolean;
+  live: boolean;
+  url: string;
+}
+
+/** A captured video frame for the viewfinder ribbon / custom PiP window. */
+export interface MediaThumb {
+  tabId: string;
+  dataUrl: string;
+}
+
+// -- Privacy & security → Advanced -------------------------------------------
+
+/** Persisted per-site privacy state (mirrors the store's privacy block). */
+export interface PrivacySnapshot {
+  permissions: Record<string, Record<string, 'allow' | 'block'>>;
+  defaults: Record<string, 'allow' | 'block' | 'ask'>;
+  popups: Record<string, 'allow' | 'block' | 'ask'>;
+  autoplay: Record<string, 'allow' | 'block'>;
+  muted: Record<string, boolean>;
+  historyCount: number;
+}
+
+/** Cookies & site data grouped per site. */
+export interface SiteDataSummary {
+  site: string;
+  origins: string[];
+  cookies: number;
+}
+
+/** One cookie's metadata (values never leave the main process). */
+export interface CookieDetail {
+  name: string;
+  domain: string;
+  path: string;
+  secure: boolean;
+  httpOnly: boolean;
+  session: boolean;
+  expirationDate?: number;
+}
+
+/** One visited page (newest first). */
+export interface HistoryEntry {
+  url: string;
+  title: string;
+  at: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -651,12 +716,12 @@ export interface NextTokenAPI {
   tabsCreate(opts?: { spaceId?: string; url?: string }): Promise<string>;
   tabsClose(tabId: string): Promise<void>;
   tabsActivate(tabId: string): Promise<void>;
-  /** Picture in Picture for the active tab's video. */
-  tabsPip(): Promise<{ ok: boolean; error?: string }>;
-  /** Seek the active tab's video to `ratio` (0..1) of its duration. */
-  mediaSeek(ratio: number): Promise<void>;
-  /** Toggle play/pause on the active tab's video. */
-  mediaToggle(): Promise<{ paused: boolean }>;
+  /** Custom Next Token PiP window for a tab's video (toggle). Defaults to the active tab. */
+  tabsPip(tabId?: string): Promise<{ ok: boolean; error?: string }>;
+  /** Seek the background media tab's video to `ratio` (0..1) of its duration. */
+  mediaSeek(ratio: number, tabId?: string): Promise<void>;
+  /** Toggle play/pause on the background media tab's video. */
+  mediaToggle(tabId?: string): Promise<{ paused: boolean }>;
   /** Zoom the active tab's guest content; returns the new zoom percent. */
   tabsZoom(mode: 'in' | 'out' | 'reset'): Promise<number>;
   /** Start find-in-page on the active tab. */
@@ -675,8 +740,34 @@ export interface NextTokenAPI {
   onFindResult(cb: (r: FindResult) => void): () => void;
   /** A popup was blocked (opener-scripted window we can't host). */
   onPopupBlocked(cb: (info: { url: string }) => void): () => void;
-  /** Media state pushed from main ~1Hz while the active tab has a video. */
+  /** Background media state pushed from main ~1Hz for the curved viewfinder. */
   onMediaState(cb: (s: MediaState) => void): () => void;
+  /** Live video frame (~2.5fps) for the viewfinder ribbon / PiP window. */
+  onMediaThumb(cb: (t: MediaThumb) => void): () => void;
+
+  // -- Privacy & security → Advanced ---------------------------------------
+  /** Full persisted privacy snapshot (permissions, defaults, popups, autoplay, muted). */
+  privacySnapshot(): Promise<PrivacySnapshot>;
+  /** Set (null = clear back to "ask") a per-site permission decision. */
+  privacySetPermission(origin: string, perm: string, decision: 'allow' | 'block' | null): Promise<PrivacySnapshot>;
+  /** Default policy for a permission type when no per-site decision exists. */
+  privacySetDefault(perm: string, policy: 'allow' | 'block' | 'ask'): Promise<PrivacySnapshot>;
+  /** Per-site popup policy (null = back to "ask"). */
+  privacySetPopup(origin: string, policy: 'allow' | 'block' | 'ask' | null): Promise<PrivacySnapshot>;
+  /** Per-site autoplay (allow) / autoplay-block. Applied to live tabs. */
+  privacySetAutoplay(origin: string, allow: boolean): Promise<PrivacySnapshot>;
+  /** Per-site mute. Applied to live tabs. */
+  privacySetMuted(origin: string, muted: boolean): Promise<PrivacySnapshot>;
+  /** Cookies & site data grouped per site. */
+  privacySites(): Promise<SiteDataSummary[]>;
+  /** Cookie names/metadata for one site (values never leave main). */
+  privacySiteCookies(site: string): Promise<CookieDetail[]>;
+  /** Delete all cookies + storage for one site. */
+  privacyDeleteSite(site: string): Promise<{ cookies: number }>;
+  /** Clear browsing data by category. */
+  privacyClearData(opts: { cookies: boolean; cache: boolean; history: boolean }): Promise<void>;
+  /** Recent browsing history (newest first, capped). */
+  privacyHistory(): Promise<HistoryEntry[]>;
   tabsPin(tabId: string, pinned: boolean): Promise<void>;
   tabsMove(tabId: string, spaceId: string): Promise<void>;
   /** Reorder a tab: move it before `beforeTabId` (null = end of its folder/section). */
@@ -779,6 +870,8 @@ export interface NextTokenAPI {
   modelsSetVision(ref: string): Promise<void>;
   modelsAppleFm(): Promise<AppleFmStatus>;
   modelsDiskUsage(): Promise<number>;
+  /** Latest measured local-model turn (llama-server). Null until the first local turn completes. */
+  modelsLocalMetrics(): Promise<LocalModelMetrics | null>;
   onModelEvent(cb: (e: ModelEvent) => void): () => void;
   /** Optional Hugging Face token for gated repos (safeStorage; never returned). */
   modelsHfTokenSet(token: string): Promise<{ ok: true }>;

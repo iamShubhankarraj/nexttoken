@@ -39,6 +39,7 @@ import {
 import {
   VisionRequiredError, resolveVisionModel
 } from './task-models';
+import { friendlyLocalError, sanitizeChatMessages } from './sanitize';
 
 export interface RouterDeps {
   store: Store;
@@ -58,6 +59,30 @@ export interface CompleteOpts {
    * for the full completion.
    */
   onToken?: (delta: string) => void;
+  /**
+   * Executes a tool call for models that run their own internal tool loop
+   * (Apple Foundation Models via the bridge). The agent loop passes its real
+   * tool runner here so approvals, denials, and vision-missing handling stay
+   * identical to the loop-driven path. Resolves with result text.
+   */
+  toolExecutor?: (name: string, argsJson: string) => Promise<string>;
+}
+
+/**
+ * Raised when Apple FM is probed and healthy but the installed bridge build
+ * predates tool calling. The fallback note must never call this
+ * "unavailable" — the model IS available, it just can't take tool calls in
+ * this build. The message names the exact fix.
+ */
+export class AppleFmToolSkipError extends Error {
+  constructor() {
+    super(
+      'Apple Foundation Models skipped: this applefm-bridge build predates tool calling. ' +
+      'Rebuild it once on your Mac with electron/native/applefm/build.sh — ' +
+      'the bridge lives outside the app bundle, so it is reused automatically after app updates.'
+    );
+    this.name = 'AppleFmToolSkipError';
+  }
 }
 
 export interface CompleteResult {
@@ -178,9 +203,12 @@ export class ModelRouter {
     // text model that would hallucinate about images it cannot see).
     if ((opts.task ?? 'chat') === 'vision') return this.completeVision(opts);
     const tools = opts.tools ?? [];
-    const primary = await this.primaryAttempt(opts.messages, tools, opts.signal, opts.onToken);
-    const fallbacks = this.fallbackAttempts(primary.viaRef, tools, opts.messages, opts.signal, opts.onToken);
-    const errors: string[] = [];
+    const primary = await this.primaryAttempt(opts.messages, tools, opts.signal, opts.onToken, opts.toolExecutor);
+    // Apple FM's tool support comes from the (cached) probe handshake — an
+    // old bridge build must stay out of the fallback chain for tool turns.
+    const appleFmTools = tools.length === 0 || (await this.deps.appleFm.probe().then((p) => p.available && p.toolCalling === true).catch(() => false));
+    const fallbacks = this.fallbackAttempts(primary.viaRef, tools, opts.messages, opts.signal, opts.onToken, appleFmTools, opts.toolExecutor);
+    const errors: Array<{ message: string; skip?: boolean }> = [];
     const attempts = [primary, ...fallbacks];
     for (let i = 0; i < attempts.length; i++) {
       try {
@@ -193,16 +221,24 @@ export class ModelRouter {
           viaRef: attempts[i].viaRef,
           fallbackUsed,
           fallbackNote: fallbackUsed
-            ? `“${primary.label}” unavailable (${errors[0]}); answered by ${attempts[i].label}.`
+            ? errors[0].skip
+              // Honest skip: never "unavailable" — the model works, this
+              // bridge build just can't take tool calls. The message names
+              // the exact fix.
+              ? `${errors[0].message} Answered by ${attempts[i].label}.`
+              : `“${primary.label}” unavailable (${errors[0].message}); answered by ${attempts[i].label}.`
             : undefined
         };
       } catch (e) {
         // A user cancel is final — never cascade an explicit abort through fallbacks.
         if (opts.signal?.aborted) throw e;
-        errors.push(e instanceof Error ? e.message : String(e));
+        errors.push({
+          message: e instanceof Error ? e.message : String(e),
+          skip: e instanceof AppleFmToolSkipError,
+        });
       }
     }
-    throw new Error(`All models failed: ${errors.join(' | ')}`);
+    throw new Error(`All models failed: ${errors.map((e) => e.message).join(' | ')}`);
   }
 
   /**
@@ -373,14 +409,15 @@ export class ModelRouter {
     messages: LlmMessage[],
     tools: LlmToolDef[],
     signal?: AbortSignal,
-    onToken?: (delta: string) => void
+    onToken?: (delta: string) => void,
+    toolExecutor?: (name: string, argsJson: string) => Promise<string>
   ): Promise<Attempt> {
     const active = this.deps.store.d.models.activeModel ?? { kind: 'local-applefm' as const };
     switch (active.kind) {
       case 'local-applefm':
         return {
           label: 'Apple Foundation Models', viaRef: 'local-applefm',
-          run: () => this.appleFmTurn(messages, tools, signal)
+          run: () => this.appleFmTurn(messages, tools, signal, toolExecutor)
         };
       case 'local': {
         const entry = catalogEntry(active.id);
@@ -412,7 +449,10 @@ export class ModelRouter {
     tools: LlmToolDef[],
     messages: LlmMessage[],
     signal?: AbortSignal,
-    onToken?: (delta: string) => void
+    onToken?: (delta: string) => void,
+    /** True when Apple FM may serve this turn (always for tool-free turns; for tool turns only when the bridge handshake reported toolCalling). */
+    appleFmTools = true,
+    toolExecutor?: (name: string, argsJson: string) => Promise<string>
   ): Attempt[] {
     const out: Attempt[] = [];
     // 1. Other enabled cloud providers with keys.
@@ -424,11 +464,11 @@ export class ModelRouter {
         run: () => this.cloudTurn(p, messages, tools, signal)
       });
     }
-    // 2. Apple FM — text only, never for tool-bearing turns.
-    if (tools.length === 0 && excludeViaRef !== 'local-applefm') {
+    // 2. Apple FM — for tool-bearing turns only when the bridge supports it.
+    if (appleFmTools && excludeViaRef !== 'local-applefm') {
       out.push({
         label: 'Apple Foundation Models', viaRef: 'local-applefm',
-        run: () => this.appleFmTurn(messages, [], signal)
+        run: () => this.appleFmTurn(messages, tools, signal, toolExecutor)
       });
     }
     // 3. First downloaded GGUF chat model.
@@ -452,22 +492,58 @@ export class ModelRouter {
 
   // -- turn implementations ---------------------------------------------------
 
-  private async appleFmTurn(messages: LlmMessage[], tools: LlmToolDef[], signal?: AbortSignal): Promise<LlmResult> {
+  private async appleFmTurn(
+    messages: LlmMessage[],
+    tools: LlmToolDef[],
+    signal?: AbortSignal,
+    toolExecutor?: (name: string, argsJson: string) => Promise<string>
+  ): Promise<LlmResult> {
     if (messagesHaveImages(messages)) {
       throw new Error(
         'Apple Foundation Models cannot process images. ' +
         'Pick a downloaded vision model or a cloud provider for the vision slot in Settings → Models.'
       );
     }
+    if (signal?.aborted) throw new Error('Aborted');
+    const system = messages.filter((m) => m.role === 'system').map((m) => m.content).join('\n\n');
     if (tools.length > 0) {
-      throw new Error('Apple Foundation Models has no tool calling — trying the next model');
+      // Tool-bearing turn: the bridge must report toolCalling from --probe.
+      // An old bridge build throws AppleFmToolSkipError — an honest skip
+      // (the model IS available; this build just can't take tool calls),
+      // never labeled "unavailable".
+      const probe = await this.deps.appleFm.probe();
+      if (!probe.toolCalling) {
+        throw new AppleFmToolSkipError();
+      }
+      if (!toolExecutor) {
+        throw new Error('Apple Foundation Models needs the tool runner to serve tool calls');
+      }
+      const rest: AppleFmMessage[] = [];
+      for (const m of messages) {
+        if (m.role === 'system') continue;
+        if (m.role === 'tool') {
+          rest.push({ role: 'user', content: `[tool result] ${m.content}` });
+          continue;
+        }
+        rest.push({ role: m.role, content: m.content });
+      }
+      // The bridge runs its own internal tool loop: tool_call lines are
+      // serviced here via the agent loop's REAL tool runner (approvals,
+      // confirmations, and vision-missing handling identical to the
+      // loop-driven path), and the returned text is final — nothing for the
+      // outer loop to execute again.
+      const text = await this.deps.appleFm.chatWithTools(
+        rest,
+        tools.map((t) => ({ name: t.name, description: t.description, parameters: t.parameters })),
+        { system, signal, onToolCall: toolExecutor }
+      );
+      return { text, toolCalls: [] };
     }
     const probe = await this.deps.appleFm.probe();
     if (!probe.available) {
       throw new Error(`Apple Foundation Models unavailable: ${probe.reason ?? 'unknown reason'}`);
     }
     if (signal?.aborted) throw new Error('Aborted');
-    const system = messages.filter((m) => m.role === 'system').map((m) => m.content).join('\n\n');
     const rest: AppleFmMessage[] = [];
     for (const m of messages) {
       if (m.role === 'system') continue;
@@ -498,22 +574,57 @@ export class ModelRouter {
     // Idempotent warm-up: a no-op when this exact model is already serving,
     // so repeated turns never pay spawn + model-load again.
     const warmed = await this.deps.llama.ensureWarm(entry, slot);
-    const { result, firstTokenMs } = await openAiStreamComplete({
-      baseUrl: warmed.baseUrl,
-      api: 'openai',
-      apiKey: '',
-      model: entry.id,
-      messages,
-      tools,
-      signal,
-      onToken,
-    });
+    // Strict Jinja templates (Gemma 3n et al.) 400 on non-alternating
+    // roles — the agent loop legitimately produces those shapes (tool
+    // result + perception prompt back-to-back), so repair before sending.
+    const safe = sanitizeChatMessages(messages);
+    let result: LlmResult;
+    let firstTokenMs: number;
+    try {
+      ({ result, firstTokenMs } = await openAiStreamComplete({
+        baseUrl: warmed.baseUrl,
+        api: 'openai',
+        apiKey: '',
+        model: entry.id,
+        messages: safe,
+        tools,
+        signal,
+        onToken,
+      }));
+    } catch (e) {
+      // Never leak llama-server's raw JSON 400 body — the router's
+      // fallback chain tries the next model per priority (Apple FM →
+      // GGUF → BYOK) and names what answered.
+      throw friendlyLocalError(entry.name || entry.id, e);
+    }
     const totalMs = Date.now() - t0;
+    // Generation metrics: the SSE stream carries no server-side usage
+    // counters, so count generated tokens from streamed characters
+    // (~4 chars/token) measured over the generation window
+    // (first token → stream end).
+    const genChars = result.text.length;
+    const genTokens = Math.max(1, Math.round(genChars / 4));
+    const genSec = Math.max(0.001, (totalMs - firstTokenMs) / 1000);
+    const metrics = {
+      modelId: entry.id,
+      at: Date.now(),
+      warm: warmed.warm,
+      spawnMs: warmed.spawnMs,
+      loadMs: warmed.loadMs,
+      firstTokenMs,
+      totalMs,
+      genChars,
+      genTokens,
+      tokensPerSec: Math.round((genTokens / genSec) * 10) / 10,
+    };
+    this.deps.store.d.models.localMetrics = metrics;
+    this.deps.store.saveSoon();
     // Stable timing line for diagnosing local-model latency on the user's Mac.
     console.log(
       `[local-model] model=${entry.id} warm=${warmed.warm} ` +
       `spawnMs=${warmed.spawnMs} loadMs=${warmed.loadMs} ` +
-      `firstTokenMs=${firstTokenMs} totalMs=${totalMs}`
+      `firstTokenMs=${firstTokenMs} totalMs=${totalMs} ` +
+      `genTokens~=${genTokens} tps=${metrics.tokensPerSec}`
     );
     return result;
   }

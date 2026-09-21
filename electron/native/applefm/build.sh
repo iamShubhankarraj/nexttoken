@@ -8,7 +8,12 @@
 #   1. checks the environment (macOS 26+, Swift/Xcode CLT, macOS 26 SDK),
 #   2. builds the release binary with `swift build`,
 #   3. installs it into every writable candidate location the Electron app
-#      probes (see AppleFmClient.binaryCandidates in src/main/models/applefm.ts):
+#      probes (see AppleFmClient.binaryCandidates in src/main/models/applefm.ts),
+#      userData FIRST:
+#        - ~/Library/Application Support/Next Token/sidecars   (primary —
+#          survives app updates; the .app bundle is wiped on every
+#          re-download, so a bridge installed there would need rebuilding
+#          after each update)
 #        - /Applications/Next Token.app/Contents/Resources/sidecars
 #        - ~/Applications/Next Token.app/Contents/Resources/sidecars
 #        - <repo>/electron/resources/sidecars   (dev fallback; also what
@@ -17,11 +22,15 @@
 #
 # After this, restart Next Token: Settings → Models shows Apple Foundation
 # Models as Available (given macOS 26+ with Apple Intelligence enabled).
+# Updating the app later does NOT require rebuilding — the bridge in
+# Application Support is reused automatically.
 set -euo pipefail
 
 cd "$(dirname "$0")"
 REPO_SIDECARS="$(pwd)/../../resources/sidecars"
 APP_NAME="Next Token"
+# Must match Electron's app.getPath('userData') for productName "Next Token".
+USERDATA_SIDECARS="$HOME/Library/Application Support/${APP_NAME}/sidecars"
 
 die() { echo "error: $1" >&2; exit 1; }
 info() { echo "$1"; }
@@ -59,7 +68,9 @@ BIN="$(swift build -c release --show-bin-path)/applefm-bridge"
 [[ -x "$BIN" ]] || die "build succeeded but no binary at $BIN"
 
 # -- install ------------------------------------------------------------------
-CANDIDATES=()
+# userData first: it survives app replacement, so one build keeps working
+# across updates. The .app bundle copies are a convenience fallback only.
+CANDIDATES=("$USERDATA_SIDECARS")
 [[ -d "/Applications/${APP_NAME}.app" ]] && CANDIDATES+=("/Applications/${APP_NAME}.app/Contents/Resources/sidecars")
 [[ -d "$HOME/Applications/${APP_NAME}.app" ]] && CANDIDATES+=("$HOME/Applications/${APP_NAME}.app/Contents/Resources/sidecars")
 CANDIDATES+=("$REPO_SIDECARS")
@@ -78,6 +89,10 @@ done
 [[ "$installed" == "1" ]] || die "could not install the bridge anywhere (tried ${#CANDIDATES[@]} locations)."
 
 # -- smoke test ---------------------------------------------------------------
+# Prefer the userData copy for the smoke test — it's the one the app resolves first.
+if [[ -x "$USERDATA_SIDECARS/applefm-bridge" ]]; then
+  INSTALLED_BIN="$USERDATA_SIDECARS/applefm-bridge"
+fi
 info "Smoke test: ${INSTALLED_BIN} --probe"
 PROBE_OUT="$("${INSTALLED_BIN}" --probe 2>/dev/null || echo '{"available":false,"reason":"probe failed to run"}')"
 info "$PROBE_OUT"

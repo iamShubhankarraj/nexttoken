@@ -35,7 +35,7 @@ export interface RouteResult {
  */
 export async function routeChat(
   deps: RouterDeps,
-  opts: { task: AgentTask; messages: LlmMessage[]; tools: LlmToolDef[]; signal?: AbortSignal; onToken?: (delta: string) => void }
+  opts: { task: AgentTask; messages: LlmMessage[]; tools: LlmToolDef[]; signal?: AbortSignal; onToken?: (delta: string) => void; toolExecutor?: (name: string, argsJson: string) => Promise<string> }
 ): Promise<RouteResult> {
   const router = new ModelRouter(deps);
   const r = await router.complete({
@@ -43,7 +43,8 @@ export async function routeChat(
     messages: opts.messages,
     tools: opts.tools,
     signal: opts.signal,
-    onToken: opts.onToken
+    onToken: opts.onToken,
+    toolExecutor: opts.toolExecutor,
   });
   return {
     result: { text: r.text, toolCalls: r.toolCalls },

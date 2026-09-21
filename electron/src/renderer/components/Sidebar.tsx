@@ -51,7 +51,7 @@ import { Favicon } from "./Favicon";
 import { TidyDialog } from "./TidyDialog";
 import { VirtualList } from "./VirtualList";
 import { useLiquidSidebar, type LiquidSidebarRefs } from "../hooks/useLiquidSidebar";
-import { MediaNotch, useMediaState } from "./MediaNotch";
+import { MediaViewfinder, useMediaState } from "./MediaViewfinder";
 
 const ROW_H = 36;
 const MAX_LIST_H = 440;
@@ -332,10 +332,11 @@ export function Sidebar() {
         <path ref={seamHiRef} className="nt-seam-hi" d="" />
       </svg>
 
-      {/* Media notch: video timeline + transport, cradled in the lower scoop
-          while the active tab has a playable video. Rides the seam via
+      {/* Media viewfinder: the lower scoop itself becomes a curved video
+          viewfinder for background media — curved timeline, live miniature
+          preview, play/pause + PiP seated in the curve. Rides the seam via
           --media-x / --media-y written by the liquid engine. */}
-      <MediaNotch media={media} />
+      <MediaViewfinder media={media} />
 
       {/* Resize handle on the sidebar's right edge. Slim ember affordance
           on hover; drag to set an explicit width (160-320px), double-click

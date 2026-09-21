@@ -38,6 +38,7 @@ import { useBrowser } from "../BrowserContext";
 import { nt } from "../nt";
 import { openImportDialog } from "./ImportDialog";
 import { ModelsPanel } from "./ModelsPanel";
+import { PrivacyAdvanced } from "./PrivacyAdvanced";
 import { AppLogo } from "./AppLogo";
 import { SkillsSection } from "./SettingsSkills";
 import { ThemeEditor } from "./ThemeEditor";
@@ -1118,6 +1119,16 @@ function PrivacySection() {
             ))}
           </div>
         )}
+      </div>
+
+      <div>
+        <h3
+          className="mb-2 text-[13px] font-semibold"
+          style={{ color: "var(--nt-text-1)" }}
+        >
+          Advanced
+        </h3>
+        <PrivacyAdvanced />
       </div>
     </div>
   );

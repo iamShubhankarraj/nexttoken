@@ -15,7 +15,9 @@ files:
   - dist/**/*
   - package.json
 # Native sidecars (applefm-bridge — build on a Mac via native/applefm/build.sh).
-# Lands at <resources>/sidecars/, resolved by AppleFmClient's first candidate.
+# Lands at <resources>/sidecars/, resolved by AppleFmClient as the bundle
+# fallback (the userData sidecars dir is the primary candidate now, since it
+# survives app replacement on update).
 extraResources:
   - from: resources/sidecars
     to: sidecars

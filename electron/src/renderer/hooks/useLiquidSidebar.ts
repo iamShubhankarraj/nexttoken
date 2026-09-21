@@ -82,6 +82,30 @@ interface Engine {
  * the lower scoop deepens to cradle the video controls, and a `notch` anchor
  * is returned so the control cluster can ride the seam.
  */
+/** The two cubic segments of the lower parenthesis scoop (no moveto). */
+function scoopCurves(ex: number, y0: number, y1: number, d2: number): string {
+  return (
+    ` C ${ex},${y0 + 30} ${ex + d2},${y0 + 44} ${ex + d2},${y0 + 88}` +
+    ` C ${ex + d2},${y0 + 132} ${ex},${y0 + 146} ${ex},${y1}`
+  );
+}
+
+/**
+ * The lower scoop's curve as a standalone path — the EXACT same Bézier
+ * geometry as the liquid seam's right edge. The media viewfinder draws its
+ * progress line with this path (via the --scoop-d CSS var) so the timeline
+ * bends with the sidebar's curve instead of rendering as a straight line.
+ */
+export function buildScoopPath(w: number, h: number, mediaT = 0): string {
+  const t = Math.min(1, Math.max(0, (w - SB_REST) / (SB_MAX - SB_REST)));
+  const d2 = 24 + t * 9 + mediaT * 18;
+  const ex = w - 2;
+  const tbBot = 100 + 92;
+  const y1 = h - 64;
+  const y0 = Math.max(tbBot + 28, y1 - 152);
+  return `M ${ex},${y0}` + scoopCurves(ex, y0, y1, d2);
+}
+
 export function buildSeamPaths(
   w: number,
   h: number,
@@ -110,8 +134,7 @@ export function buildSeamPaths(
     ` C ${ex},${tbTop + 18} ${ex + d1},${tbTop + 26} ${ex + d1},${tbTop + 46}` +
     ` C ${ex + d1},${tbTop + 66} ${ex},${tbTop + 74} ${ex},${tbBot}` +
     ` V ${y0}` +
-    ` C ${ex},${y0 + 30} ${ex + d2},${y0 + 44} ${ex + d2},${y0 + 88}` +
-    ` C ${ex + d2},${y0 + 132} ${ex},${y0 + 146} ${ex},${y1}` +
+    scoopCurves(ex, y0, y1, d2) +
     ` V ${h - rBR} Q ${ex},${h} ${ex - rBR},${h}` +
     ` H ${rBL} Q 0,${h} 0,${h - rBL}` +
     ` V ${rTL} Q 0,0 ${rTL},0 Z`;
@@ -122,8 +145,7 @@ export function buildSeamPaths(
     ` C ${ex},${tbTop + 18} ${ex + d1},${tbTop + 26} ${ex + d1},${tbTop + 46}` +
     ` C ${ex + d1},${tbTop + 66} ${ex},${tbTop + 74} ${ex},${tbBot}` +
     ` V ${y0}` +
-    ` C ${ex},${y0 + 30} ${ex + d2},${y0 + 44} ${ex + d2},${y0 + 88}` +
-    ` C ${ex + d2},${y0 + 132} ${ex},${y0 + 146} ${ex},${y1}` +
+    scoopCurves(ex, y0, y1, d2) +
     ` V ${h - rBR} Q ${ex},${h} ${ex - rBR},${h}`;
 
   return {
@@ -194,10 +216,13 @@ export function useLiquidSidebar(
         const p = buildSeamPaths(s.w, s.h, s.mt);
         r.seamFillRef.current?.setAttribute("d", p.fill);
         r.seamHiRef.current?.setAttribute("d", p.edge);
-        // Keep the media control cluster riding the deepened scoop.
+        // Keep the media control cluster riding the deepened scoop, and
+        // publish the scoop's exact curve so the viewfinder's progress line
+        // bends with the seam (no straight segments).
         if (s.mt > 0.02 && aside) {
           aside.style.setProperty("--media-x", `${p.notch.x.toFixed(1)}px`);
           aside.style.setProperty("--media-y", `${p.notch.y.toFixed(1)}px`);
+          aside.style.setProperty("--scoop-d", `path("${buildScoopPath(s.w, s.h, s.mt)}")`);
         }
       }
       const glide = r.glideRef.current;

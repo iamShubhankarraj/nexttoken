@@ -9,9 +9,15 @@
  * 2. Permission requests — explicit handler on the guest session. Benign
  *    capabilities auto-allow, sensitive ones (camera/mic, location,
  *    notifications, screen share, external apps…) ask the user with a
- *    native prompt. WebAuthn / platform authenticators (Touch ID) are
- *    handled natively by Chromium and never route through this handler,
- *    so passkeys are never blocked here.
+ *    native prompt. Decisions persist per origin ("Always allow"/"Block"
+ *    are remembered; editable in Settings → Privacy & security), and
+ *    permission defaults can be changed there too. FedCM
+ *    (`identity-credentials-get`, Google "Sign in with" flows) is denied
+ *    quietly — prompting its retries was the endless-permission-popup bug;
+ *    denying lets the flow fall back to popup OAuth, which routes to a tab.
+ *    WebAuthn / platform authenticators (Touch ID) are handled natively by
+ *    Chromium and never route through this handler, so passkeys are never
+ *    blocked here.
  * 3. Downloads — a save dialog for every guest download (no more silent
  *    drops into ~/Downloads), with progress + completion mirrored to the
  *    renderer for the downloads pill. "Save Image As…" arms its own path
@@ -24,6 +30,7 @@
 import { app, dialog, session, shell } from 'electron';
 import type { BrowserWindow, DownloadItem, WebContents } from 'electron';
 import path from 'node:path';
+import type { Store } from './store';
 import type { DownloadUiEvent } from '../shared/ipc';
 
 /** The partition every tab webview declares. */
@@ -46,6 +53,8 @@ export interface WebEngineDeps {
   getWin: () => BrowserWindow | null;
   /** Guarded win.webContents.send. */
   send: (channel: 'nt.downloads.event', payload: DownloadUiEvent) => void;
+  /** Persisted per-site permission decisions + defaults. */
+  store: Store;
 }
 
 /** URLs armed by "Save Image As…" — that flow already chose its own path. */
@@ -83,13 +92,12 @@ async function askPermission(
   deps: WebEngineDeps,
   wc: WebContents,
   permission: string,
+  origin: string,
   details: unknown,
 ): Promise<boolean> {
   let host = 'This site';
   try {
-    const u = (details as { requestingUrl?: string } | null)?.requestingUrl
-      ?? wc.getURL();
-    const h = new URL(u).hostname;
+    const h = new URL(origin).hostname;
     if (h) host = h;
   } catch {
     /* keep the fallback */
@@ -99,18 +107,66 @@ async function askPermission(
   try {
     const opts = {
       type: 'question' as const,
-      buttons: ['Allow', 'Block'],
-      defaultId: 1,
-      cancelId: 1,
+      buttons: ['Allow once', 'Always allow', 'Block'],
+      defaultId: 0,
+      cancelId: 2,
       message: `${host} wants to ${what}`,
-      detail: 'You can change this later in Settings → Privacy.',
+      // The raw permission name is included so unknown future permissions
+      // are diagnosable from the dialog itself.
+      detail:
+        `Always allow and Block are remembered for ${host} — ` +
+        `change them anytime in Settings → Privacy & security.\n(${permission})`,
     };
     const { response } = w && !w.isDestroyed()
       ? await dialog.showMessageBox(w, opts)
       : await dialog.showMessageBox(opts);
-    return response === 0;
+    const perms = deps.store.d.privacy.permissions;
+    if (response === 1) {
+      // Always allow — remember for this origin.
+      perms[origin] = { ...(perms[origin] ?? {}), [permission]: 'allow' };
+      deps.store.saveSoon();
+      return true;
+    }
+    if (response === 2) {
+      // Block — remember for this origin.
+      perms[origin] = { ...(perms[origin] ?? {}), [permission]: 'block' };
+      deps.store.saveSoon();
+      return false;
+    }
+    return true; // Allow once.
   } catch {
     return false;
+  }
+}
+
+/**
+ * Permissions that must never surface a prompt — they are either
+ * unsupported in an embedded context or inherently noisy:
+ *
+ * - `identity-credentials-get` (FedCM): Google Identity Services
+ *   ("Sign in with Google") calls navigator.credentials.get({identity})
+ *   and retries on failure. Prompting every retry produced the endless
+ *   "x.com wants to request a browser permission" loop, and the allow
+ *   path can never succeed here (no native FedCM account-chooser UI in
+ *   Electron). Quietly denying lets GSI fall back to its popup OAuth
+ *   flow, which the popup→tab routing handles.
+ * - `payment-handler`: silent background registration, never user-meaningful.
+ * - `web-app-installation`: no app-install UX exists; deny quietly.
+ */
+const QUIET_DENY = new Set([
+  'identity-credentials-get',
+  'payment-handler',
+  'web-app-installation',
+]);
+
+function originOf(wc: WebContents, details: unknown): string {
+  try {
+    const u =
+      (details as { requestingUrl?: string } | null)?.requestingUrl ??
+      wc.getURL();
+    return new URL(u).origin;
+  } catch {
+    return '';
   }
 }
 
@@ -123,6 +179,30 @@ export function setupGuestSession(deps: WebEngineDeps): void {
   // 2 — permission requests.
   ses.setPermissionRequestHandler((wc, permission, callback, details) => {
     const p = permission as string;
+    const origin = originOf(wc, details);
+
+    // FedCM / payment-handler / install prompts: quiet deny, never a dialog
+    // (see QUIET_DENY). These APIs cannot succeed in an embedded context and
+    // retry aggressively — prompting each time is the permission-loop bug.
+    if (QUIET_DENY.has(p)) {
+      console.log(`[permissions] ${origin || '(unknown origin)'} ${p} -> quiet-deny`);
+      callback(false);
+      return;
+    }
+
+    // Remembered per-site decision wins over everything.
+    const remembered = origin ? deps.store.d.privacy.permissions[origin]?.[p] : undefined;
+    if (remembered === 'allow' || remembered === 'block') {
+      callback(remembered === 'allow');
+      return;
+    }
+    // User-configured default for this permission type.
+    const def = deps.store.d.privacy.defaults[p];
+    if (def === 'allow' || def === 'block') {
+      callback(def === 'allow');
+      return;
+    }
+
     // Benign capabilities: always allow.
     if (
       p === 'fullscreen' ||
@@ -146,7 +226,9 @@ export function setupGuestSession(deps: WebEngineDeps): void {
     // Sensitive (camera/mic, location, notifications, screen share,
     // external apps, …): ask the user. WebAuthn never reaches this
     // handler — Chromium drives the authenticator UI natively.
-    void askPermission(deps, wc, p, details).then(callback, () => callback(false));
+    // The popup→tab routing never triggers a permission request itself.
+    console.log(`[permissions] ${origin || '(unknown origin)'} ${p} -> ask`);
+    void askPermission(deps, wc, p, origin, details).then(callback, () => callback(false));
   });
 
   // 3 — downloads: save dialog + progress mirrored to the renderer.

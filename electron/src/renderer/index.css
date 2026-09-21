@@ -510,62 +510,137 @@ input[type="color"].nt-color::-webkit-color-swatch {
   stroke-linecap: round;
 }
 
-/* -- Media notch: video controls cradled in the sidebar's lower scoop ---- */
-/* Positioned by the liquid engine via --media-x / --media-y (the scoop's
-   anchor); rides the seam as the sidebar breathes. Fade + scale with the
-   sidebar's spring language when a video appears/disappears. */
-.nt-media-notch {
+/* -- Media viewfinder: the scoop itself is a curved video viewfinder ---- */
+/* Full-sidebar overlay; the progress line hugs the seam's exact curve.
+   Fades with the sidebar's spring language when background media
+   appears/disappears. */
+.nt-media-viewfinder {
   position: absolute;
+  inset: 0;
   z-index: 3;
-  transform: translate(-50%, -50%) scale(var(--media-scale, 0.85));
   opacity: var(--media-opacity, 0);
-  transition: opacity 240ms ease, transform 240ms cubic-bezier(0.34, 1.4, 0.64, 1);
+  transition: opacity 240ms ease;
   pointer-events: none;
-}
-.nt-media-notch[data-on="true"] {
-  --media-opacity: 1;
-  --media-scale: 1;
-  pointer-events: auto;
-}
-.nt-media-pill {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 7px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--nt-bg-overlay) 88%, transparent);
-  border: 1px solid var(--nt-border);
-  box-shadow: var(--nt-shadow-pop);
   -webkit-app-region: no-drag;
 }
-/* Vertical YouTube-style timeline: thin track, red progress fill. */
-.nt-media-track {
-  position: relative;
-  width: 4px;
-  height: 84px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.16);
+.nt-media-viewfinder[data-on="true"] {
+  --media-opacity: 1;
+}
+/* Seam-hugging progress layer: same positioning contract as .nt-seam-svg
+   (inset 0, overflow visible, user units are CSS pixels). The curve itself
+   comes from --scoop-d, published per frame by the liquid engine — the
+   exact Bézier geometry of the sidebar's right edge. */
+.nt-vf-seam {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+.nt-vf-seam-track,
+.nt-vf-seam-progress,
+.nt-vf-seam-hit {
+  fill: none;
+  stroke-linecap: round;
+  d: var(--scoop-d);
+}
+.nt-vf-seam-track {
+  stroke: rgba(255, 255, 255, 0.16);
+  stroke-width: 3.5;
+}
+.nt-vf-seam-progress {
+  stroke: var(--nt-accent);
+  stroke-width: 3.5;
+  filter: drop-shadow(0 0 6px rgba(232, 163, 61, 0.75));
+  transition: stroke-dashoffset 1s linear;
+}
+.nt-vf-seam-progress[data-drag="true"] {
+  transition: none;
+}
+/* Wide invisible hit lane so drag-seek is easy along the curve. */
+.nt-vf-seam-hit {
+  stroke: rgba(0, 0, 0, 0);
+  stroke-width: 20;
+  pointer-events: stroke;
   cursor: pointer;
   touch-action: none;
 }
-.nt-media-fill {
+/* Live miniature preview + transport cluster, seated inside the curve.
+   Rides the seam via --media-x / --media-y written by the liquid engine. */
+.nt-vf-cluster {
   position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
+  left: var(--media-x, 190px);
+  top: var(--media-y, 50%);
+  transform: translate(-50%, -56%) scale(var(--media-scale, 0.85));
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  transition: transform 240ms cubic-bezier(0.34, 1.4, 0.64, 1);
+  pointer-events: none;
+}
+.nt-media-viewfinder[data-on="true"] .nt-vf-cluster {
+  --media-scale: 1;
+  pointer-events: auto;
+}
+.nt-vf-thumb-svg {
+  display: block;
+  overflow: visible;
+}
+/* Live miniature preview masked into the curve. */
+.nt-vf-empty {
+  fill: rgba(255, 255, 255, 0.06);
+  stroke: rgba(255, 255, 255, 0.1);
+  stroke-width: 1;
+}
+.nt-vf-frame-edge {
+  fill: none;
+  stroke: rgba(232, 163, 61, 0.35);
+  stroke-width: 1;
+}
+.nt-vf-live-dot {
+  fill: #ff6b5e;
+}
+.nt-vf-live-text {
+  fill: #ff6b5e;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+/* Transport seated at the base of the curve. */
+.nt-vf-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+}
+.nt-vf-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
   border-radius: 999px;
-  background: linear-gradient(to top, #e11d05, #ff4b33);
-  transition: height 1s linear;
+  color: var(--nt-text-1);
+  background: color-mix(in srgb, var(--nt-bg-overlay) 88%, transparent);
+  border: 1px solid var(--nt-border);
+  box-shadow: var(--nt-shadow-pop);
+  transition: background-color 160ms ease, transform 160ms ease;
 }
-.nt-media-track[data-drag="true"] .nt-media-fill {
-  transition: none;
+.nt-vf-btn:hover {
+  background: color-mix(in srgb, var(--nt-accent) 26%, var(--nt-bg-overlay));
 }
-.nt-media-tip {
+.nt-vf-btn:active {
+  transform: scale(0.92);
+}
+.nt-vf-play {
+  border-color: color-mix(in srgb, var(--nt-accent) 55%, transparent);
+  color: var(--nt-accent);
+}
+/* Seek tooltip riding the curve at the pointer. */
+.nt-vf-tip {
   position: absolute;
-  right: calc(100% + 10px);
-  top: 50%;
-  transform: translateY(-50%);
+  transform: translate(-50%, -100%);
   white-space: nowrap;
   font-size: 11px;
   font-variant-numeric: tabular-nums;
@@ -575,39 +650,7 @@ input[type="color"].nt-color::-webkit-color-swatch {
   border-radius: 8px;
   padding: 3px 8px;
   box-shadow: var(--nt-shadow-pop);
-  opacity: 0;
   pointer-events: none;
-  transition: opacity 120ms ease;
-}
-.nt-media-track[data-drag="true"] .nt-media-tip,
-.nt-media-track:hover .nt-media-tip {
-  opacity: 1;
-}
-.nt-media-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 30px;
-  height: 30px;
-  border-radius: 999px;
-  color: var(--nt-text-1);
-  background: rgba(255, 255, 255, 0.08);
-  transition: background-color 160ms ease, transform 160ms ease;
-}
-.nt-media-btn:hover {
-  background: rgba(255, 255, 255, 0.18);
-}
-.nt-media-btn:active {
-  transform: scale(0.92);
-}
-.nt-media-live {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 9px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  color: #ff6b5e;
 }
 
 /* Window drag region (traffic lights are native, hiddenInset, at 14,14). */

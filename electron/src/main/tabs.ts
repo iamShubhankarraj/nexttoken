@@ -174,6 +174,14 @@ export class TabManager {
         tabId: tab.id, type: 'url', value: url,
         canGoBack: tab.canGoBack, canGoForward: tab.canGoForward
       });
+      // Per-site engine policies (Settings → Privacy & security).
+      this.applySitePolicies(wc, url);
+      // Browsing history for per-site settings + clear-browsing-data.
+      try {
+        this.store.pushHistoryEntry(url, tab.title);
+      } catch {
+        /* never break navigation on a history write */
+      }
       // The tab icon must track the CURRENT site: when the host changes
       // (link click, redirect, typed navigation), drop the previous site's
       // icon immediately and show the new host's cached icon (or nothing)
@@ -199,21 +207,28 @@ export class TabManager {
       // Downloads (<a download>) must flow through, not become tabs. The
       // disposition is cast because this Electron's typings omit it.
       if ((disposition as string) === 'save-to-disk') return { action: 'allow' };
-      // Opener-scripted about:blank windows (common in OAuth / sign-in
-      // flows: window.open('about:blank') then popup.location = url) can't
-      // be hosted as a tab with a live opener, so denying them used to
-      // make buttons look dead. Surface a blocked-popup indicator with an
-      // "open anyway" action instead of dropping the click silently.
+      // Per-site popup policy (Settings → Privacy & security). 'ask' is the
+      // default: the opener-scripted case shows the blocked-popup indicator
+      // with "open anyway"; 'allow' opens silently as a background tab and
+      // 'block' drops it silently.
+      const policy = this.popupPolicyFor(tab.url);
       if (!url || url === 'about:blank') {
-        try {
-          this.hooks?.onPopupBlocked?.(tab, url || 'about:blank');
-        } catch {
-          /* never break the guest on a hook failure */
+        if (policy === 'ask') {
+          try {
+            this.hooks?.onPopupBlocked?.(tab, url || 'about:blank');
+          } catch {
+            /* never break the guest on a hook failure */
+          }
         }
         return { action: 'deny' };
       }
+      if (policy === 'block') return { action: 'deny' };
       try {
-        this.hooks?.onPopup?.(tab, url, disposition);
+        if (policy === 'allow') {
+          this.hooks?.onPopup?.(tab, url, 'background-tab');
+        } else {
+          this.hooks?.onPopup?.(tab, url, disposition);
+        }
       } catch {
         /* never break the guest on a hook failure */
       }
@@ -529,6 +544,105 @@ export class TabManager {
 
   activeWebContents(): WebContents | null {
     return this.active()?.wc ?? null;
+  }
+
+  /** The guest webContents for a specific tab (null when none/destroyed). */
+  webContentsFor(tabId: string): WebContents | null {
+    const wc = this.tabs.get(tabId)?.wc ?? null;
+    return wc && !wc.isDestroyed() ? wc : null;
+  }
+
+  /** Iterate every live guest webContents with its tab record. */
+  forEachWebContents(cb: (tab: TabRec, wc: WebContents) => void): void {
+    for (const tab of this.tabs.values()) {
+      const wc = tab.wc;
+      if (wc && !wc.isDestroyed()) {
+        try {
+          cb(tab, wc);
+        } catch {
+          /* one bad tab must not break the sweep */
+        }
+      }
+    }
+  }
+
+  /**
+   * Apply per-site engine policies on navigation (Settings → Privacy &
+   * security → site settings): sound (mute) and autoplay. Runs on every
+   * navigation so a policy change takes effect on next load.
+   *
+   * Electron has no per-webContents autoplay content-setting API, so
+   * autoplay=block is enforced with a capture-phase play interceptor that
+   * pauses playback until the page has seen real user activation
+   * (document-user-activation-required semantics).
+   */
+  private applySitePolicies(wc: WebContents, url: string): void {
+    let origin = '';
+    try {
+      origin = new URL(url).origin;
+    } catch {
+      return;
+    }
+    if (!origin.startsWith('http')) return;
+    const p = this.store.d.privacy;
+    try {
+      if (p.muted[origin]) wc.setAudioMuted(true);
+    } catch {
+      /* noop */
+    }
+    // Per-site block, or the global autoplay default when the site has no
+    // override (backend stores only "block" or no-override per site).
+    const autoplayBlocked =
+      p.autoplay[origin] === 'block' ||
+      (p.autoplay[origin] === undefined && p.defaults['autoplay'] === 'block');
+    if (autoplayBlocked) {
+      try {
+        void wc
+          .executeJavaScript(
+            `(() => {
+              if (window.__ntAutoplayBlock) return 'already';
+              window.__ntAutoplayBlock = true;
+              document.addEventListener('play', (e) => {
+                try {
+                  const v = e.target;
+                  const activated =
+                    !!(navigator.userActivation && navigator.userActivation.hasBeenActive);
+                  if (v instanceof HTMLMediaElement && !activated) v.pause();
+                } catch {}
+              }, true);
+              return 'installed';
+            })()`
+          )
+          .catch(() => {});
+      } catch {
+        /* noop */
+      }
+    }
+  }
+
+  /** Re-apply sound/autoplay policies to every live tab (after a Settings change). */
+  applySitePoliciesToAll(): void {
+    this.forEachWebContents((_tab, wc) => {
+      let url = '';
+      try {
+        url = wc.getURL();
+      } catch {
+        return;
+      }
+      this.applySitePolicies(wc, url);
+    });
+  }
+
+  /** Per-site popup policy: per-site override, else the global default, else 'ask'. */
+  popupPolicyFor(url: string): 'allow' | 'block' | 'ask' {
+    try {
+      const origin = new URL(url).origin;
+      return this.store.d.privacy.popups[origin]
+        ?? this.store.d.privacy.defaults['popups']
+        ?? 'ask';
+    } catch {
+      return 'ask';
+    }
   }
 
   go(raw: string) {

@@ -27,11 +27,28 @@ import { normalizeUrlKey } from './import/util';
 import { LlamaServer } from './models/runtime';
 import { AppleFmClient } from './models/applefm';
 import {
-  enterPictureInPicture,
+  captureMediaThumb,
   seekMedia,
   startMediaPolling,
   toggleMedia,
 } from './media';
+import {
+  closePipWindow,
+  pipToggleTransport,
+  togglePipWindow,
+} from './pip';
+import {
+  clearBrowsingData,
+  deleteSiteData,
+  setAutoplayPolicy,
+  setMuted,
+  setPermissionDefault,
+  setPopupPolicy,
+  setSitePermission,
+  siteCookieDetails,
+  siteDataSummaries,
+  snapshot as snapshotPrivacy,
+} from './privacy';
 import {
   setupGuestSession,
   noteImageSave,
@@ -46,13 +63,15 @@ import {
 import type {
   ActiveModelRef, AdBlockState, AdBlockStats, AgentEvent, BookmarkState, BrainEvent, BrowserSnapshot, ChatSession, JevConfigInput, JevConfigPublic, ModelAssignment,
   ModelChoice, ModelEntryPublic, ModelEvent, ProviderId, ProviderInput, ProviderPublic, ProviderValidateInput, SkillDef, SkillInput, SpaceState,
-  TabDelta, ThemeTokens, TidyActions, TidyPlan, VoiceEngineState, VoiceSettings, VoiceTranscript
+  TabDelta, ThemeTokens, TidyActions, TidyPlan, VoiceEngineState, VoiceSettings, VoiceTranscript, LocalModelMetrics
 } from '../shared/ipc';
 
 let win: BrowserWindow | null = null;
 let settingsOpen = false;
 let store: Store;
 let tabs: TabManager;
+/** Background media tab tracked by the ~1Hz media poll (for seek/toggle). */
+let currentMediaTabId: string | null = null;
 /** Current find-in-page query for the active tab (for find-next). */
 let lastFindQuery = '';
 let adblocker: AdBlocker;
@@ -251,6 +270,10 @@ function initModelTier() {
   llama = new LlamaServer({ binDir, modelsDir, ensureSidecar });
   appleFm = new AppleFmClient({
     binaryCandidates: [
+      // Primary: the userData sidecars dir — survives app replacement on
+      // update (the .app bundle is wiped on every re-download, so a bridge
+      // installed there has to be rebuilt each time).
+      path.join(userData, 'sidecars', 'applefm-bridge'),
       // Packaged app: extraResources/sidecars (see native/applefm/build.sh).
       path.join(process.resourcesPath, 'sidecars', 'applefm-bridge'),
       // Dev: repo resources dir.
@@ -682,15 +705,36 @@ function registerIpc() {
     tabs.close(tabId);
   });
   ipcMain.handle('nt.tabs.activate', (_e, tabId: string) => tabs.activate(tabId));
-  // Picture in Picture for the active tab: the most-likely video element
-  // (playing > largest > first) is put into PiP. Chromium handles the
-  // floating window; nothing extra to manage in main.
-  ipcMain.handle('nt.tabs.pip', async (): Promise<{ ok: boolean; error?: string }> => {
-    return enterPictureInPicture(tabs);
+  // Picture in Picture: the custom Next Token PiP window (frameless,
+  // rounded, with transport controls) for the target tab's video, with the
+  // native requestPictureInPicture path as fallback. Toggle semantics —
+  // calling again while the window is up closes it. Failures return
+  // {ok:false, error} so the renderer can toast them.
+  ipcMain.handle('nt.tabs.pip', async (_e, tabId?: string): Promise<{ ok: boolean; error?: string }> => {
+    const toast = (message: string) => {
+      if (win && !win.isDestroyed()) win.webContents.send('nt.pip-error', message);
+    };
+    const r = await togglePipWindow(tabs, typeof tabId === 'string' ? tabId : undefined, toast);
+    // Surface failures as a toast, not just a return value.
+    if (!r.ok) toast(r.error ?? 'Picture in Picture failed.');
+    return r;
   });
-  // Media notch: the sidebar's video controls for the active tab.
-  ipcMain.handle('nt.media.seek', (_e, ratio: number) => seekMedia(tabs, Number(ratio)));
-  ipcMain.handle('nt.media.toggle', () => toggleMedia(tabs));
+  // Transport + close for the custom PiP window's own buttons.
+  ipcMain.handle('nt.pip.toggle', async (): Promise<{ paused: boolean }> => {
+    return pipToggleTransport(tabs);
+  });
+  ipcMain.handle('nt.pip.close', async (): Promise<void> => {
+    closePipWindow();
+  });
+  // Curved media viewfinder: seek / play-pause target the background
+  // media tab tracked by the poll (not the active tab). The explicit
+  // tabId overload still wins when provided.
+  ipcMain.handle('nt.media.seek', (_e, ratio: number, tabId?: string) =>
+    seekMedia(tabs, Number(ratio), typeof tabId === 'string' ? tabId : currentMediaTabId ?? undefined)
+  );
+  ipcMain.handle('nt.media.toggle', (_e, tabId?: string) =>
+    toggleMedia(tabs, typeof tabId === 'string' ? tabId : currentMediaTabId ?? undefined)
+  );
   // Blocked-popup "open anyway" (from the nt.popup.blocked indicator).
   ipcMain.handle('nt.popup.open', (_e, url: string) => {
     if (typeof url === 'string' && url)
@@ -1186,6 +1230,39 @@ function registerIpc() {
   ipcMain.handle('nt.settings.search-engine.get', () => store.d.searchEngine);
   // -- native ad blocker --------------------------------------------------
   ipcMain.handle('nt.adblock.get', (): AdBlockState => publicAdBlock());
+
+  // -- Privacy & security → Advanced (Settings) ---------------------------
+  ipcMain.handle('nt.privacy.snapshot', () => snapshotPrivacy(store));
+  ipcMain.handle('nt.privacy.set-permission', (_e, origin: string, perm: string, decision: 'allow' | 'block' | null) =>
+    setSitePermission(store, String(origin), String(perm), decision ?? null)
+  );
+  ipcMain.handle('nt.privacy.set-default', (_e, perm: string, policy: 'allow' | 'block' | 'ask') => {
+    const snap = setPermissionDefault(store, String(perm), policy);
+    // The autoplay default is enforced per-tab; re-apply so live tabs pick
+    // up the change without a reload.
+    if (String(perm) === 'autoplay') tabs.applySitePoliciesToAll();
+    return snap;
+  });
+  ipcMain.handle('nt.privacy.set-popup', (_e, origin: string, policy: 'allow' | 'block' | 'ask' | null) =>
+    setPopupPolicy(store, String(origin), policy ?? null)
+  );
+  ipcMain.handle('nt.privacy.set-autoplay', (_e, origin: string, allow: boolean) =>
+    setAutoplayPolicy(store, tabs, String(origin), !!allow)
+  );
+  ipcMain.handle('nt.privacy.set-muted', (_e, origin: string, muted: boolean) =>
+    setMuted(store, tabs, String(origin), !!muted)
+  );
+  ipcMain.handle('nt.privacy.sites', () => siteDataSummaries());
+  ipcMain.handle('nt.privacy.site-cookies', (_e, site: string) => siteCookieDetails(String(site)));
+  ipcMain.handle('nt.privacy.delete-site', (_e, site: string) => deleteSiteData(String(site)));
+  ipcMain.handle('nt.privacy.clear-data', (_e, opts: { cookies: boolean; cache: boolean; history: boolean }) =>
+    clearBrowsingData(store, {
+      cookies: !!opts?.cookies,
+      cache: !!opts?.cache,
+      history: !!opts?.history,
+    })
+  );
+  ipcMain.handle('nt.privacy.history', () => store.d.history.slice(0, 200));
   ipcMain.handle('nt.adblock.set-enabled', (_e, enabled: boolean): AdBlockState => {
     store.d.adblock.enabled = !!enabled;
     store.saveSoon();
@@ -1316,6 +1393,8 @@ function registerIpc() {
     return probe;
   });
   ipcMain.handle('nt.models.disk-usage', () => downloader.diskUsage());
+  // Latest measured local-model (llama-server) turn; null until the first one completes.
+  ipcMain.handle('nt.models.local-metrics', (): LocalModelMetrics | null => store.d.models.localMetrics);
   // Optional HF token for gated repos (safeStorage; registered from models/ipc).
   registerModelsIpc();
 
@@ -1508,6 +1587,7 @@ app.whenReady().then(() => {
     send: (channel, payload) => {
       if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
     },
+    store,
   });
   tabs = new TabManager(
     store,
@@ -1602,7 +1682,7 @@ app.whenReady().then(() => {
               // The PiP engine returns { ok, error }; surface failures as
               // a toast instead of swallowing them.
               click: () => {
-                void enterPictureInPicture(tabs).then((r) => {
+                void togglePipWindow(tabs).then((r) => {
                   if (!r.ok && win && !win.isDestroyed()) {
                     win.webContents.send('nt.pip-error', r.error ?? 'Picture in Picture failed.');
                   }
@@ -1654,17 +1734,33 @@ app.whenReady().then(() => {
   );
   initModelTier();
   registerIpc();
-  // Sidebar media notch: poll the active tab's video state ~1Hz and push
-  // it to the renderer. The poll is cheap — it no-ops unless the active
-  // tab's URL looks video-plausible or the last tick found a video, and it
-  // resets on active-tab changes and while the window is hidden.
+  // Curved media viewfinder: sweep all tabs ~1Hz for the background media
+  // tab (a video in a NON-active tab) and push its state to the renderer.
+  // The viewfinder appears only when the user is not on the media tab.
+  // A ~2.5fps thumbnail stream feeds both the viewfinder's curved ribbon
+  // and the custom PiP window; it pauses when hidden.
   startMediaPolling(tabs, {
     send: (s) => {
+      currentMediaTabId = s.hasVideo && s.background ? (s.tabId ?? null) : null;
       if (win && !win.isDestroyed()) win.webContents.send('nt.media.state', s);
     },
     isHidden: () => !win || win.isDestroyed() || !win.isVisible(),
-    activeTabKey: () => tabs.activeTabId,
+    activeTabId: () => tabs.activeTabId,
   });
+  setInterval(() => {
+    void (async () => {
+      try {
+        const tabId = currentMediaTabId;
+        if (!tabId || !win || win.isDestroyed() || !win.isVisible()) return;
+        const dataUrl = await captureMediaThumb(tabs, tabId);
+        if (dataUrl && win && !win.isDestroyed()) {
+          win.webContents.send('nt.media.thumb', { tabId, dataUrl });
+        }
+      } catch {
+        /* never break the loop on a transient capture failure */
+      }
+    })();
+  }, 400);
   setupUpdater();
   Menu.setApplicationMenu(
     Menu.buildFromTemplate([

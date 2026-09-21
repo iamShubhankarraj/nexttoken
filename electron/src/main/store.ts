@@ -4,7 +4,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { DEFAULT_LIGHT_TOKENS, MAX_CHAT_SESSIONS, PROVIDER_PRESETS, SPACE_PALETTE } from '../shared/ipc';
 import type {
-  ActiveModelRef, AgentMessage, ArchivedTab, ProviderId, SiteBoost, SkillDef, SkillInput, ThemeTokens
+  ActiveModelRef, AgentMessage, ArchivedTab, LocalModelMetrics, ProviderId, SiteBoost, SkillDef, SkillInput, ThemeTokens
 } from '../shared/ipc';
 import type { ModelRef } from './models/types';
 
@@ -54,6 +54,30 @@ export interface ChatSessionPersist {
 /** One record per downloaded model file: bytes on disk + last download timestamp. */
 export interface ModelDownloadRecord { bytes: number; at: number; }
 
+/** Remembered per-site permission decision. */
+export type SitePermDecision = 'allow' | 'block';
+/** Default policy for a permission type when no per-site decision exists. */
+export type PermDefaultPolicy = 'allow' | 'block' | 'ask';
+/** Per-site popup policy. 'ask' = blocked-popup toast with "Open anyway" (the default). */
+export type PopupPolicy = 'allow' | 'block' | 'ask';
+
+/** Privacy & security state: per-site permissions, popup/autoplay/sound policies. */
+export interface PrivacyPersist {
+  /** origin -> permission name -> remembered allow/block */
+  permissions: Record<string, Record<string, SitePermDecision>>;
+  /** permission name -> default policy */
+  defaults: Record<string, PermDefaultPolicy>;
+  /** origin -> popup policy */
+  popups: Record<string, PopupPolicy>;
+  /** origin -> autoplay policy ('block' forces user-activation-required) */
+  autoplay: Record<string, 'allow' | 'block'>;
+  /** origin -> muted */
+  muted: Record<string, boolean>;
+}
+
+/** One visited page (capped) — powers per-site settings + clear-browsing-data. */
+export interface HistoryEntry { url: string; title: string; at: number }
+
 interface Persisted {
   spaces: SpacePersist[];
   activeSpaceId: string;
@@ -96,6 +120,8 @@ interface Persisted {
     appleFmAvailable: boolean | null;
     /** The single model selection used by every LLM call in the app. */
     activeModel: ActiveModelRef;
+    /** Latest measured local-model (llama-server) turn; null until the first one completes. */
+    localMetrics: LocalModelMetrics | null;
   };
   /** Brain / Jev config. The API key itself lives in the OS keychain via JevCredentialStore. */
   brain: { jevBaseUrl: string };
@@ -105,6 +131,10 @@ interface Persisted {
   chatSessions: ChatSessionPersist[];
   /** Native ad blocker: global switch + per-site allowlist (by hostname). */
   adblock: { enabled: boolean; allowedHosts: string[] };
+  /** Privacy & security: per-site permissions, popup/autoplay/sound policies. */
+  privacy: PrivacyPersist;
+  /** Browsing history (URL + title + time), capped — per-site settings + clear-data. */
+  history: HistoryEntry[];
 }
 
 const ARCHIVE_AFTER_DEFAULT = 12 * 3600 * 1000;
@@ -193,12 +223,21 @@ function defaults(): Persisted {
       assignment: { chat: 'apple-fm', vision: 'none' },
       taskVision: 'none',
       appleFmAvailable: null,
-      activeModel: { kind: 'local-applefm' }
+      activeModel: { kind: 'local-applefm' },
+      localMetrics: null
     },
     brain: { jevBaseUrl: '' },
     skills: defaultSkills(),
     chatSessions: [],
-    adblock: { enabled: true, allowedHosts: [] }
+    adblock: { enabled: true, allowedHosts: [] },
+    privacy: {
+      permissions: {},
+      defaults: {},
+      popups: {},
+      autoplay: {},
+      muted: {},
+    },
+    history: [],
   };
 }
 
@@ -248,6 +287,18 @@ export class Store {
       if (!parsed.chatSessions) parsed.chatSessions = [];
       // Backfill ad-blocker config for installs that predate it.
       if (!parsed.adblock) parsed.adblock = defaults().adblock;
+      // Backfill privacy & security + browsing history for installs that predate them.
+      if (!parsed.privacy) parsed.privacy = defaults().privacy;
+      else {
+        for (const k of ['permissions', 'defaults', 'popups', 'autoplay', 'muted'] as const) {
+          if (typeof parsed.privacy[k] !== 'object' || parsed.privacy[k] === null) {
+            parsed.privacy[k] = {};
+          }
+        }
+      }
+      if (!Array.isArray(parsed.history)) parsed.history = [];
+      // Backfill local-model metrics for installs that predate them.
+      if (!('localMetrics' in parsed.models)) parsed.models.localMetrics = null;
       // Backfill the multi-provider manager for installs that predate it.
       if (!Array.isArray(parsed.providers)) {
         const legacy = parsed.provider ?? defaults().providers[0];
@@ -471,6 +522,34 @@ export class Store {
   /** Remove a provider's key file (used when the provider is deleted). */
   removeProviderKey(providerId: string): void {
     try { fs.rmSync(this.keyFileFor(providerId), { force: true }); } catch { /* best effort */ }
+  }
+
+  // -- browsing history (visited pages, capped at 1000) -----------------------
+  /** Record a page visit. Consecutive duplicates collapse; capped at 1000. */
+  pushHistoryEntry(url: string, title: string) {
+    const clean = String(url ?? '').slice(0, 2048);
+    if (!/^https?:\/\//i.test(clean)) return;
+    const last = this.data.history[0];
+    if (last && last.url === clean) {
+      last.title = String(title ?? '').slice(0, 200) || last.title;
+      last.at = Date.now();
+      this.saveSoon();
+      return;
+    }
+    this.data.history.unshift({
+      url: clean,
+      title: String(title ?? '').slice(0, 200),
+      at: Date.now(),
+    });
+    if (this.data.history.length > 1000) {
+      this.data.history = this.data.history.slice(0, 1000);
+    }
+    this.saveSoon();
+  }
+
+  clearHistory() {
+    this.data.history = [];
+    this.saveSoon();
   }
 
   // -- agent history (text only, capped) -------------------------------------

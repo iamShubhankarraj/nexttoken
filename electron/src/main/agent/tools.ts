@@ -324,8 +324,8 @@ export async function executeTool(
       return { ok: true, result: `Screen description (seen by ${via}):\n${text}` };
     }
     case 'picture_in_picture': {
-      const { enterPictureInPicture } = await import('../media');
-      const r = await enterPictureInPicture(ctx.tabs);
+      const { togglePipWindow } = await import('../pip');
+      const r = await togglePipWindow(ctx.tabs);
       return {
         ok: r.ok,
         result: r.ok

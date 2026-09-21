@@ -24,7 +24,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { nt } from "../nt";
-import type { TaskModelSlotInfo } from "../../shared/ipc";
+import type { LocalModelMetrics, TaskModelSlotInfo } from "../../shared/ipc";
 
 /* ------------------------- bridge (local contract) ------------------------ */
 
@@ -67,6 +67,8 @@ interface NtModels {
   modelsHfTokenHas?(): Promise<boolean>;
   modelsHfTokenClear?(): Promise<void>;
   modelsGatedIds?(): Promise<string[]>;
+  /** Latest measured local-model turn (newer builds; null until the first local turn). */
+  modelsLocalMetrics?(): Promise<LocalModelMetrics | null>;
 }
 
 /** Bridge handle; throws the same way nt() does when unavailable. */
@@ -139,6 +141,7 @@ export function ModelsPanel({ focusTask }: { focusTask?: string }) {
   const [hfTokenBusy, setHfTokenBusy] = useState(false);
   const [hfTokenError, setHfTokenError] = useState<string | null>(null);
   const [gatedIds, setGatedIds] = useState<string[]>([]);
+  const [metrics, setMetrics] = useState<LocalModelMetrics | null>(null);
 
   /** The unified active model drives every LLM call — keep its label fresh. */
   const loadActiveModelLabel = useCallback(async () => {
@@ -159,18 +162,20 @@ export function ModelsPanel({ focusTask }: { focusTask?: string }) {
     setLoadError(null);
     try {
       const api = modelsApi();
-      const [list, fm, assign, usage, taskSlots] = await Promise.all([
+      const [list, fm, assign, usage, taskSlots, lm] = await Promise.all([
         api.modelsList(),
         api.modelsAppleFm(),
         api.modelsGetAssignment(),
         api.modelsDiskUsage(),
         api.modelsTaskModels ? api.modelsTaskModels().catch(() => null) : Promise.resolve(null),
+        api.modelsLocalMetrics ? api.modelsLocalMetrics().catch(() => null) : Promise.resolve(null),
       ]);
       setEntries(list);
       setApple(fm);
       setAssignment(assign);
       setDiskBytes(usage);
       setSlots(taskSlots);
+      setMetrics(lm);
     } catch (err) {
       setLoadError(err instanceof Error ? err.message : String(err));
     }
@@ -579,7 +584,19 @@ export function ModelsPanel({ focusTask }: { focusTask?: string }) {
             >
               Requires macOS 26 (Tahoe) or later with Apple Intelligence
               enabled, plus Xcode 26+ command line tools. The script installs
-              the bridge into the app for you — nothing else to configure.
+              the bridge into{" "}
+              <code
+                className="nt-r-sm px-1.5 py-0.5 text-[12px]"
+                style={{
+                  background: "var(--nt-bg-hover)",
+                  color: "var(--nt-text-1)",
+                }}
+              >
+                ~/Library/Application Support/Next Token/sidecars/
+              </code>{" "}
+              — outside the app bundle, so it survives app updates: a bridge
+              you built once is reused automatically after updating, no
+              rebuild needed.
             </p>
           </div>
         ) : (
@@ -589,6 +606,92 @@ export function ModelsPanel({ focusTask }: { focusTask?: string }) {
               {apple.reason}
             </p>
           )
+        )}
+      </div>
+
+      {/* ------------------- Local model performance -------------------- */}
+      <div
+        className="nt-r-md mt-4 border p-4"
+        style={{
+          borderColor: "var(--nt-border)",
+          background: "var(--nt-bg-raised)",
+        }}
+      >
+        <div className="mb-2 flex items-center justify-between">
+          <h4
+            className="text-[13px] font-semibold"
+            style={{ color: "var(--nt-text-1)" }}
+          >
+            Local model performance
+          </h4>
+          <button
+            title="Refresh metrics"
+            onClick={() =>
+              void modelsApi()
+                .modelsLocalMetrics?.()
+                .then(setMetrics)
+                .catch(() => {})
+            }
+            className="nt-r-sm p-1.5 transition-colors hover:bg-[var(--nt-bg-hover)]"
+            style={{ color: "var(--nt-text-3)" }}
+          >
+            <RefreshCw size={13} strokeWidth={1.75} />
+          </button>
+        </div>
+        {metrics ? (
+          <div>
+            <p className="text-[12.5px]" style={{ color: "var(--nt-text-2)" }}>
+              Last turn on{" "}
+              <span className="nt-mono" style={{ color: "var(--nt-text-1)" }}>
+                {metrics.modelId}
+              </span>{" "}
+              {metrics.warm ? "(model was already loaded)" : "(model loaded fresh)"}
+            </p>
+            <div className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-[12px] sm:grid-cols-3">
+              {(
+                [
+                  ["Speed", `${metrics.tokensPerSec} tok/s`],
+                  ["Generated", `~${metrics.genTokens} tokens`],
+                  ["First token", `${metrics.firstTokenMs} ms`],
+                  ["Total", `${metrics.totalMs} ms`],
+                  [
+                    "Model load",
+                    metrics.warm ? "0 ms (warm)" : `${metrics.loadMs} ms`,
+                  ],
+                  [
+                    "Measured",
+                    new Date(metrics.at).toLocaleTimeString([], {
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    }),
+                  ],
+                ] as const
+              ).map(([k, v]) => (
+                <div key={k} className="flex items-baseline justify-between gap-2">
+                  <span style={{ color: "var(--nt-text-3)" }}>{k}</span>
+                  <span
+                    className="nt-mono font-medium"
+                    style={{ color: "var(--nt-text-1)" }}
+                  >
+                    {v}
+                  </span>
+                </div>
+              ))}
+            </div>
+            <p
+              className="mt-2 text-[11.5px]"
+              style={{ color: "var(--nt-text-3)" }}
+            >
+              Token counts are estimated from streamed characters (~4
+              chars/token). The model stays loaded in memory between turns, so
+              repeat turns skip the load wait.
+            </p>
+          </div>
+        ) : (
+          <p className="text-[12px]" style={{ color: "var(--nt-text-3)" }}>
+            No local-model turns measured yet — run the agent on a downloaded
+            GGUF model and the latest speed appears here.
+          </p>
         )}
       </div>
 

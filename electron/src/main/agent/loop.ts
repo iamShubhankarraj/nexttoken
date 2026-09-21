@@ -29,6 +29,52 @@ export interface AgentRuntime {
 const activeRuns = new Map<string, AbortController>();
 const MAX_STEPS = 12;
 
+/**
+ * THE single place tool calls get executed. Used by the outer agent loop for
+ * loop-driven models AND as the bridge callback for models with an internal
+ * tool loop (Apple Foundation Models): the bridge emits tool_call lines and
+ * this runs the real approval-gated executor, so confirmations, sensitive-
+ * action rules, and vision-missing handling are identical on both paths.
+ * The result is capped at 2000 chars (oversized dumps are the biggest
+ * prompt-eval cost on local models).
+ */
+async function serveToolCall(
+  ctx: ToolCtx,
+  emit: AgentRuntime['emit'],
+  rt: AgentRuntime,
+  runId: string,
+  name: string,
+  args: Record<string, unknown>
+): Promise<string> {
+  emit({ kind: 'tool', runId, name, summary: summarizeToolCall(name, args) });
+  let outcome: ToolOutcome;
+  try {
+    outcome = await executeTool(ctx, name, args);
+  } catch (e) {
+    // Vision tasks without a downloaded vision model raise a typed
+    // error: nudge the model manager and feed the requirement back to
+    // the model so its final answer tells the user what to do.
+    if (isVisionRequiredError(e)) {
+      rt.onVisionMissing?.();
+      outcome = {
+        ok: false,
+        result:
+          'VISION_MODEL_REQUIRED: the user has not downloaded a vision model yet. ' +
+          'I have opened the vision download page in Settings for them. ' +
+          'In your final reply, briefly tell the user that a vision model is required ' +
+          'to see the screen, and ask them to download one in Settings → Models → Vision. ' +
+          'Do NOT describe or guess at anything on the screen.'
+      };
+    } else {
+      throw e;
+    }
+  }
+  if (outcome.denied) {
+    emit({ kind: 'denied', runId, name, reason: 'User declined the terminal confirmation.' });
+  }
+  return outcome.result.slice(0, 2000);
+}
+
 export function cancelAgentRun(runId: string) {
   activeRuns.get(runId)?.abort();
 }
@@ -56,8 +102,11 @@ async function runLoop(runId: string, userText: string, rt: AgentRuntime, signal
 
   store.pushHistory({ id: randomUUID(), role: 'user', text: userText, at: Date.now() });
 
+  // Keep local-model context lean: the last 8 history entries are plenty for
+  // continuity, and trimming prompt-eval cost is the cheapest latency win on
+  // Apple Silicon (every extra token is re-encoded on each turn).
   const history: LlmMessage[] = store.d.agentHistory
-    .slice(-20)
+    .slice(-8)
     .map((m) => ({ role: m.role === 'tool' ? 'user' : m.role, content: m.text } as LlmMessage));
   // The user message was just pushed; history includes it — avoid duplication.
   const base: LlmMessage[] = [{ role: 'system', content: SYSTEM_PROMPT }];
@@ -86,6 +135,22 @@ async function runLoop(runId: string, userText: string, rt: AgentRuntime, signal
         // Local models stream tokens; the panel already accumulates
         // done:false deltas, so the reply paints as it's generated.
         onToken: (t) => emit({ kind: 'message', runId, text: t, done: false }),
+        // Models with an internal tool loop (Apple Foundation Models via
+        // the bridge) run tool calls here — the same approval-gated path
+        // as the outer loop below, so their results are final and never
+        // re-executed.
+        toolExecutor: async (name, argsJson) => {
+          let args: Record<string, unknown>;
+          try {
+            args = JSON.parse(argsJson) as Record<string, unknown>;
+            if (!args || typeof args !== 'object' || Array.isArray(args)) {
+              throw new Error('not a JSON object');
+            }
+          } catch (e) {
+            throw new Error(`invalid tool arguments JSON for ${name}: ${e instanceof Error ? e.message : String(e)}`);
+          }
+          return serveToolCall(ctx, emit, rt, runId, name, args);
+        },
       });
       const { text, toolCalls } = routed.result;
 
@@ -106,36 +171,13 @@ async function runLoop(runId: string, userText: string, rt: AgentRuntime, signal
       convo.push(assistantMsg);
       for (const tc of toolCalls) {
         if (signal.aborted) break;
-        emit({ kind: 'tool', runId, name: tc.name, summary: summarizeToolCall(tc.name, tc.args) });
-        let outcome: ToolOutcome;
-        try {
-          outcome = await executeTool(ctx, tc.name, tc.args);
-        } catch (e) {
-          // Vision tasks without a downloaded vision model raise a typed
-          // error: nudge the model manager and feed the requirement back to
-          // the model so its final answer tells the user what to do.
-          if (isVisionRequiredError(e)) {
-            rt.onVisionMissing?.();
-            outcome = {
-              ok: false,
-              result:
-                'VISION_MODEL_REQUIRED: the user has not downloaded a vision model yet. ' +
-                'I have opened the vision download page in Settings for them. ' +
-                'In your final reply, briefly tell the user that a vision model is required ' +
-                'to see the screen, and ask them to download one in Settings → Models → Vision. ' +
-                'Do NOT describe or guess at anything on the screen.'
-            };
-          } else {
-            throw e;
-          }
-        }
-        if (outcome.denied) {
-          emit({ kind: 'denied', runId, name: tc.name, reason: 'User declined the terminal confirmation.' });
-        }
+        // Same serveToolCall the Apple FM bridge uses for its internal
+        // tool loop — one execution path everywhere.
+        const content = await serveToolCall(ctx, emit, rt, runId, tc.name, tc.args);
         convo.push({
           role: 'tool',
           toolCallId: tc.id,
-          content: outcome.result.slice(0, 6000)
+          content
         });
       }
     }

@@ -7,10 +7,10 @@ const api: NextTokenAPI = {
   tabsClose: (tabId) => ipcRenderer.invoke('nt.tabs.close', tabId),
   tabsActivate: (tabId) => ipcRenderer.invoke('nt.tabs.activate', tabId),
   /** Picture in Picture for the active tab's video. */
-  tabsPip: () => ipcRenderer.invoke('nt.tabs.pip'),
-  /** Media notch: seek / play-pause the active tab's video. */
-  mediaSeek: (ratio) => ipcRenderer.invoke('nt.media.seek', ratio),
-  mediaToggle: () => ipcRenderer.invoke('nt.media.toggle'),
+  tabsPip: (tabId?: string) => ipcRenderer.invoke('nt.tabs.pip', tabId),
+  /** Curved viewfinder: seek / play-pause the background media tab's video. */
+  mediaSeek: (ratio, tabId?) => ipcRenderer.invoke('nt.media.seek', ratio, tabId),
+  mediaToggle: (tabId?) => ipcRenderer.invoke('nt.media.toggle', tabId),
   /** Guest zoom for the active tab. */
   tabsZoom: (mode) => ipcRenderer.invoke('nt.tabs.zoom', mode),
   /** Find in page for the active tab. */
@@ -41,6 +41,24 @@ const api: NextTokenAPI = {
     ipcRenderer.on('nt.media.state', l);
     return () => ipcRenderer.removeListener('nt.media.state', l);
   },
+  onMediaThumb: (cb) => {
+    const l = (_e: unknown, t: Parameters<Parameters<NextTokenAPI['onMediaThumb']>[0]>[0]) => cb(t);
+    ipcRenderer.on('nt.media.thumb', l);
+    return () => ipcRenderer.removeListener('nt.media.thumb', l);
+  },
+  // -- Privacy & security → Advanced -------------------------------------
+  privacySnapshot: () => ipcRenderer.invoke('nt.privacy.snapshot'),
+  privacySetPermission: (origin, perm, decision) =>
+    ipcRenderer.invoke('nt.privacy.set-permission', origin, perm, decision),
+  privacySetDefault: (perm, policy) => ipcRenderer.invoke('nt.privacy.set-default', perm, policy),
+  privacySetPopup: (origin, policy) => ipcRenderer.invoke('nt.privacy.set-popup', origin, policy),
+  privacySetAutoplay: (origin, allow) => ipcRenderer.invoke('nt.privacy.set-autoplay', origin, allow),
+  privacySetMuted: (origin, muted) => ipcRenderer.invoke('nt.privacy.set-muted', origin, muted),
+  privacySites: () => ipcRenderer.invoke('nt.privacy.sites'),
+  privacySiteCookies: (site) => ipcRenderer.invoke('nt.privacy.site-cookies', site),
+  privacyDeleteSite: (site) => ipcRenderer.invoke('nt.privacy.delete-site', site),
+  privacyClearData: (opts) => ipcRenderer.invoke('nt.privacy.clear-data', opts),
+  privacyHistory: () => ipcRenderer.invoke('nt.privacy.history'),
   tabsPin: (tabId, pinned) => ipcRenderer.invoke('nt.tabs.pin', tabId, pinned),
   tabsMove: (tabId, spaceId) => ipcRenderer.invoke('nt.tabs.move', tabId, spaceId),
   tabsReorder: (tabId, beforeTabId, folderId) => ipcRenderer.invoke('nt.tabs.reorder', tabId, beforeTabId, folderId),
@@ -131,6 +149,7 @@ const api: NextTokenAPI = {
   modelsSetVision: (ref) => ipcRenderer.invoke('nt.models.set-vision', ref),
   modelsAppleFm: () => ipcRenderer.invoke('nt.models.applefm'),
   modelsDiskUsage: () => ipcRenderer.invoke('nt.models.disk-usage'),
+  modelsLocalMetrics: () => ipcRenderer.invoke('nt.models.local-metrics'),
   onModelEvent: (cb) => {
     const l = (_e: unknown, e: Parameters<Parameters<NextTokenAPI['onModelEvent']>[0]>[0]) => cb(e);
     ipcRenderer.on('nt.model-event', l);
