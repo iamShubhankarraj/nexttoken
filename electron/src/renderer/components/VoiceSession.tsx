@@ -2,7 +2,7 @@
  * VoiceSession — the always-mounted owner of the voice pipeline.
  *
  * AgentPanel unmounts when the panel closes, but voice must keep working:
- * the pill, the toolbar chip, barge-in (Alt+V / tap), and the agent-acting
+ * the toolbar chip, barge-in (Alt+V / tap), and the agent-acting
  * overlay all live outside the panel. So the mic/TTS hook lives here, at
  * App level, and the panel (plus omnibox / top strip) consumes this context.
  *
@@ -51,7 +51,7 @@ export interface VoiceSessionValue {
   playbackSpeaking: boolean;
   voiceError: string | null;
   amplitude: number;
-  /** True when anything voice is happening — drives pill/chip/overlay. */
+  /** True when anything voice is happening — drives the toolbar voice chip. */
   active: boolean;
   // handler registries (the agent panel fills these in)
   registerCommandHandler: (fn: ((text: string) => void) | null) => void;
@@ -138,7 +138,7 @@ export function VoiceSession({ children }: { children: ReactNode }) {
       }),
       nt().onAgentActingDone(() => setActing(null)),
       nt().onVoiceDictated((d) => setDictated({ ...d, at: Date.now() })),
-      // Barge-in from the pill / Alt+V: kill TTS at once, start listening fresh.
+      // Barge-in from the voice chip / Alt+V: kill TTS at once, start listening fresh.
       nt().onVoiceBargeIn(() => {
         stopLocalSpeech();
         if (enabledRef.current) beginRef.current();

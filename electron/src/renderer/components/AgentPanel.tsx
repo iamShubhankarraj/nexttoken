@@ -137,24 +137,32 @@ export function AgentPanel() {
     ]);
   }, []);
 
-  const speak = useCallback((text: string) => {
-    if (!voiceCfgRef.current.speakReplies) return;
+  const speakNow = useCallback((text: string) => {
     // A new reply interrupts any in-flight TTS — no overlapping speech.
     stopLocalSpeech();
-    // Prefer the on-device Kokoro voice; fall back to system speech.
+    // Kokoro is the only voice in the app. If it fails we stay silent and
+    // say so in the chat — the old system-voice fallback is gone for good.
     void speakLocal(text).then((ok) => {
-      if (ok) return;
-      if (!("speechSynthesis" in window)) return;
-      try {
-        window.speechSynthesis.cancel();
-        const utter = new SpeechSynthesisUtterance(text.slice(0, 1200));
-        utter.rate = 1.05;
-        window.speechSynthesis.speak(utter);
-      } catch {
-        /* speech is best-effort */
-      }
+      if (!ok) setVoiceFeedback("Kokoro TTS unavailable — reply shown as text.");
     });
   }, []);
+
+  /**
+   * A voice turn asked the model to do something — the matching agent run's
+   * reply is spoken aloud even when "speak replies" is off.
+   */
+  const voiceRunPendingRef = useRef(false);
+  const voiceRunRef = useRef<string | null>(null);
+
+  const speak = useCallback(
+    (text: string, runId?: string) => {
+      const voiceReply = !!runId && voiceRunRef.current === runId;
+      if (!voiceCfgRef.current.speakReplies && !voiceReply) return;
+      if (voiceReply) voiceRunRef.current = null;
+      speakNow(text);
+    },
+    [speakNow],
+  );
 
   /* ------------------------- agent event handling ------------------------ */
 
@@ -164,6 +172,12 @@ export function AgentPanel() {
         case "started":
           setActiveRun(e.runId);
           accumRef.current.set(e.runId, "");
+          // A voice turn asked the model to do something: this run's reply
+          // gets spoken aloud via Kokoro.
+          if (voiceRunPendingRef.current) {
+            voiceRunRef.current = e.runId;
+            voiceRunPendingRef.current = false;
+          }
           break;
         case "message": {
           const prev = accumRef.current.get(e.runId) ?? "";
@@ -183,7 +197,7 @@ export function AgentPanel() {
             setActiveRun((r) => (r === e.runId ? null : r));
             if (text) {
               pushMsg({ role: "assistant", text });
-              speak(text);
+              speak(text, e.runId);
             }
           }
           break;
@@ -205,6 +219,7 @@ export function AgentPanel() {
           break;
         case "error":
           pushMsg({ role: "system", text: `Agent error: ${e.error}` });
+          if (voiceRunRef.current === e.runId) voiceRunRef.current = null;
           accumRef.current.delete(e.runId);
           setStreams((m) => {
             const copy = new Map(m);
@@ -218,8 +233,9 @@ export function AgentPanel() {
           const leftover = accumRef.current.get(e.runId);
           if (leftover?.trim()) {
             pushMsg({ role: "assistant", text: leftover.trim() });
-            speak(leftover.trim());
+            speak(leftover.trim(), e.runId);
           }
+          if (voiceRunRef.current === e.runId) voiceRunRef.current = null;
           accumRef.current.delete(e.runId);
           setStreams((m) => {
             const copy = new Map(m);
@@ -373,9 +389,30 @@ export function AgentPanel() {
       (err) =>
         `Command failed: ${err instanceof Error ? err.message : String(err)}`,
     );
-    setVoiceFeedback(fb ?? `Heard “${text}” — no command matched.`);
-    if (fb) inputRef.current?.focus();
-  }, []);
+    if (fb) {
+      // Fixed browser command: confirm aloud with the Kokoro voice.
+      setVoiceFeedback(fb);
+      speakNow(fb);
+      // "Summarize this page" also starts an agent run — its reply is spoken.
+      if (fb.startsWith("Asking the agent")) voiceRunPendingRef.current = true;
+      inputRef.current?.focus();
+      return;
+    }
+    // Not a fixed command → the transcript becomes the agent's prompt. The
+    // model works on it and answers back, spoken aloud via Kokoro.
+    setVoiceFeedback(`Heard “${text}” — asking the agent…`);
+    voiceRunPendingRef.current = true;
+    pushMsg({ role: "user", text });
+    nt()
+      .agentChat(text, { voice: true })
+      .catch((err) => {
+        voiceRunPendingRef.current = false;
+        pushMsg({
+          role: "system",
+          text: `Couldn't start the agent: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      });
+  }, [pushMsg, speakNow]);
 
   // The always-on voice session (mic, TTS, pill, acting events) lives at App
   // level; the panel registers its handlers and renders the voice surface.

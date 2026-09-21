@@ -590,6 +590,8 @@ export interface NextTokenAPI {
   tabsCreate(opts?: { spaceId?: string; url?: string }): Promise<string>;
   tabsClose(tabId: string): Promise<void>;
   tabsActivate(tabId: string): Promise<void>;
+  /** Picture in Picture for the active tab's video. */
+  tabsPip(): Promise<{ ok: boolean; error?: string }>;
   tabsPin(tabId: string, pinned: boolean): Promise<void>;
   tabsMove(tabId: string, spaceId: string): Promise<void>;
   /** Reorder a tab: move it before `beforeTabId` (null = end of its folder/section). */
@@ -704,21 +706,23 @@ export interface NextTokenAPI {
   voiceSpeak(text: string): Promise<Uint8Array>;
   /** Barge-in: stop TTS at once so a new listen can start. */
   voiceStopSpeaking(): Promise<void>;
-  /** Fire-and-forget mic amplitude (0..1) for the pill waveform, ~15 Hz. */
+  /** Fire-and-forget mic amplitude (0..1) for the toolbar voice chip, ~15 Hz, ~15 Hz. */
   voiceAmplitude(level: number): void;
-  /** Renderer started/stopped TTS audio playback (drives the pill). */
+  /** Renderer started/stopped TTS audio playback (drives the toolbar voice chip). */
   voicePlaybackStarted(): void;
   voicePlaybackEnded(): void;
   /** Undo the last voice dictation inserted into the page. */
   voiceDictateUndo(): Promise<boolean>;
   /** User hit "Take over" — halt the voice-driven agent. */
   voiceTakeover(): Promise<void>;
+  /** Self-heal Kokoro TTS (fetch espeak-ng-data when a manual model lacks it). */
+  voiceRepairTts(): Promise<{ ok: boolean; error?: string }>;
   onVoiceEngineState(cb: (s: VoiceEngineState) => void): () => void;
-  /** Plain-language voice error for the pill (never a stack trace). */
+  /** Plain-language voice error for the voice surface (never a stack trace). */
   onVoiceError(cb: (message: string) => void): () => void;
-  /** Mic amplitude forwarded to the pill overlay window. */
+  /** Mic amplitude forwarded to the voice chip. */
   onVoiceAmplitude(cb: (level: number) => void): () => void;
-  /** TTS playback started/ended in the renderer (drives the pill). */
+  /** TTS playback started/ended in the renderer (drives the toolbar voice chip). */
   onVoicePlaybackState(cb: (speaking: boolean) => void): () => void;
   /** Agent is acting on a tab (before) / finished (after). */
   onAgentActing(cb: (e: AgentActingEvent) => void): () => void;

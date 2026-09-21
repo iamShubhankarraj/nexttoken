@@ -14,7 +14,7 @@ import { JevClient } from './brain/jev';
 import { JevCredentialStore } from './brain/credentials';
 import { Orchestrator, createRouterChat, type BrainPageState } from './brain/orchestrator';
 import { executeControl, runTerminalControl, type ControlEnv } from './brain/control';
-import { MODEL_CATALOG, ModelDownloader, targetPathFor, type DownloadEvent } from './models';
+import { MODEL_CATALOG, ModelDownloader, targetPathFor, ensureEspeakNgData, type DownloadEvent } from './models';
 import { ensureSidecar, whisperManualSteps } from './models/binaries';
 import { registerModelsIpc } from './models/ipc';
 import { setupUpdater, checkForUpdatesManually } from './updater';
@@ -26,7 +26,6 @@ import { normalizeUrlKey } from './import/util';
 import { LlamaServer } from './models/runtime';
 import { AppleFmClient } from './models/applefm';
 import { VoiceEngine, type CleanupPrompt } from './voice';
-import { VoicePillOverlay } from './voice/overlay';
 import { wrapWithActing, dictateUndoJs, type LastDictation } from './voice/acting';
 import { buildTidyPlan, applyTidy } from './tidy';
 import {
@@ -51,10 +50,7 @@ let downloader: ModelDownloader;
 let llama: LlamaServer;
 let appleFm: AppleFmClient;
 let voiceEngine: VoiceEngine;
-/** Floating voice pill overlay (created lazily on first voice activity). */
-let pill: VoicePillOverlay | null = null;
-/** Last engine state + renderer TTS playback flag, so the pill can be
- *  hidden when everything is truly idle (engine idle AND no playback). */
+/** Last engine state + renderer TTS playback flag (kept for future use). */
 let lastVoiceState: string = "idle";
 let pillPlaybackSpeaking = false;
 /** Last in-page voice dictation, for ⌘Z-style undo. */
@@ -192,19 +188,6 @@ function whisperBinaryAvailable(): boolean {
   }
 }
 
-/** Lazily create the floating voice pill overlay window. */
-function ensurePill(): void {
-  if (pill) return;
-  pill = new VoicePillOverlay({
-    getPreload: () => path.join(__dirname, '../preload/index.js'),
-    getUrl: () =>
-      process.env.ELECTRON_RENDERER_URL
-        ? { url: process.env.ELECTRON_RENDERER_URL, isFile: false }
-        : { url: path.join(__dirname, '../renderer/index.html'), isFile: true },
-  });
-  pill.ensure();
-}
-
 /** Flow's dictation cleanup prompts (MIT — see THIRD-PARTY-NOTICES.md). Cached after first load. */
 let cleanupPrompts: CleanupPrompt | null | undefined;
 function loadCleanupPrompts(): CleanupPrompt | null {
@@ -254,27 +237,11 @@ function initModelTier() {
       onState: (s: VoiceEngineState) => {
         win?.webContents.send('nt.voice-engine-state', s);
         lastVoiceState = s;
-        // The pill owns its visibility policy (it stays up during TTS
-        // playback even after the engine returns to idle); main only
-        // forwards events and ensures the window exists while active.
-        if (s !== 'idle') {
-          ensurePill();
-          pill?.show();
-          pill?.setClickMode(s === 'speaking' ? 'interactive' : 'through');
-        } else if (!pillPlaybackSpeaking) {
-          // Engine idle and no TTS playback: hide the pill window outright.
-          // (The pill component also renders null when idle; hiding the
-          // window keeps it out of Mission Control / screen capture.)
-          pill?.hide();
-        }
-        pill?.send('nt.voice-engine-state', s);
+        // Voice status now lives in the toolbar chip + agent panel — the
+        // floating pill window is gone. Main only forwards the state.
       },
       onError: (message: string) => {
         win?.webContents.send('nt.voice-error', message);
-        ensurePill();
-        pill?.show();
-        pill?.setClickMode('interactive');
-        pill?.send('nt.voice-error', message);
       },
     },
     getSttModelFile: sttModelFile,
@@ -491,6 +458,33 @@ function createWindow() {
   win.on('closed', () => { win = null; });
 }
 
+/**
+ * Put the active tab's best video into Picture-in-Picture. Picks the
+ * currently-playing video first, then the largest visible one. Runs inside
+ * the page, so site players (YouTube, etc.) keep working.
+ */
+async function enterPictureInPicture(): Promise<{ ok: boolean; error?: string }> {
+  const wc = tabs.activeWebContents();
+  if (!wc || wc.isDestroyed()) return { ok: false, error: 'No active tab.' };
+  try {
+    const ok = await wc.executeJavaScript(`(() => {
+      const vids = [...document.querySelectorAll('video')].filter(v => v.readyState >= 2 && !v.disablePictureInPicture);
+      if (!vids.length) return 'none';
+      if (document.pictureInPictureElement) { document.exitPictureInPicture().catch(() => {}); return 'toggled-off'; }
+      const playing = vids.find(v => !v.paused && !v.ended);
+      const scored = (playing ? [playing] : vids).concat(vids.filter(v => v !== playing));
+      const best = scored.sort((a, b) => (b.videoWidth * b.videoHeight) - (a.videoWidth * a.videoHeight))[0];
+      return best.requestPictureInPicture().then(() => 'ok').catch(e => 'err:' + (e && e.message ? e.message : e));
+    })()`);
+    if (ok === 'ok') return { ok: true };
+    if (ok === 'toggled-off') return { ok: true };
+    if (ok === 'none') return { ok: false, error: 'No playable video found on this page.' };
+    return { ok: false, error: typeof ok === 'string' && ok.startsWith('err:') ? ok.slice(4) : 'Picture in Picture failed.' };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
 function registerIpc() {
   // Pull-based boot: the renderer's first subscription can miss main's
   // initial push, so it requests the snapshot explicitly on mount.
@@ -510,6 +504,12 @@ function registerIpc() {
     tabs.close(tabId);
   });
   ipcMain.handle('nt.tabs.activate', (_e, tabId: string) => tabs.activate(tabId));
+  // Picture in Picture for the active tab: the most-likely video element
+  // (playing > largest > first) is put into PiP. Chromium handles the
+  // floating window; nothing extra to manage in main.
+  ipcMain.handle('nt.tabs.pip', async (): Promise<{ ok: boolean; error?: string }> => {
+    return enterPictureInPicture();
+  });
   ipcMain.handle('nt.tabs.pin', (_e, tabId: string, pinned: boolean) => {
     const t = tabs.tabs.get(tabId);
     if (t) { t.pinned = pinned; tabs.persistPinned(); sendSnapshot(); }
@@ -1094,28 +1094,34 @@ function registerIpc() {
     // also flips back to listening via the barge-in event below.
     win?.webContents.send('nt:voice-barge-in');
   });
-  // Mic amplitude (renderer → main → pill), fire-and-forget at ~15 Hz.
+  // Mic amplitude (renderer → main), fire-and-forget at ~15 Hz. The toolbar
+  // voice chip consumes it via the main window's nt:voice-amplitude event.
   ipcMain.on('nt.voice.amplitude', (_e, level: number) => {
     if (typeof level === 'number' && Number.isFinite(level)) {
-      pill?.send('nt:voice-amplitude', Math.max(0, Math.min(1, level)));
+      win?.webContents.send('nt:voice-amplitude', Math.max(0, Math.min(1, level)));
     }
   });
-  // Renderer TTS playback state (drives the pill's speaking UI).
+  // Renderer TTS playback state (drives the toolbar voice chip).
   ipcMain.on('nt.voice.playback-started', () => {
     pillPlaybackSpeaking = true;
-    ensurePill();
-    pill?.show();
-    pill?.setClickMode('interactive');
-    pill?.send('nt:voice-playback-state', true);
     win?.webContents.send('nt:voice-playback-state', true);
   });
   ipcMain.on('nt.voice.playback-ended', () => {
     pillPlaybackSpeaking = false;
-    pill?.send('nt:voice-playback-state', false);
     win?.webContents.send('nt:voice-playback-state', false);
-    // Playback was keeping the pill up while the engine idled: with both
-    // quiet now, hide it.
-    if (lastVoiceState === 'idle') pill?.hide();
+  });
+  // Self-heal Kokoro TTS: make sure espeak-ng-data exists inside the TTS
+  // model dir (manually placed models often lack it, which used to kill
+  // TTS and trigger the old system-voice fallback). Best-effort.
+  ipcMain.handle('nt.voice.repair-tts', async (): Promise<{ ok: boolean; error?: string }> => {
+    try {
+      const dir = ttsModelDir();
+      if (!dir) return { ok: false, error: 'No Kokoro TTS model downloaded yet.' };
+      await ensureEspeakNgData(dir);
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
   });
   // Undo the last in-page voice dictation (the renderer's "⌘Z to undo" toast).
   ipcMain.handle('nt.voice.dictate-undo', async (): Promise<boolean> => {
@@ -1197,6 +1203,11 @@ app.whenReady().then(() => {
         if (params.mediaType !== 'video' || !params.srcURL) return;
         const srcURL = params.srcURL;
         const menu = Menu.buildFromTemplate([
+          {
+            label: 'Picture in Picture',
+            click: () => void enterPictureInPicture(),
+          },
+          { type: 'separator' },
           {
             label: 'Copy video address',
             click: () => clipboard.writeText(srcURL)

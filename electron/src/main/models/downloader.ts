@@ -165,6 +165,33 @@ export class ModelDownloader {
     }
   }
 
+  /**
+   * Download a single archive (target URL) into `target` (inside a
+   * `.downloads` dir), extract it into `extractDir`, then delete the
+   * archive. Skips everything when `present` already matches inside
+   * `extractDir`. Used for one-off repairs like espeak-ng-data — not part
+   * of any catalog entry's job list.
+   */
+  async downloadArchive(
+    target: string,
+    url: string,
+    extractDir: string,
+    present: RegExp,
+  ): Promise<void> {
+    if (archiveMarkerPresent(extractDir, present)) return;
+    const id = `repair-${Date.now()}`;
+    const active: ActiveDownload = { req: null, file: null, cancelled: false };
+    const job: FileJob = { url, target, archive: { extractDir, present } };
+    try {
+      await this.downloadWithRetry(id, job, active);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      throw new Error(`Couldn't fetch the missing TTS data (${message})`);
+    } finally {
+      try { fs.rmSync(path.dirname(target), { recursive: true, force: true }); } catch { /* ignore */ }
+    }
+  }
+
   /** Abort an in-flight download. The partial `.part` file is kept for resume. */
   cancel(id: string): void {
     const active = this.active.get(id);
@@ -409,6 +436,28 @@ export class ModelDownloader {
 }
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/**
+ * URL of the standalone espeak-ng-data tarball (sherpa-onnx tts-models tag).
+ * This is the phonemizer data sherpa-onnx's Kokoro engine needs; the kokoro
+ * tarball usually bundles it, but manually placed models often lack it —
+ * which used to surface as a cryptic TTS failure.
+ */
+export const ESPEAK_NG_DATA_URL =
+  'https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/espeak-ng-data.tar.bz2';
+
+/**
+ * Make sure `espeak-ng-data/` exists inside a Kokoro model dir (searches
+ * recursively, since manually placed models nest it). Downloads + extracts
+ * the standalone tarball when missing. No-op when already present.
+ * Throws a human-readable error on download failure.
+ */
+export async function ensureEspeakNgData(modelDir: string): Promise<void> {
+  if (archiveMarkerPresent(modelDir, /(^|[/\\])espeak-ng-data$/)) return;
+  const target = path.join(modelDir, '.downloads', fileNameFromUrl(ESPEAK_NG_DATA_URL));
+  const downloader = new ModelDownloader({ modelsDir: path.dirname(modelDir), onEvent: () => {} });
+  await downloader.downloadArchive(target, ESPEAK_NG_DATA_URL, modelDir, /(^|[/\\])espeak-ng-data$/);
+}
 
 /**
  * Human-readable errors for HTTP failures. 401/403 almost always means the

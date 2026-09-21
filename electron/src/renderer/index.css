@@ -220,85 +220,13 @@ input[type="color"].nt-color::-webkit-color-swatch {
 
 /* ============================ voice mode ============================ */
 
-/* Floating pill overlay window: fully transparent stage.
-   The pill window is frameless + transparent; when the pill has nothing to
-   show it renders null, so the page background must be transparent too —
-   otherwise the window appears as a blank box. */
-body.voice-pill-window {
-  background: transparent;
-}
-.voice-pill-root {
-  position: fixed;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: transparent;
-  pointer-events: none;
-}
-.voice-pill {
-  pointer-events: auto;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-width: 240px;
-  max-width: 340px;
-  padding: 10px 16px 10px 12px;
-  border-radius: 999px;
-  border: 1px solid rgba(232, 163, 61, 0.35);
-  background: rgba(18, 18, 20, 0.88);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45), 0 0 24px rgba(232, 163, 61, 0.12);
-  cursor: default;
-  animation: voice-pill-in 0.25s ease-out;
-}
-.voice-pill--speaking { cursor: pointer; }
-.voice-pill--error { border-color: rgba(217, 115, 98, 0.5); }
+/* The floating voice pill overlay window is gone (removed v0.5.2 — it kept
+   rendering as a blank white rectangle). Voice status lives in the toolbar
+   voice chip and the agent panel's voice surface. The entrance animation
+   below is still used by the chip. */
 @keyframes voice-pill-in {
   from { opacity: 0; transform: translateY(8px) scale(0.96); }
   to { opacity: 1; transform: none; }
-}
-.voice-pill-wave {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  height: 26px;
-}
-.voice-pill-wave i {
-  width: 3px;
-  border-radius: 2px;
-  background: #e8a33d;
-  min-height: 4px;
-  transition: height 0.08s linear;
-}
-.voice-pill-wave--speaking i { animation: voice-pill-bar 1.1s ease-in-out infinite; }
-@keyframes voice-pill-bar {
-  0%, 100% { height: 6px; }
-  50% { height: 20px; }
-}
-.voice-pill-text { display: flex; flex-direction: column; min-width: 0; }
-.voice-pill-label {
-  font-size: 13px;
-  font-weight: 600;
-  color: #f2ede4;
-  white-space: nowrap;
-}
-.voice-pill-sub {
-  font-size: 11px;
-  color: rgba(242, 237, 228, 0.6);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 200px;
-}
-.voice-pill-spinner {
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  border: 2px solid rgba(232, 163, 61, 0.25);
-  border-top-color: #e8a33d;
-  animation: voice-spin 0.9s linear infinite;
 }
 @keyframes voice-spin { to { transform: rotate(360deg); } }
 
@@ -522,7 +450,6 @@ body.voice-pill-window {
 .acting-toast-undo:hover { background: rgba(232, 163, 61, 0.12); }
 
 @media (prefers-reduced-motion: reduce) {
-  .voice-pill,
   .voice-surface,
   .voice-status-label,
   .voice-steps-row,
@@ -531,13 +458,11 @@ body.voice-pill-window {
   .acting-toast {
     animation: none;
   }
-  .voice-pill-spinner,
   .acting-capsule-spinner,
   .voice-header-orb,
   .voice-speaking-bubble,
   .acting-edge-glow,
-  .acting-target-ring,
-  .voice-pill-wave--speaking i {
+  .acting-target-ring {
     animation: none;
   }
   .acting-cursor { transition: none; }

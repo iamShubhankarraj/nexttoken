@@ -22,8 +22,8 @@
  * global key handler.
  *
  * TTS: `speakLocal(text)` synthesises via the on-device Kokoro engine and
- * plays the WAV; returns false when unavailable so callers can fall back
- * to speechSynthesis.
+ * plays the WAV. Kokoro is the only voice in the app — there is deliberately
+ * no system-voice fallback.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -69,7 +69,9 @@ interface NtVoice {
   voiceCancelListening(): Promise<void>;
   voiceSpeak(text: string): Promise<Uint8Array>;
   voiceStopSpeaking(): Promise<void>;
-  /** Fire-and-forget mic amplitude (0..1) for the pill waveform. */
+  /** Self-heal Kokoro TTS (fetch espeak-ng-data when a manual model lacks it). */
+  voiceRepairTts?(): Promise<{ ok: boolean; error?: string }>;
+  /** Fire-and-forget mic amplitude (0..1) for the voice chip. */
   voiceAmplitude(level: number): void;
   /** Renderer started/stopped TTS audio playback (drives the pill). */
   voicePlaybackStarted(): void;
@@ -102,9 +104,10 @@ async function localSttAvailable(): Promise<boolean> {
 /**
  * Speak via the on-device Kokoro TTS engine. Plays the returned WAV and
  * resolves true on success; resolves false when the local engine is
- * unavailable or fails, so the caller can fall back to speechSynthesis.
+ * unavailable or fails. Kokoro is the only voice — there is no
+ * system-voice fallback (removed per user request).
  *
- * The active <audio> element is tracked so barge-in (Alt+V / tap the pill)
+ * The active <audio> element is tracked so barge-in (Alt+V / tap the chip)
  * can stop it instantly via stopLocalSpeech().
  */
 let activeSpeechEl: HTMLAudioElement | null = null;
@@ -292,6 +295,10 @@ export async function runVoiceCommand(
   if (match(/^(open a |open |create )?(new tab|newtab)/)) {
     await a.tabsCreate({});
     return "Opened a new tab.";
+  }
+  if (match(/picture in picture|^\bpip\b/)) {
+    const r = await a.tabsPip();
+    return r.ok ? "Picture in Picture on." : `Couldn't do that: ${r.error ?? "no video found"}.`;
   }
   if (match(/^close (this |the |current )?tab/)) {
     if (ctx.activeTabId) {
@@ -750,6 +757,12 @@ export function useVoice(handlers: UseVoiceHandlers): UseVoiceResult {
         return;
       }
       stop();
+      // Self-heal Kokoro TTS in the background: manually placed models
+      // often lack espeak-ng-data, which used to kill TTS silently. The
+      // repair is a no-op when the data is already there.
+      void voiceApi()
+        ?.voiceRepairTts?.()
+        .catch(() => {});
       // A fresh open cancels any in-flight guided setup (the download itself
       // keeps running in the main process; reopening voice later picks it up).
       setGuide(null);

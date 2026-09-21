@@ -34,6 +34,7 @@ import { VoiceOrb, type VoiceOrbMode } from "./VoiceOrb";
 function VoiceChip() {
   const voice = useVoiceSession();
   if (!voice.active) return null;
+  const speaking = voice.playbackSpeaking || voice.engine === "speaking";
   const label = voice.voiceError
     ? "Voice error"
     : voice.engine === "listening"
@@ -42,15 +43,15 @@ function VoiceChip() {
         ? "Transcribing"
         : voice.engine === "thinking"
           ? (voice.acting ? voice.acting.label : "Working")
-          : voice.playbackSpeaking
-            ? "Speaking"
+          : speaking
+            ? "Speaking — tap to interrupt"
             : "Voice";
   const orbMode = (
     voice.engine === "listening"
       ? "listening"
       : voice.engine === "transcribing" || voice.engine === "thinking"
         ? "thinking"
-        : voice.playbackSpeaking || voice.engine === "speaking"
+        : speaking
           ? "speaking"
           : "idle"
   ) as VoiceOrbMode;
@@ -62,10 +63,15 @@ function VoiceChip() {
         color: "var(--nt-text-1)",
         background: "var(--nt-accent-soft)",
       }}
-      onClick={() => void nt().uiSetAgentPanelOpen(true)}
-      title="Voice is active — open the agent panel"
+      onClick={() => {
+        // Tap while speaking = barge-in: stop TTS, start listening fresh.
+        // Otherwise open the agent panel to the live voice surface.
+        if (speaking) void nt().voiceStopSpeaking();
+        else void nt().uiSetAgentPanelOpen(true);
+      }}
+      title={speaking ? "Interrupt speech and start listening" : "Voice is active — open the agent panel"}
       role="status"
-      aria-label={`Voice is active: ${label}. Open the agent panel.`}
+      aria-label={`Voice is active: ${label}. ${speaking ? "Interrupt speech and start listening." : "Open the agent panel."}`}
     >
       <VoiceOrb mode={orbMode} amplitude={voice.amplitude} size={14} />
       <span className="max-w-[200px] truncate">{label}</span>

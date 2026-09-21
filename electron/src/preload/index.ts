@@ -6,6 +6,8 @@ const api: NextTokenAPI = {
   tabsCreate: (opts) => ipcRenderer.invoke('nt.tabs.create', opts),
   tabsClose: (tabId) => ipcRenderer.invoke('nt.tabs.close', tabId),
   tabsActivate: (tabId) => ipcRenderer.invoke('nt.tabs.activate', tabId),
+  /** Picture in Picture for the active tab's video. */
+  tabsPip: () => ipcRenderer.invoke('nt.tabs.pip'),
   tabsPin: (tabId, pinned) => ipcRenderer.invoke('nt.tabs.pin', tabId, pinned),
   tabsMove: (tabId, spaceId) => ipcRenderer.invoke('nt.tabs.move', tabId, spaceId),
   tabsReorder: (tabId, beforeTabId, folderId) => ipcRenderer.invoke('nt.tabs.reorder', tabId, beforeTabId, folderId),
@@ -116,6 +118,8 @@ const api: NextTokenAPI = {
   voicePlaybackEnded: () => ipcRenderer.send('nt.voice.playback-ended'),
   voiceDictateUndo: () => ipcRenderer.invoke('nt.voice.dictate-undo'),
   voiceTakeover: () => ipcRenderer.invoke('nt.voice.takeover'),
+  /** Self-heal Kokoro TTS (fetch espeak-ng-data when a manual model lacks it). */
+  voiceRepairTts: () => ipcRenderer.invoke('nt.voice.repair-tts'),
   onVoiceEngineState: (cb) => {
     const l = (_e: unknown, s: Parameters<Parameters<NextTokenAPI['onVoiceEngineState']>[0]>[0]) => cb(s);
     ipcRenderer.on('nt.voice-engine-state', l);
