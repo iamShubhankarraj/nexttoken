@@ -15,6 +15,7 @@ import { useBrowser } from "../BrowserContext";
 import { detectIntent, domainOf, isNewTabUrl, nt } from "../nt";
 import { routeSubmit, type RouteOverride } from "../routing";
 import { OmniboxSuggest, type OmniboxSuggestApi } from "./OmniboxSuggest";
+import { ReaderControls } from "./ReaderView";
 import { SmartInput, type SmartTab } from "./SmartInput";
 import { useVoiceSession } from "./VoiceSession";
 
@@ -135,30 +136,33 @@ export function Omnibox() {
   if (!focused) {
     const isNew = !activeTab || isNewTabUrl(activeTab.url);
     return (
-      <button
-        title={activeTab?.url ?? "New tab"}
-        onClick={startEditing}
-        className="nt-r-full flex max-w-xl flex-1 items-center gap-2 border border-transparent px-4 py-1.5 text-[13px] transition-colors hover:border-[var(--nt-border)] hover:bg-[var(--nt-bg-hover)]"
-        style={{ color: "var(--nt-text-2)" }}
-      >
-        {activeTab?.loading ? (
-          <span className="nt-shimmer" />
-        ) : (
-          <span
-            className="nt-r-full h-1.5 w-1.5 shrink-0"
-            style={{ background: "var(--nt-space)" }}
-          />
-        )}
-        <span className="nt-mono truncate">
-          {activeTab
-            ? activeTab.loading
-              ? "Loading…"
-              : isNew
-                ? "Ask anything, or type a URL"
-                : domainOf(activeTab.url)
-            : "New tab"}
-        </span>
-      </button>
+      <div className="flex min-w-0 max-w-xl flex-1 items-center gap-1">
+        <button
+          title={activeTab?.url ?? "New tab"}
+          onClick={startEditing}
+          className="nt-r-full flex min-w-0 flex-1 items-center gap-2 border border-transparent px-4 py-1.5 text-[13px] transition-colors hover:border-[var(--nt-border)] hover:bg-[var(--nt-bg-hover)]"
+          style={{ color: "var(--nt-text-2)" }}
+        >
+          {activeTab?.loading ? (
+            <span className="nt-shimmer" />
+          ) : (
+            <span
+              className="nt-r-full h-1.5 w-1.5 shrink-0"
+              style={{ background: "var(--nt-space)" }}
+            />
+          )}
+          <span className="nt-mono truncate">
+            {activeTab
+              ? activeTab.loading
+                ? "Loading…"
+                : isNew
+                  ? "Ask anything, or type a URL"
+                  : domainOf(activeTab.url)
+              : "New tab"}
+          </span>
+        </button>
+        <ReaderControls />
+      </div>
     );
   }
 
