@@ -43,6 +43,9 @@ import { Sidebar } from "./components/Sidebar";
 import { TabViews } from "./components/TabView";
 import { VoiceSession } from "./components/VoiceSession";
 import { TopStrip } from "./components/TopStrip";
+// v0.6.3 (impl-5: managers & browser settings)
+import { BookmarksBar } from "./components/BookmarksBar";
+import { StartupNudge } from "./components/StartupNudge";
 import { WritingHint } from "./components/WritingHint";
 import { useBrainAudio } from "./hooks/useBrainAudio";
 import { isNewTabUrl, nt } from "./nt";
@@ -320,6 +323,8 @@ function Shell() {
           liquid scoops (puzzle pieces, no straight seam). */}
       <div className="nt-content-liquid flex min-w-0 flex-1 flex-col">
         <TopStrip />
+        {/* v0.6.3 (impl-5): bookmarks bar sits directly under the toolbar. */}
+        <BookmarksBar />
         {/* Real tab content: webview guests mounted by <TabViews/>. */}
         <main
           id="nt-content"
@@ -369,6 +374,8 @@ function Shell() {
       )}
       {findOpen && <FindBar onClose={closeFind} />}
       <DownloadPill />
+      {/* v0.6.3 (impl-5): one-time default-browser nudge, next to the toasts. */}
+      <StartupNudge />
       {popupBlocked && (
         <div className="nt-toast" role="alert">
           <ShieldAlert size={15} strokeWidth={2} style={{ color: "var(--nt-accent)" }} />
