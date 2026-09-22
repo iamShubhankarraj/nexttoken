@@ -5,6 +5,8 @@ import fs from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { Store } from './store';
 import { TabManager } from './tabs';
+import { ClosedTabStack } from './closedTabs';
+import { registerTabActions } from './tabActions';
 import { AdBlocker } from './adblock';
 import { startAgentRun, cancelAgentRun } from './agent/loop';
 import { APPLE_FM_REF, CLOUD_REF, type RouterDeps } from './agent/router';
@@ -76,6 +78,8 @@ let win: BrowserWindow | null = null;
 let settingsOpen = false;
 let store: Store;
 let tabs: TabManager;
+/** Bounded stack of user-closed tabs for ⌘⇧T reopen. */
+let closedTabStack: ClosedTabStack;
 /** Background media tab tracked by the ~1Hz media poll (for seek/toggle). */
 let currentMediaTabId: string | null = null;
 /** Current find-in-page query for the active tab (for find-next). */
@@ -748,6 +752,10 @@ function registerIpc() {
   });
   guardedHandle('nt.tabs.close', (_e, tabId: string) => {
     adblocker.noteDetach(tabId);
+    // Record for ⌘⇧T reopen BEFORE the record is destroyed. Archive
+    // sweeps and Bit deletes use different paths and never push here.
+    const rec = tabs.tabs.get(tabId);
+    if (rec) closedTabStack.noteClosed(rec);
     tabs.close(tabId);
   });
   guardedHandle('nt.tabs.activate', (_e, tabId: string) => tabs.activate(tabId));
@@ -862,6 +870,13 @@ function registerIpc() {
     tabs.archive(tabId, true);
   });
   guardedHandle('nt.tabs.restore', (_e, archivedId: string) => tabs.restore(archivedId));
+  // Shell & tabs extras (mute/duplicate/close-others/reopen-closed):
+  // registered from their own module to keep registerIpc thin.
+  registerTabActions(guardedHandle, {
+    tabs,
+    closedStack: closedTabStack,
+    createTabActivated,
+  });
 
   // -- navigation ----------------------------------------------------------
   guardedHandle('nt.nav.go', (_e, raw: string) => tabs.go(raw));
@@ -1747,6 +1762,13 @@ app.whenReady().then(() => {
             active: result.activeMatchOrdinal,
           });
       },
+      // Shell shortcut pressed while a guest <webview> had focus
+      // (before-input-event bridge in tabs.ts): replay it to the shell
+      // window so ⌘T/⌘W/⌘K/… work with page focus.
+      onGuestShortcut: (tabId, key) => {
+        if (win && !win.isDestroyed())
+          win.webContents.send('nt.guest.shortcut', { tabId, ...key });
+      },
       // Full right-click context menu for guest content. Electron gives
       // webviews no menu by default, so we build the standard one here:
       // navigation, link actions, image actions, video actions, editing,
@@ -1858,6 +1880,8 @@ app.whenReady().then(() => {
       }
     }
   );
+  // Bounded stack of user-closed tabs for ⌘⇧T reopen.
+  closedTabStack = new ClosedTabStack();
   initModelTier();
   registerIpc();
   // Curved media viewfinder: sweep all tabs ~1Hz for the background media
