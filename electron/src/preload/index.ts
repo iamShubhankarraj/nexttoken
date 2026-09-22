@@ -19,6 +19,23 @@ const api: NextTokenAPI = {
   findStop: () => ipcRenderer.invoke('nt.tabs.find-stop'),
   /** Reveal a finished download in Finder. */
   downloadsReveal: (path) => ipcRenderer.invoke('nt.downloads.reveal', path),
+  /** Reader mode: enter the clean article view (default: active tab). */
+  readerEnter: (tabId?) => ipcRenderer.invoke('nt.reader.enter', tabId),
+  /** Reader mode: leave the article view. */
+  readerExit: (tabId?) => ipcRenderer.invoke('nt.reader.exit', tabId),
+  /** Reader availability/active state for a tab. */
+  readerStatus: (tabId?) => ipcRenderer.invoke('nt.reader.status', tabId),
+  /** Per-site auto-reader toggle (persisted like mute/autoplay). */
+  readerSetAuto: (origin, enabled) =>
+    ipcRenderer.invoke('nt.reader.set-auto', origin, enabled),
+  /** Is auto-reader on for this origin? */
+  readerAutoState: (origin) => ipcRenderer.invoke('nt.reader.auto-state', origin),
+  /** System print dialog for the tab's page. */
+  printDialog: (tabId?) => ipcRenderer.invoke('nt.print.dialog', tabId),
+  /** Render the page to PDF, routed through the downloads pill. */
+  printPdf: (tabId?) => ipcRenderer.invoke('nt.print.pdf', tabId),
+  /** Screenshot: clipboard and/or PNG file via the downloads pill. */
+  captureScreenshot: (opts?) => ipcRenderer.invoke('nt.capture.screenshot', opts),
   /** Open a blocked popup anyway. */
   popupOpenBlocked: (url) => ipcRenderer.invoke('nt.popup.open', url),
   onDownloadsEvent: (cb) => {
