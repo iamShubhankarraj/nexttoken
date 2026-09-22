@@ -1,21 +1,24 @@
 /**
  * DownloadPill — floating download manager, bottom-right of the window.
  *
- * Main shows the native save dialog for every guest download; progress and
- * completion events arrive here via nt.onDownloadsEvent. Active downloads
- * show an ember progress bar; finished ones offer "Reveal in Finder" and
- * auto-dismiss after a few seconds.
+ * Main shows the native save dialog for every guest download (or saves
+ * straight to the configured folder); progress and completion events
+ * arrive here via nt.onDownloadsEvent. Active downloads show an ember
+ * progress bar with pause/resume; finished ones offer "Reveal in Finder"
+ * and auto-dismiss after a few seconds. The full manager lives in
+ * Settings → Downloads ("All downloads" below).
  */
 import { useEffect, useRef, useState } from "react";
-import { CheckCircle2, Download, FolderOpen, XCircle } from "lucide-react";
+import { CheckCircle2, Download, FolderOpen, Pause, PauseCircle, Play, XCircle } from "lucide-react";
 import { nt } from "../nt";
 import type { DownloadUiEvent } from "../../shared/ipc";
+import { openDownloadsSettings } from "./DownloadsPage";
 
 interface Item {
   id: string;
   filename: string;
   percent: number; // -1 = unknown
-  state: "active" | "done" | "failed";
+  state: "active" | "paused" | "done" | "failed";
   path?: string;
 }
 
@@ -37,7 +40,7 @@ export function DownloadPill() {
       );
     };
     const off = nt().onDownloadsEvent((e: DownloadUiEvent) => {
-      if (e.kind === "started" || e.kind === "progress") {
+      if (e.kind === "started" || e.kind === "progress" || e.kind === "resumed") {
         setItems((prev) => {
           const next = prev.filter((i) => i.id !== e.id);
           next.unshift({
@@ -45,6 +48,17 @@ export function DownloadPill() {
             filename: e.filename,
             percent: e.kind === "progress" ? e.percent : 0,
             state: "active",
+          });
+          return next.slice(0, 4);
+        });
+      } else if (e.kind === "paused") {
+        setItems((prev) => {
+          const next = prev.filter((i) => i.id !== e.id);
+          next.unshift({
+            id: e.id,
+            filename: e.filename,
+            percent: prev.find((i) => i.id === e.id)?.percent ?? 0,
+            state: "paused",
           });
           return next.slice(0, 4);
         });
@@ -99,6 +113,8 @@ export function DownloadPill() {
               <CheckCircle2 size={14} strokeWidth={2} style={{ color: "var(--nt-accent)" }} />
             ) : it.state === "failed" ? (
               <XCircle size={14} strokeWidth={2} style={{ color: "#e06c5b" }} />
+            ) : it.state === "paused" ? (
+              <PauseCircle size={14} strokeWidth={2} style={{ color: "var(--nt-text-3)" }} />
             ) : (
               <Download size={14} strokeWidth={2} style={{ color: "var(--nt-text-2)" }} />
             )}
@@ -107,7 +123,7 @@ export function DownloadPill() {
             <span className="nt-download-name" title={it.filename}>
               {it.filename}
             </span>
-            {it.state === "active" ? (
+            {it.state === "active" || it.state === "paused" ? (
               <span className="nt-download-bar" aria-hidden="true">
                 <span
                   className="nt-download-fill"
@@ -120,6 +136,24 @@ export function DownloadPill() {
               </span>
             )}
           </div>
+          {(it.state === "active" || it.state === "paused") && (
+            <button
+              type="button"
+              className="nt-download-reveal"
+              onClick={() =>
+                void (it.state === "active"
+                  ? nt().downloadsPause(it.id)
+                  : nt().downloadsResume(it.id))
+              }
+              title={it.state === "active" ? "Pause download" : "Resume download"}
+            >
+              {it.state === "active" ? (
+                <Pause size={13} strokeWidth={2} />
+              ) : (
+                <Play size={13} strokeWidth={2} />
+              )}
+            </button>
+          )}
           {it.state === "done" && it.path ? (
             <button
               type="button"
@@ -133,6 +167,13 @@ export function DownloadPill() {
           ) : null}
         </div>
       ))}
+      <button
+        type="button"
+        onClick={openDownloadsSettings}
+        className="nt-download-all"
+      >
+        All downloads
+      </button>
     </div>
   );
 }

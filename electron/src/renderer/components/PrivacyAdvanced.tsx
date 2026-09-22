@@ -4,8 +4,9 @@
  * and clear-browsing-data. Warm-charcoal + ember styling to match Settings.
  */
 import { useEffect, useState } from "react";
-import { ChevronDown, Database, Shield, Trash2 } from "lucide-react";
+import { ChevronDown, Database, Lock, Shield, Trash2, ZoomIn } from "lucide-react";
 import { nt } from "../nt";
+import { requestSettingsSection } from "./settingsNav";
 import type {
   CookieDetail,
   HistoryEntry,
@@ -86,6 +87,8 @@ export function PrivacyAdvanced() {
   const [clearing, setClearing] = useState(false);
   const [cleared, setCleared] = useState(false);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
+  // v0.6.3 (impl-5): per-origin zoom memory.
+  const [zooms, setZooms] = useState<Array<{ origin: string; percent: number }>>([]);
 
   const refresh = () => {
     nt().privacySnapshot().then(setSnap).catch(() => {});
@@ -95,6 +98,7 @@ export function PrivacyAdvanced() {
   useEffect(() => {
     refresh();
     nt().privacyHistory().then(setHistory).catch(() => {});
+    nt().zoomList().then(setZooms).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -212,6 +216,84 @@ export function PrivacyAdvanced() {
             </div>
           ))}
         </div>
+      </div>
+
+      {/* ---- Connection security -------------------------------------------- */}
+      <div>
+        <SectionTitle icon={<Lock size={14} strokeWidth={1.75} />}>
+          Connection security
+        </SectionTitle>
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <p className="text-[13px]" style={{ color: "var(--nt-text-1)" }}>
+              Always use secure connections
+            </p>
+            <p className="text-[12px]" style={{ color: "var(--nt-text-3)" }}>
+              Upgrade navigations to HTTPS when the site supports it
+              (Brave-style). Falls back to HTTP if HTTPS fails. Off by default.
+            </p>
+          </div>
+          <button
+            role="switch"
+            aria-checked={!!snap.httpsUpgrade}
+            aria-label="Always use secure connections"
+            onClick={() =>
+              void nt()
+                .privacySetHttpsUpgrade(!snap.httpsUpgrade)
+                .then(setSnap)
+                .catch(() => {})
+            }
+            className="nt-r-full relative h-6 w-11 shrink-0 transition-colors"
+            style={{
+              background: snap.httpsUpgrade ? "var(--nt-accent)" : "var(--nt-border-strong)",
+            }}
+          >
+            <span
+              className="nt-r-full absolute top-0.5 h-5 w-5 bg-white transition-all"
+              style={{ left: snap.httpsUpgrade ? "22px" : "2px" }}
+            />
+          </button>
+        </div>
+      </div>
+
+      {/* ---- Site zoom levels ------------------------------------------------ */}
+      <div>
+        <SectionTitle icon={<ZoomIn size={14} strokeWidth={1.75} />}>
+          Site zoom levels
+        </SectionTitle>
+        {zooms.length === 0 ? (
+          <p className="text-[12px]" style={{ color: "var(--nt-text-3)" }}>
+            No per-site zoom yet — zoom a page (⌘+/⌘−) and it's remembered here.
+          </p>
+        ) : (
+          <div className="space-y-1.5">
+            {zooms.map((z) => (
+              <div
+                key={z.origin}
+                className="nt-r-sm flex items-center justify-between gap-3 border px-3 py-1.5"
+                style={{ borderColor: "var(--nt-border)" }}
+              >
+                <span
+                  className="nt-mono min-w-0 flex-1 truncate text-[12.5px]"
+                  style={{ color: "var(--nt-text-1)" }}
+                >
+                  {z.origin}
+                </span>
+                <span className="nt-num shrink-0 text-[12.5px]" style={{ color: "var(--nt-text-2)" }}>
+                  {z.percent}%
+                </span>
+                <button
+                  type="button"
+                  onClick={() => void nt().zoomReset(z.origin).then(setZooms).catch(() => {})}
+                  className="nt-r-sm shrink-0 px-2 py-0.5 text-[11.5px] font-medium transition-colors hover:bg-[var(--nt-bg-hover)]"
+                  style={{ color: "var(--nt-text-3)" }}
+                >
+                  Reset
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* ---- Per-site ---------------------------------------------------- */}
@@ -455,9 +537,19 @@ export function PrivacyAdvanced() {
         </div>
         {history.length > 0 && (
           <div className="mt-3">
-            <p className="mb-1.5 text-[12px] font-medium" style={{ color: "var(--nt-text-2)" }}>
-              Recent history
-            </p>
+            <div className="mb-1.5 flex items-center justify-between">
+              <p className="text-[12px] font-medium" style={{ color: "var(--nt-text-2)" }}>
+                Recent history
+              </p>
+              <button
+                type="button"
+                onClick={() => requestSettingsSection("history")}
+                className="text-[12px] font-medium transition-colors hover:underline"
+                style={{ color: "var(--nt-accent)" }}
+              >
+                Open history manager
+              </button>
+            </div>
             <ul className="max-h-36 space-y-1 overflow-y-auto">
               {history.slice(0, 12).map((h, i) => (
                 <li

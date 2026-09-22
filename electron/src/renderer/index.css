@@ -1287,6 +1287,21 @@ input[type="color"].nt-color::-webkit-color-swatch {
   border-color: var(--nt-accent);
   color: var(--nt-accent);
 }
+/* v0.6.3 (impl-5): DownloadPill footer linking to the full manager. */
+.nt-download-all {
+  margin-top: 2px;
+  padding: 6px 8px;
+  border-top: 1px solid var(--nt-border);
+  background: transparent;
+  color: var(--nt-accent);
+  font-size: 12px;
+  font-weight: 600;
+  text-align: center;
+  cursor: pointer;
+}
+.nt-download-all:hover {
+  text-decoration: underline;
+}
 
 /* ------------------------------------------------------------------
  * Transient toast (blocked popup indicator), bottom-center.
