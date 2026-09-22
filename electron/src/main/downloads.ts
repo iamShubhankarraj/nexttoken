@@ -78,7 +78,9 @@ export function handleWillDownload(deps: WebEngineDeps, item: DownloadItem): voi
   const store = deps.store;
   const send = makeSend(deps);
   const id = `dl-${Date.now().toString(36)}-${dlSeq++}`;
-  const filename = item.getFilename() || 'download';
+  // Never let a crafted Content-Disposition filename smuggle path
+  // separators into the suggested save path.
+  const filename = path.basename(item.getFilename() || 'download') || 'download';
   let url = '';
   try {
     url = item.getURL() || '';
@@ -302,7 +304,8 @@ export function bindSend(send: (payload: DownloadUiEvent) => void): void {
 /** Reveal a finished download in Finder (unchanged behavior). */
 export async function revealDownload(targetPath: string): Promise<void> {
   try {
-    if (targetPath) shell.showItemInFolder(targetPath);
+    // Absolute paths only — this must never become a relative-path surprise.
+    if (targetPath && path.isAbsolute(targetPath)) shell.showItemInFolder(targetPath);
   } catch {
     /* noop */
   }
