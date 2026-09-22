@@ -214,7 +214,7 @@ export class TabManager {
         canGoBack: tab.canGoBack, canGoForward: tab.canGoForward
       });
       // Per-site engine policies (Settings → Privacy & security).
-      this.applySitePolicies(wc, url);
+      this.applySitePolicies(wc, url, tab);
       // Browsing history for per-site settings + clear-browsing-data.
       try {
         this.store.pushHistoryEntry(url, tab.title);
@@ -642,7 +642,7 @@ export class TabManager {
    * pauses playback until the page has seen real user activation
    * (document-user-activation-required semantics).
    */
-  private applySitePolicies(wc: WebContents, url: string): void {
+  private applySitePolicies(wc: WebContents, url: string, tab?: TabRec): void {
     let origin = '';
     try {
       origin = new URL(url).origin;
@@ -655,7 +655,7 @@ export class TabManager {
       if (p.muted[origin]) {
         wc.setAudioMuted(true);
         // Keep the tab record in sync so the sidebar speaker shows muted.
-        if (!tab.muted) {
+        if (tab && !tab.muted) {
           tab.muted = true;
           this.onDelta({ tabId: tab.id, type: 'muted', value: true });
         }
@@ -699,14 +699,14 @@ export class TabManager {
 
   /** Re-apply sound/autoplay policies to every live tab (after a Settings change). */
   applySitePoliciesToAll(): void {
-    this.forEachWebContents((_tab, wc) => {
+    this.forEachWebContents((tab, wc) => {
       let url = '';
       try {
         url = wc.getURL();
       } catch {
         return;
       }
-      this.applySitePolicies(wc, url);
+      this.applySitePolicies(wc, url, tab);
     });
   }
 
