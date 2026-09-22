@@ -73,10 +73,40 @@ export interface PrivacyPersist {
   autoplay: Record<string, 'allow' | 'block'>;
   /** origin -> muted */
   muted: Record<string, boolean>;
+  // -- v0.6.3 (impl-5: managers & browser settings) -------------------------
+  /** origin -> remembered zoom percent (100 = default; absent = default) */
+  zoom: Record<string, number>;
+  /** Brave-style HTTPS-Strict: upgrade http:// navigations to https://. Off by default. */
+  httpsUpgrade: boolean;
 }
 
 /** One visited page (capped) — powers per-site settings + clear-browsing-data. */
 export interface HistoryEntry { url: string; title: string; at: number }
+
+// -- v0.6.3 (impl-5: managers & browser settings) ------------------------------
+/** On-launch behavior: restore the last session, open a fresh tab, or open fixed pages. */
+export type StartupMode = 'restore' | 'newtab' | 'pages';
+
+export interface StartupPersist {
+  mode: StartupMode;
+  /** Used only when mode === 'pages' (http(s) URLs, capped at 10). */
+  pages: string[];
+  /** The first-run default-browser nudge shows at most once. */
+  defaultBrowserNudged: boolean;
+}
+
+export interface DownloadsPersist {
+  /** Custom download folder; null = ask where to save each time (the classic behavior). */
+  dir: string | null;
+  /** Lowercase extensions (no dot) auto-opened when the download finishes. */
+  autoOpenTypes: string[];
+}
+
+export interface BookmarksBarPersist {
+  visible: boolean;
+  /** 'bit' = the current Bit's bookmarks; 'all' = every Bit's bookmarks. */
+  scope: 'bit' | 'all';
+}
 
 interface Persisted {
   spaces: SpacePersist[];
@@ -97,6 +127,8 @@ interface Persisted {
     micDeviceId: string;
   };
   searchEngine: string;
+  /** Search-engine preset id ('google' | 'brave' | … | 'custom'). Migrated from searchEngine on read. */
+  searchEngineId: string;
   /** BYOK providers (provider manager). Each provider's API key lives in the OS keychain. */
   providers: ProviderPersist[];
   agentHistory: AgentMessage[];
@@ -141,6 +173,13 @@ interface Persisted {
   privacy: PrivacyPersist;
   /** Browsing history (URL + title + time), capped — per-site settings + clear-data. */
   history: HistoryEntry[];
+  // -- v0.6.3 (impl-5: managers & browser settings) --------------------------
+  /** On-launch behavior + default-browser nudge state. */
+  startup: StartupPersist;
+  /** Download folder + auto-open file types. */
+  downloads: DownloadsPersist;
+  /** Bookmarks bar visibility + scope. */
+  bookmarksBar: BookmarksBarPersist;
 }
 
 const ARCHIVE_AFTER_DEFAULT = 12 * 3600 * 1000;
@@ -210,6 +249,7 @@ function defaults(): Persisted {
       micDeviceId: "",
     },
     searchEngine: 'https://www.google.com/search?q=',
+    searchEngineId: 'google',
     providers: [{
       id: randomUUID(),
       presetId: 'openai',
@@ -243,8 +283,15 @@ function defaults(): Persisted {
       popups: {},
       autoplay: {},
       muted: {},
+      zoom: {},
+      httpsUpgrade: false,
     },
     history: [],
+    // v0.6.3 (impl-5): session restore stays the default on-launch behavior.
+    startup: { mode: 'restore', pages: [], defaultBrowserNudged: false },
+    // v0.6.3 (impl-5): dir null = ask where to save each time (classic).
+    downloads: { dir: null, autoOpenTypes: [] },
+    bookmarksBar: { visible: true, scope: 'bit' },
   };
 }
 
@@ -297,13 +344,35 @@ export class Store {
       // Backfill privacy & security + browsing history for installs that predate them.
       if (!parsed.privacy) parsed.privacy = defaults().privacy;
       else {
-        for (const k of ['permissions', 'defaults', 'popups', 'autoplay', 'muted'] as const) {
+        for (const k of ['permissions', 'defaults', 'popups', 'autoplay', 'muted', 'zoom'] as const) {
           if (typeof parsed.privacy[k] !== 'object' || parsed.privacy[k] === null) {
             parsed.privacy[k] = {};
           }
         }
+        // v0.6.3 (impl-5): HTTPS-Strict upgrade toggle + per-origin zoom memory.
+        if (typeof parsed.privacy.httpsUpgrade !== 'boolean') parsed.privacy.httpsUpgrade = false;
       }
       if (!Array.isArray(parsed.history)) parsed.history = [];
+      // v0.6.3 (impl-5): startup behavior + download manager + bookmarks bar.
+      if (!parsed.startup || typeof parsed.startup !== 'object') {
+        parsed.startup = defaults().startup;
+      } else {
+        if (!['restore', 'newtab', 'pages'].includes(parsed.startup.mode)) parsed.startup.mode = 'restore';
+        if (!Array.isArray(parsed.startup.pages)) parsed.startup.pages = [];
+        if (typeof parsed.startup.defaultBrowserNudged !== 'boolean') parsed.startup.defaultBrowserNudged = false;
+      }
+      if (!parsed.downloads || typeof parsed.downloads !== 'object') {
+        parsed.downloads = defaults().downloads;
+      } else {
+        if (parsed.downloads.dir !== null && typeof parsed.downloads.dir !== 'string') parsed.downloads.dir = null;
+        if (!Array.isArray(parsed.downloads.autoOpenTypes)) parsed.downloads.autoOpenTypes = [];
+      }
+      if (!parsed.bookmarksBar || typeof parsed.bookmarksBar !== 'object') {
+        parsed.bookmarksBar = defaults().bookmarksBar;
+      } else {
+        if (typeof parsed.bookmarksBar.visible !== 'boolean') parsed.bookmarksBar.visible = true;
+        if (!['bit', 'all'].includes(parsed.bookmarksBar.scope)) parsed.bookmarksBar.scope = 'bit';
+      }
       // Backfill local-model metrics for installs that predate them.
       if (!('localMetrics' in parsed.models)) parsed.models.localMetrics = null;
       // Backfill the updater settings for installs that predate them.
@@ -486,6 +555,26 @@ export class Store {
     return this.listBookmarks(spaceId);
   }
 
+  // -- v0.6.3 (impl-5: bookmarks manager) --------------------------------------
+  /** Move a bookmark to another Bit, keeping its fields. */
+  moveBookmark(fromSpaceId: string, id: string, toSpaceId: string): void {
+    const from = this.data.spaces.find((x) => x.id === fromSpaceId);
+    const to = this.data.spaces.find((x) => x.id === toSpaceId);
+    const b = from?.bookmarks.find((x) => x.id === id);
+    if (!from || !to || !b) throw new Error('Bookmark not found.');
+    if (fromSpaceId === toSpaceId) return;
+    from.bookmarks = from.bookmarks.filter((x) => x.id !== id);
+    to.bookmarks.unshift({ ...b });
+    this.saveSoon();
+  }
+
+  /** Remember (or clear with null) a per-origin zoom percent. */
+  setSiteZoom(origin: string, percent: number | null): void {
+    if (percent === null || percent === 100) delete this.data.privacy.zoom[origin];
+    else this.data.privacy.zoom[origin] = percent;
+    this.saveSoon();
+  }
+
   // -- BYOK provider keys (one per provider, OS keychain via safeStorage; never in the JSON) --
   private keyFileFor(providerId: string): string {
     const dir = path.join(app.getPath('userData'), 'provider-keys');
@@ -539,8 +628,8 @@ export class Store {
     try { fs.rmSync(this.keyFileFor(providerId), { force: true }); } catch { /* best effort */ }
   }
 
-  // -- browsing history (visited pages, capped at 1000) -----------------------
-  /** Record a page visit. Consecutive duplicates collapse; capped at 1000. */
+  // -- browsing history (visited pages, capped at 5000) -----------------------
+  /** Record a page visit. Consecutive duplicates collapse; capped at 5000. */
   pushHistoryEntry(url: string, title: string) {
     const clean = String(url ?? '').slice(0, 2048);
     if (!/^https?:\/\//i.test(clean)) return;
@@ -556,8 +645,8 @@ export class Store {
       title: String(title ?? '').slice(0, 200),
       at: Date.now(),
     });
-    if (this.data.history.length > 1000) {
-      this.data.history = this.data.history.slice(0, 1000);
+    if (this.data.history.length > 5000) {
+      this.data.history = this.data.history.slice(0, 5000);
     }
     this.saveSoon();
   }
@@ -565,6 +654,42 @@ export class Store {
   clearHistory() {
     this.data.history = [];
     this.saveSoon();
+  }
+
+  // -- v0.6.3 (impl-5: history manager) ---------------------------------------
+  /** Delete a single history entry (matched by timestamp + URL). */
+  deleteHistoryEntry(at: number, url: string) {
+    this.data.history = this.data.history.filter(
+      (h) => !(h.at === at && h.url === url)
+    );
+    this.saveSoon();
+  }
+
+  /**
+   * Clear history entries at/after `since` (epoch ms). `since <= 0`
+   * clears everything.
+   */
+  clearHistorySince(since: number) {
+    if (since <= 0) this.data.history = [];
+    else this.data.history = this.data.history.filter((h) => h.at < since);
+    this.saveSoon();
+  }
+
+  /** Full-text search over history (URL + title), newest first, capped. */
+  searchHistory(query: string, limit = 300): HistoryEntry[] {
+    const q = String(query ?? '').trim().toLowerCase();
+    if (!q) return this.data.history.slice(0, limit);
+    const out: HistoryEntry[] = [];
+    for (const h of this.data.history) {
+      if (
+        h.url.toLowerCase().includes(q) ||
+        (h.title ?? '').toLowerCase().includes(q)
+      ) {
+        out.push({ ...h });
+        if (out.length >= limit) break;
+      }
+    }
+    return out;
   }
 
   // -- agent history (text only, capped) -------------------------------------
