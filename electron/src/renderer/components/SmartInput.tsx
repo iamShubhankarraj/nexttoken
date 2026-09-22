@@ -42,6 +42,17 @@ interface SmartInputProps {
   inputRef?: Ref<HTMLInputElement>;
   ariaLabel?: string;
   disabled?: boolean;
+  /**
+   * Sibling suggestion list (omnibox) that wants first dibs on ↑↓/Enter/Escape
+   * while it is open. onPick returns false when there is nothing to pick, in
+   * which case the key falls through to the normal handlers.
+   */
+  suggestionNav?: {
+    open: boolean;
+    onMove(dir: 1 | -1): void;
+    onPick(): boolean;
+    onClose(): void;
+  };
 }
 
 interface Completion {
@@ -65,6 +76,7 @@ export function SmartInput({
   inputRef,
   ariaLabel,
   disabled,
+  suggestionNav,
 }: SmartInputProps) {
   const [completion, setCompletion] = useState<Completion | null>(null);
   const [cursor, setCursor] = useState(0);
@@ -173,6 +185,30 @@ export function SmartInput({
   };
 
   const onKeyDown = (e: React.KeyboardEvent) => {
+    // A sibling suggestion list (omnibox) gets first dibs while open.
+    const sn = suggestionNav;
+    if (sn?.open) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        sn.onMove(1);
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        sn.onMove(-1);
+        return;
+      }
+      if (e.key === "Enter") {
+        e.preventDefault();
+        if (!sn.onPick()) onSubmit();
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        sn.onClose();
+        return;
+      }
+    }
     const navOpen = completion !== null && items.length > 0;
     if (navOpen) {
       if (e.key === "ArrowDown") {

@@ -8,6 +8,7 @@
  */
 
 import type { SkillDef } from "../shared/ipc";
+import { buildSearchUrl, parseEngineKeyword } from "../shared/searchEngines";
 import { askAgent } from "./agentBus";
 import { detectIntent, resolveMentions, type MentionTab } from "./nt";
 import { nt } from "./nt";
@@ -26,6 +27,13 @@ export async function routeSubmit(
   let intent = detectIntent(text);
   if (opts.override === "web") intent = "web";
   else if (opts.override === "ai") intent = "ai";
+
+  // Search-engine keyword shortcuts ("g cats", "ddg rust") always mean web
+  // search, unless the user explicitly forced the AI route. (detectIntent
+  // would otherwise read "g cats" as an AI question because of the space.)
+  if (intent !== "skill" && opts.override !== "ai" && parseEngineKeyword(text)) {
+    intent = "web";
+  }
 
   if (intent === "skill") {
     const trigger = text.split(/\s/)[0].toLowerCase();
@@ -49,6 +57,22 @@ export async function routeSubmit(
     return "ai";
   }
 
-  await api.navGo(text);
+  await routeWeb(text);
   return "web";
+}
+
+/**
+ * Web-intent routing with search-engine keyword shortcuts ("g cats",
+ * "ddg rust", "brv news"). A leading keyword routes to that engine even
+ * when it isn't the default; everything else keeps the default engine via
+ * navGo → main resolveInput.
+ */
+export async function routeWeb(raw: string): Promise<void> {
+  const api = nt();
+  const kw = parseEngineKeyword(raw);
+  if (kw) {
+    await api.navGo(buildSearchUrl(kw.preset.template, kw.query));
+    return;
+  }
+  await api.navGo(raw);
 }

@@ -24,7 +24,7 @@ import { useBrowser } from "../BrowserContext";
 import { domainOf, nt } from "../nt";
 import { AppLogo } from "./AppLogo";
 import { Omnibox } from "./Omnibox";
-import { ShieldButton } from "./ShieldButton";
+import { SitePanel } from "./SitePanel";
 import { ThinkingAgentButton } from "./ThinkingAgentButton";
 import { useAgentPhase } from "../hooks/useAgentPhase";
 import { useVoiceSession } from "./VoiceSession";
@@ -217,8 +217,8 @@ export function TopStrip() {
         <PictureInPicture2 size={15} strokeWidth={1.75} />
       </button>
 
-      {/* Ad-block shield: live blocked count + per-site toggle */}
-      <ShieldButton />
+      {/* Site panel: connection, shields, per-site permissions, site data */}
+      <SitePanel />
 
       {/* Temporary voice chip — only while voice is active */}
       <VoiceChip />

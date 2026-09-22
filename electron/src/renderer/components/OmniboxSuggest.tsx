@@ -121,6 +121,7 @@ export const OmniboxSuggest = forwardRef<OmniboxSuggestApi, OmniboxSuggestProps>
     const [history, setHistory] = useState<HistoryEntry[]>([]);
     const [web, setWeb] = useState<Array<{ text: string; engineId: string }>>([]);
     const [cursor, setCursor] = useState(0);
+    const [dismissed, setDismissed] = useState(false);
     const onOpenChangeRef = useRef(onOpenChange);
     onOpenChangeRef.current = onOpenChange;
 
@@ -258,11 +259,16 @@ export const OmniboxSuggest = forwardRef<OmniboxSuggestApi, OmniboxSuggestProps>
     }, [localSections, web]);
 
     const flat = useMemo(() => sections.flatMap((s) => s.items), [sections]);
-    const open = !suppressed && q.length > 0 && flat.length > 0;
+    const open = !suppressed && !dismissed && q.length > 0 && flat.length > 0;
 
     useEffect(() => {
       onOpenChangeRef.current(open);
     }, [open ]);
+
+    // A new query re-arms the dropdown after an Esc dismissal.
+    useEffect(() => {
+      setDismissed(false);
+    }, [q, suppressed ]);
 
     useEffect(() => {
       setCursor(0);
@@ -288,6 +294,7 @@ export const OmniboxSuggest = forwardRef<OmniboxSuggestApi, OmniboxSuggestProps>
           return true;
         },
         close() {
+          setDismissed(true);
           onOpenChangeRef.current(false);
         },
       }),

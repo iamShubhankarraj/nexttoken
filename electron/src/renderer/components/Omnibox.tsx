@@ -8,11 +8,13 @@
  */
 
 import { Globe, Mic, Sparkles, Zap } from "lucide-react";
-import { useEffect, useState } from "react";
-import type { SkillDef } from "../../shared/ipc";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { BookmarkState, SkillDef } from "../../shared/ipc";
+import { buildSearchUrl, presetById } from "../../shared/searchEngines";
 import { useBrowser } from "../BrowserContext";
 import { detectIntent, domainOf, isNewTabUrl, nt } from "../nt";
 import { routeSubmit, type RouteOverride } from "../routing";
+import { OmniboxSuggest, type OmniboxSuggestApi } from "./OmniboxSuggest";
 import { SmartInput, type SmartTab } from "./SmartInput";
 import { useVoiceSession } from "./VoiceSession";
 
@@ -25,10 +27,17 @@ export function Omnibox() {
   const [text, setText] = useState("");
   const [override, setOverride] = useState<RouteOverride>("auto");
   const [skills, setSkills] = useState<SkillDef[]>([]);
+  const [suggestOpen, setSuggestOpen] = useState(false);
+  const [defaultEngineId, setDefaultEngineId] = useState("google");
+  const suggestApi = useRef<OmniboxSuggestApi | null>(null);
 
   useEffect(() => {
     if (!focused) return;
     nt().skillsList().then(setSkills).catch(() => {});
+    nt()
+      .settingsGetSearchEngine()
+      .then((c) => setDefaultEngineId(c.id))
+      .catch(() => {});
   }, [focused]);
 
   const allTabs: SmartTab[] = (snapshot?.spaces ?? []).flatMap((s) =>
@@ -38,6 +47,10 @@ export function Omnibox() {
       url: t.url,
       spaceName: s.name,
     })),
+  );
+
+  const allBookmarks: BookmarkState[] = (snapshot?.spaces ?? []).flatMap(
+    (s) => s.bookmarks ?? [],
   );
 
   const startEditing = () => {
@@ -82,6 +95,43 @@ export function Omnibox() {
         : { icon: Globe, label: "Web" };
   const ChipIcon = chip.icon;
 
+  // -- omnibox suggestions (tabs / bookmarks / history / web) --------------
+  // Hidden while SmartInput has an @ or / completion open (same regexes it uses).
+  const suggestSuppressed =
+    /(?:^|\s)@([^\s@]*)$/.test(text) || /(?:^|\s)\/(\w*)$/.test(text);
+
+  const pickTab = (tabId: string) => {
+    cancel();
+    void nt().tabsActivate(tabId).catch(() => {});
+  };
+  const openUrl = (url: string) => {
+    cancel();
+    void nt().navGo(url).catch(() => {});
+  };
+  const searchSuggestion = (s: string, engineId?: string) => {
+    cancel();
+    // A suggestion that came from a keyword engine ("ddg cats" → ddg
+    // suggestions) searches that engine; otherwise the default engine.
+    if (engineId && engineId !== defaultEngineId) {
+      const p = presetById(engineId);
+      if (p) {
+        void nt().navGo(buildSearchUrl(p.template, s)).catch(() => {});
+        return;
+      }
+    }
+    void routeSubmit(s, { tabs: allTabs, skills, override: "web" }).catch(() => {});
+  };
+
+  const suggestionNav = useMemo(
+    () => ({
+      open: suggestOpen,
+      onMove: (dir: 1 | -1) => suggestApi.current?.move(dir),
+      onPick: () => suggestApi.current?.pick() ?? false,
+      onClose: () => suggestApi.current?.close(),
+    }),
+    [suggestOpen],
+  );
+
   if (!focused) {
     const isNew = !activeTab || isNewTabUrl(activeTab.url);
     return (
@@ -114,7 +164,7 @@ export function Omnibox() {
 
   return (
     <div
-      className="nt-r-full flex max-w-xl flex-1 items-center gap-1 border bg-[var(--nt-bg-raised)] py-1 pl-1.5 pr-2"
+      className="nt-r-full relative flex max-w-xl flex-1 items-center gap-1 border bg-[var(--nt-bg-raised)] py-1 pl-1.5 pr-2"
       style={{ borderColor: "var(--nt-accent)" }}
       onBlur={(e) => {
         if (!e.currentTarget.contains(e.relatedTarget as Node)) cancel();
@@ -160,6 +210,7 @@ export function Omnibox() {
           placeholder="Ask anything, or type a URL — @ mentions a tab, / runs a skill"
           autoFocus
           ariaLabel="Address and AI command bar"
+          suggestionNav={suggestionNav}
         />
       </div>
       <kbd
@@ -179,6 +230,18 @@ export function Omnibox() {
       >
         <Mic size={14} strokeWidth={1.75} />
       </button>
+      <OmniboxSuggest
+        ref={suggestApi}
+        query={text}
+        tabs={allTabs}
+        bookmarks={allBookmarks}
+        suppressed={suggestSuppressed}
+        defaultEngineId={defaultEngineId}
+        onOpenChange={setSuggestOpen}
+        onActivateTab={pickTab}
+        onOpenUrl={openUrl}
+        onSearch={searchSuggestion}
+      />
     </div>
   );
 }
