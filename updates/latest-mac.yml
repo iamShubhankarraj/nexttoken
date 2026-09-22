@@ -1,6 +1,6 @@
 version: 0.6.4
 files:
-  - url: Next-Token-0.6.4-arm64-mac.zip
+  - url: https://drive.google.com/uc?id=1X_BIyUHrbDhprrDwtcd-Bg_bRTwIRSMN&export=download
     sha512: wixpjSvIdmUqycRG96s1fll7kjP1bI66RC9lL7TAU63+QsEqUVorQ91QeEMjfdlpilto7Aj1Zki+NL9dtDxheA==
     size: 344439776
 path: Next-Token-0.6.4-arm64-mac.zip
