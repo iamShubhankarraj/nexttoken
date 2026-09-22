@@ -51,7 +51,12 @@ export type UpdateState =
 export interface UpdateStatus {
   /** This build's version. */
   version: string;
+  /** Effective feed URL (built-in default when no override is set). */
   feedUrl: string;
+  /** True when the effective feed is the built-in default. v0.6.4+. */
+  feedIsDefault: boolean;
+  /** The built-in default feed URL (for the "reset" action). v0.6.4+. */
+  defaultFeedUrl: string;
   autoCheck: boolean;
   lastCheckedAt: number | null;
   state: UpdateState;
@@ -95,6 +100,14 @@ let checkTimer: NodeJS.Timeout | null = null;
 const CHECK_INTERVAL_MS = 12 * 60 * 60 * 1000;
 const LAUNCH_DELAY_MS = 30_000;
 const FEED_FILE = 'latest-mac.yml';
+/**
+ * v0.6.4: the built-in update feed. Every release publishes a GitHub
+ * Release (zip asset) plus `updates/latest-mac.yml` on main; jsDelivr
+ * serves the yml over HTTPS with proper caching. The user can still
+ * override this in Settings → Updates, or clear it to go dormant.
+ */
+export const DEFAULT_FEED_URL =
+  'https://cdn.jsdelivr.net/gh/iamShubhankarraj/nexttoken@main/updates';
 
 function emit(e: UpdateEvent): void {
   try {
@@ -105,8 +118,11 @@ function emit(e: UpdateEvent): void {
 }
 
 function feedBase(): string {
+  // v0.6.4+: an explicitly-cleared feed stays dormant; otherwise an empty
+  // override means "use the built-in feed" (GitHub Releases via jsDelivr).
+  if (deps?.store.d.updates.feedDisabled) return '';
   const raw = (deps?.store.d.updates.feedUrl ?? '').trim().replace(/\/+$/, '');
-  return raw;
+  return raw || DEFAULT_FEED_URL;
 }
 
 /** Minimal extractor for the fixed electron-builder latest-mac.yml schema. */
@@ -178,9 +194,14 @@ async function fetchText(url: string): Promise<string> {
 }
 
 export function updateStatus(): UpdateStatus {
+  const effective = feedBase();
   const s: UpdateStatus = {
     version: app.getVersion(),
-    feedUrl: deps?.store.d.updates.feedUrl ?? '',
+    // Report the EFFECTIVE feed so the UI shows what's actually configured
+    // (the built-in default when no override is set).
+    feedUrl: effective,
+    feedIsDefault: effective === DEFAULT_FEED_URL,
+    defaultFeedUrl: DEFAULT_FEED_URL,
     autoCheck: deps?.store.d.updates.autoCheck ?? true,
     lastCheckedAt: deps?.store.d.updates.lastCheckedAt ?? null,
     state,
@@ -512,11 +533,19 @@ export function setFeedUrl(url: string): void {
   const v = url.trim().replace(/\/+$/, '');
   // The feed is fetched and its bytes become a new app bundle — plain http
   // (or file:/etc. schemes) would let a network attacker or a pasted typo
-  // serve a malicious update. Empty clears the feed (feature dormant).
+  // serve a malicious update.
   if (v && !/^https:\/\//i.test(v)) {
     throw new Error('Update feed URL must be an https:// URL.');
   }
-  deps.store.d.updates.feedUrl = v;
+  if (v === DEFAULT_FEED_URL) {
+    // "Use the built-in feed" is the default state — normalize to it.
+    deps.store.d.updates.feedUrl = '';
+    deps.store.d.updates.feedDisabled = false;
+  } else {
+    deps.store.d.updates.feedUrl = v;
+    // Saving an empty field is the explicit "turn updates off".
+    deps.store.d.updates.feedDisabled = v === '';
+  }
   deps.store.saveSoon();
 }
 

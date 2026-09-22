@@ -36,8 +36,10 @@ export function useMediaState(): MediaState | null {
     let off: (() => void) | undefined;
     try {
       off = nt().onMediaState(setState);
-    } catch {
-      /* preload bridge unavailable (tests) */
+    } catch (e) {
+      // Never swallow this: a dead subscription makes the whole viewfinder
+      // vanish with zero evidence. (preload bridge unavailable in tests.)
+      console.warn("[viewfinder] onMediaState subscription failed:", e);
     }
     return () => off?.();
   }, []);
@@ -76,7 +78,10 @@ export function MediaViewfinder({ media }: { media: MediaState | null }) {
   const trackRef = useRef<SVGPathElement>(null);
   const progressRef = useRef<SVGPathElement>(null);
   const hitRef = useRef<SVGPathElement>(null);
-  /** Always-mounted invisible path: the geometry source for the film strip
+  /** Visible playhead knob riding the curve — the drag handle you can see. */
+  const knobRef = useRef<SVGCircleElement>(null);
+  /** Mirror of the poll-driven progress ratio, readable from the rAF loop. */
+  const progRatioRef = useRef(0);  /** Always-mounted invisible path: the geometry source for the film strip
       and button row, even when the timeline itself is hidden (live). */
   const geoRef = useRef<SVGPathElement>(null);
   const filmPolyRef = useRef<SVGPolygonElement>(null);
@@ -224,6 +229,21 @@ export function MediaViewfinder({ media }: { media: MediaState | null }) {
         btnsRef.current.style.transform =
           `translate(${(cx - BTN_OFFSET).toFixed(1)}px, ${m.notch.y.toFixed(1)}px) translate(-50%, -50%)`;
       }
+
+      // Playhead knob: rides the curve at the live progress ratio (or the
+      // drag ratio mid-seek). The CSS transition on cx/cy matches the
+      // progress line's 1s linear sweep so they never separate.
+      const knob = knobRef.current;
+      if (knob && total > 0 && path) {
+        const kr = dragging.current ? dragRatio.current : progRatioRef.current;
+        try {
+          const kp = path.getPointAtLength(Math.min(1, Math.max(0, kr)) * total);
+          knob.setAttribute("cx", kp.x.toFixed(1));
+          knob.setAttribute("cy", kp.y.toFixed(1));
+        } catch {
+          /* path mid-rebuild — skip a frame */
+        }
+      }
     };
     paint();
     return () => {
@@ -235,6 +255,12 @@ export function MediaViewfinder({ media }: { media: MediaState | null }) {
   /**
    * Map a pointer position to the nearest point on the scoop curve.
    * The overlay SVG has no viewBox, so user units are CSS pixels.
+   *
+   * Coarse-to-fine: an 80-sample sweep finds the neighbourhood, then a
+   * golden-section search refines the ratio on the continuous curve to
+   * ~1e-4 — sub-second precision even on hour-long media. (The old
+   * sample-only version quantized to 1/80 of the timeline, ~9s steps on
+   * an 11-minute video, which made precise seeking impossible.)
    */
   const curveHit = (
     clientX: number,
@@ -253,29 +279,47 @@ export function MediaViewfinder({ media }: { media: MediaState | null }) {
       return null;
     }
     if (!total) return null;
+    const ptAt = (r: number): DOMPoint | null => {
+      try {
+        return path.getPointAtLength(Math.min(1, Math.max(0, r)) * total);
+      } catch {
+        return null;
+      }
+    };
+    const dist2 = (r: number): number => {
+      const p = ptAt(r);
+      if (!p) return Infinity;
+      const dx = p.x - x;
+      const dy = p.y - y;
+      return dx * dx + dy * dy;
+    };
+    // Coarse sweep.
     const N = 80;
     let bi = 0;
     let bd = Infinity;
     for (let i = 0; i <= N; i++) {
-      let p: DOMPoint;
-      try {
-        p = path.getPointAtLength((total * i) / N);
-      } catch {
-        return null;
-      }
-      const d = (p.x - x) * (p.x - x) + (p.y - y) * (p.y - y);
+      const d = dist2(i / N);
       if (d < bd) {
         bd = d;
         bi = i;
       }
     }
-    let pt: DOMPoint;
-    try {
-      pt = path.getPointAtLength((total * bi) / N);
-    } catch {
-      return null;
+    // Golden-section refinement between the neighbouring samples.
+    let lo = Math.max(0, (bi - 1) / N);
+    let hi = Math.min(1, (bi + 1) / N);
+    const gr = (Math.sqrt(5) - 1) / 2;
+    let c = hi - gr * (hi - lo);
+    let d = lo + gr * (hi - lo);
+    for (let k = 0; k < 32; k++) {
+      if (dist2(c) < dist2(d)) hi = d;
+      else lo = c;
+      c = hi - gr * (hi - lo);
+      d = lo + gr * (hi - lo);
     }
-    return { ratio: bi / N, x: pt.x, y: pt.y };
+    const ratio = (lo + hi) / 2;
+    const pt = ptAt(ratio);
+    if (!pt) return null;
+    return { ratio, x: pt.x, y: pt.y };
   };
 
   const moveTip = (x: number, y: number) => {
@@ -341,6 +385,10 @@ export function MediaViewfinder({ media }: { media: MediaState | null }) {
 
   const progress =
     duration > 0 ? Math.min(1, Math.max(0, (media?.position ?? 0) / duration)) : 0;
+  // Mirror for the rAF geometry loop (it can't read render-scope locals).
+  useEffect(() => {
+    progRatioRef.current = progress;
+  }, [progress]);
   const showTimeline = on && !live && duration > 0;
   const showTip = on && duration > 0 && (dragOn || hoverOn);
 
@@ -380,6 +428,17 @@ export function MediaViewfinder({ media }: { media: MediaState | null }) {
               onPointerCancel={endDrag}
               onPointerEnter={() => setHoverOn(true)}
               onPointerLeave={() => setHoverOn(false)}
+            />
+            {/* Playhead knob: the visible drag handle. Always shown while
+                the timeline is up; grows on hover/drag to invite grabbing. */}
+            <circle
+              ref={knobRef}
+              className="nt-vf-knob"
+              r={5.5}
+              cx={-50}
+              cy={-50}
+              data-hot={dragOn || hoverOn ? "true" : "false"}
+              data-drag={dragOn ? "true" : "false"}
             />
           </g>
         )}

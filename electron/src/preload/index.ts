@@ -66,6 +66,12 @@ const api: NextTokenAPI = {
     ipcRenderer.on('nt.popup.blocked', l);
     return () => ipcRenderer.removeListener('nt.popup.blocked', l);
   },
+  /** v0.6.4: main asks the renderer to open a popup side-by-side. */
+  onPopupSplit: (cb) => {
+    const l = (_e: unknown, ids: Parameters<Parameters<NextTokenAPI['onPopupSplit']>[0]>[0]) => cb(ids);
+    ipcRenderer.on('nt.popup.split', l);
+    return () => ipcRenderer.removeListener('nt.popup.split', l);
+  },
   onMediaState: (cb) => {
     const l = (_e: unknown, s: Parameters<Parameters<NextTokenAPI['onMediaState']>[0]>[0]) => cb(s);
     ipcRenderer.on('nt.media.state', l);
@@ -82,6 +88,8 @@ const api: NextTokenAPI = {
     ipcRenderer.invoke('nt.privacy.set-permission', origin, perm, decision),
   privacySetDefault: (perm, policy) => ipcRenderer.invoke('nt.privacy.set-default', perm, policy),
   privacySetPopup: (origin, policy) => ipcRenderer.invoke('nt.privacy.set-popup', origin, policy),
+  /** v0.6.4: where popups open — 'tab' or side-by-side 'split'. */
+  privacySetPopupTarget: (target) => ipcRenderer.invoke('nt.privacy.set-popup-target', target),
   privacySetAutoplay: (origin, allow) => ipcRenderer.invoke('nt.privacy.set-autoplay', origin, allow),
   privacySetMuted: (origin, muted) => ipcRenderer.invoke('nt.privacy.set-muted', origin, muted),
   siteinfoGet: () => ipcRenderer.invoke('nt.siteinfo.get'),

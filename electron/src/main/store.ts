@@ -60,6 +60,8 @@ export type SitePermDecision = 'allow' | 'block';
 export type PermDefaultPolicy = 'allow' | 'block' | 'ask';
 /** Per-site popup policy. 'ask' = blocked-popup toast with "Open anyway" (the default). */
 export type PopupPolicy = 'allow' | 'block' | 'ask';
+/** Where popups open: a new tab (default, Arc-style) or side-by-side split view. */
+export type PopupTarget = 'tab' | 'split';
 
 /** Privacy & security state: per-site permissions, popup/autoplay/sound policies. */
 export interface PrivacyPersist {
@@ -69,6 +71,8 @@ export interface PrivacyPersist {
   defaults: Record<string, PermDefaultPolicy>;
   /** origin -> popup policy */
   popups: Record<string, PopupPolicy>;
+  /** Where popups open: 'tab' (default) or side-by-side 'split' view. */
+  popupTarget: PopupTarget;
   /** origin -> autoplay policy ('block' forces user-activation-required) */
   autoplay: Record<string, 'allow' | 'block'>;
   /** origin -> muted */
@@ -168,9 +172,11 @@ interface Persisted {
   /**
    * In-app updater (custom feed checker, not electron-updater — the app is
    * unsigned so Squirrel.Mac can't install). feedUrl is the static HTTPS
-   * base serving latest-mac.yml + the mac zip; empty = updates dormant.
+   * base serving latest-mac.yml + the mac zip. v0.6.4+: empty feedUrl means
+   * "use the built-in feed" unless feedDisabled was explicitly set (user
+   * cleared the field) — that's the only dormant state.
    */
-  updates: { feedUrl: string; autoCheck: boolean; lastCheckedAt: number | null };
+  updates: { feedUrl: string; autoCheck: boolean; lastCheckedAt: number | null; feedDisabled: boolean };
   /** Privacy & security: per-site permissions, popup/autoplay/sound policies. */
   privacy: PrivacyPersist;
   /** Browsing history (URL + title + time), capped — per-site settings + clear-data. */
@@ -278,11 +284,12 @@ function defaults(): Persisted {
     skills: defaultSkills(),
     chatSessions: [],
     adblock: { enabled: true, allowedHosts: [] },
-    updates: { feedUrl: '', autoCheck: true, lastCheckedAt: null },
+    updates: { feedUrl: '', autoCheck: true, lastCheckedAt: null, feedDisabled: false },
     privacy: {
       permissions: {},
       defaults: {},
       popups: {},
+      popupTarget: 'tab',
       autoplay: {},
       muted: {},
       autoReader: {},
@@ -354,6 +361,8 @@ export class Store {
         }
         // v0.6.3 (impl-5): HTTPS-Strict upgrade toggle + per-origin zoom memory.
         if (typeof parsed.privacy.httpsUpgrade !== 'boolean') parsed.privacy.httpsUpgrade = false;
+        // v0.6.4: popup target (new tab vs split view); default 'tab'.
+        if (parsed.privacy.popupTarget !== 'split') parsed.privacy.popupTarget = 'tab';
       }
       if (!Array.isArray(parsed.history)) parsed.history = [];
       // v0.6.3 (impl-5): startup behavior + download manager + bookmarks bar.
@@ -385,6 +394,7 @@ export class Store {
         if (typeof parsed.updates.feedUrl !== 'string') parsed.updates.feedUrl = '';
         if (typeof parsed.updates.autoCheck !== 'boolean') parsed.updates.autoCheck = true;
         if (typeof parsed.updates.lastCheckedAt !== 'number') parsed.updates.lastCheckedAt = null;
+        if (typeof parsed.updates.feedDisabled !== 'boolean') parsed.updates.feedDisabled = false;
       }
       // Backfill the multi-provider manager for installs that predate it.
       if (!Array.isArray(parsed.providers)) {

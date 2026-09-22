@@ -47,6 +47,8 @@ export interface PrivacySnapshot {
   historyCount: number;
   /** v0.6.3 (impl-5): Brave-style HTTPS-Strict upgrade. Off by default. */
   httpsUpgrade: boolean;
+  /** v0.6.4: where popups open — 'tab' (default) or side-by-side 'split'. */
+  popupTarget: 'tab' | 'split';
 }
 
 export function snapshot(store: Store): PrivacySnapshot {
@@ -60,6 +62,7 @@ export function snapshot(store: Store): PrivacySnapshot {
     autoReader: p.autoReader,
     historyCount: store.d.history.length,
     httpsUpgrade: p.httpsUpgrade === true,
+    popupTarget: p.popupTarget === 'split' ? 'split' : 'tab',
   };
 }
 

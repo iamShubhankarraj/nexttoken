@@ -1361,6 +1361,11 @@ function registerIpc() {
   guardedHandle('nt.privacy.set-popup', (_e, origin: string, policy: 'allow' | 'block' | 'ask' | null) =>
     setPopupPolicy(store, String(origin), policy ?? null)
   );
+  guardedHandle('nt.privacy.set-popup-target', (_e, target: 'tab' | 'split') => {
+    store.d.privacy.popupTarget = target === 'split' ? 'split' : 'tab';
+    store.saveSoon();
+    return snapshotPrivacy(store);
+  });
   guardedHandle('nt.privacy.set-autoplay', (_e, origin: string, allow: boolean) =>
     setAutoplayPolicy(store, tabs, String(origin), !!allow)
   );
@@ -1871,7 +1876,19 @@ app.whenReady().then(() => {
       // target=_blank / window.open / cmd+click from a guest page:
       // open a real tab in the source tab's Bit (foreground unless the
       // page asked for a background tab). Nothing is ever silently dropped.
+      // When Settings → Privacy → "Open popups in" is Split view, the popup
+      // lands in a side-by-side split next to the source tab instead.
       onPopup: (sourceTab, url, disposition) => {
+        if (store.d.privacy.popupTarget === 'split') {
+          const newId = createTabActivated(sourceTab.spaceId, url, false);
+          if (win && !win.isDestroyed()) {
+            win.webContents.send('nt.popup.split', {
+              leftTabId: sourceTab.id,
+              rightTabId: newId,
+            });
+          }
+          return;
+        }
         createTabActivated(sourceTab.spaceId, url, disposition !== 'background-tab');
       },
       // A denied popup (opener-scripted about:blank): show a small

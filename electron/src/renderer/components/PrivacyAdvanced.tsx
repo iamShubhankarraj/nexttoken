@@ -215,6 +215,50 @@ export function PrivacyAdvanced() {
               />
             </div>
           ))}
+          {/* v0.6.4: where popups land — a new tab (Arc-style) or a
+              side-by-side split with the opener tab. */}
+          <div className="flex items-center justify-between gap-3 pt-1">
+            <div>
+              <p className="text-[13px]" style={{ color: "var(--nt-text-1)" }}>
+                Open popups in
+              </p>
+              <p className="text-[12px]" style={{ color: "var(--nt-text-3)" }}>
+                New tabs open in the background Bit; split view shows the
+                popup next to the page that opened it
+              </p>
+            </div>
+            <div
+              role="radiogroup"
+              aria-label="Open popups in"
+              className="nt-r-full flex shrink-0 border p-0.5"
+              style={{ borderColor: "var(--nt-border)" }}
+            >
+              {(
+                [
+                  ["tab", "New tab"],
+                  ["split", "Split view"],
+                ] as const
+              ).map(([v, label]) => (
+                <button
+                  key={v}
+                  role="radio"
+                  aria-checked={(snap.popupTarget ?? "tab") === v}
+                  title={label}
+                  onClick={() =>
+                    void nt().privacySetPopupTarget(v).then(setSnap).catch(() => {})
+                  }
+                  className="nt-r-full px-2.5 py-1 text-[11px] font-medium transition-colors"
+                  style={{
+                    color: (snap.popupTarget ?? "tab") === v ? "#1c1512" : "var(--nt-text-3)",
+                    background:
+                      (snap.popupTarget ?? "tab") === v ? "var(--nt-accent)" : "transparent",
+                  }}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
         </div>
       </div>
 

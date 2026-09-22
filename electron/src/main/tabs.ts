@@ -252,12 +252,17 @@ export class TabManager {
       // 'block' drops it silently.
       const policy = this.popupPolicyFor(tab.url);
       if (!url || url === 'about:blank') {
-        if (policy === 'ask') {
-          try {
-            this.hooks?.onPopupBlocked?.(tab, url || 'about:blank');
-          } catch {
-            /* never break the guest on a hook failure */
-          }
+        // Opener-scripted popups (OAuth, payments, previews): window.open()
+        // with no URL yet. Hard-denying these broke the opener's flow with
+        // zero feedback, so they now become a real tab like any other popup
+        // (Arc-style) — except under 'block', which stays silent.
+        // Tradeoff: window.opener scripting can't bridge into the tab, so
+        // exotic opener-driven flows may still need a manual step.
+        if (policy === 'block') return { action: 'deny' };
+        try {
+          this.hooks?.onPopup?.(tab, url || 'about:blank', disposition);
+        } catch {
+          /* never break the guest on a hook failure */
         }
         return { action: 'deny' };
       }

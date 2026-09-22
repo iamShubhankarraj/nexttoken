@@ -573,7 +573,12 @@ export interface AdvisorResult {
 /** In-app updater status (see main/updater.ts). */
 export interface UpdateStatus {
   version: string;
+  /** Effective feed URL (the built-in default when no override is set). */
   feedUrl: string;
+  /** True when the effective feed is the built-in default. v0.6.4+. */
+  feedIsDefault: boolean;
+  /** The built-in default feed URL (for the "reset" action). v0.6.4+. */
+  defaultFeedUrl: string;
   autoCheck: boolean;
   lastCheckedAt: number | null;
   state: 'idle' | 'checking' | 'available' | 'downloading' | 'downloaded' | 'error' | 'no-feed';
@@ -781,6 +786,8 @@ export interface PrivacySnapshot {
   historyCount: number;
   /** v0.6.3 (impl-5): Brave-style HTTPS-Strict upgrade. Off by default. */
   httpsUpgrade: boolean;
+  /** v0.6.4: where popups open — 'tab' (default) or side-by-side 'split'. */
+  popupTarget: 'tab' | 'split';
 }
 
 /** Cookies & site data grouped per site. */
@@ -920,6 +927,8 @@ export interface NextTokenAPI {
   onFindResult(cb: (r: FindResult) => void): () => void;
   /** A popup was blocked (opener-scripted window we can't host). */
   onPopupBlocked(cb: (info: { url: string }) => void): () => void;
+  /** v0.6.4: main asks the renderer to show a popup side-by-side. */
+  onPopupSplit(cb: (ids: { leftTabId: string; rightTabId: string }) => void): () => void;
   /** Background media state pushed from main ~1Hz for the curved viewfinder. */
   onMediaState(cb: (s: MediaState) => void): () => void;
   /** Live video frame (~2.5fps) for the viewfinder ribbon / PiP window. */
@@ -934,6 +943,8 @@ export interface NextTokenAPI {
   privacySetDefault(perm: string, policy: 'allow' | 'block' | 'ask'): Promise<PrivacySnapshot>;
   /** Per-site popup policy (null = back to "ask"). */
   privacySetPopup(origin: string, policy: 'allow' | 'block' | 'ask' | null): Promise<PrivacySnapshot>;
+  /** v0.6.4: where popups open — 'tab' or side-by-side 'split'. */
+  privacySetPopupTarget(target: 'tab' | 'split'): Promise<PrivacySnapshot>;
   /** Per-site autoplay (allow) / autoplay-block. Applied to live tabs. */
   privacySetAutoplay(origin: string, allow: boolean): Promise<PrivacySnapshot>;
   /** Per-site mute. Applied to live tabs. */

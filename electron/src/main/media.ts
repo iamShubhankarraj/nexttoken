@@ -16,15 +16,28 @@ import type { WebContents } from 'electron';
 import type { TabManager } from './tabs';
 import type { MediaState } from '../shared/ipc';
 
-/** JS evaluated in the guest: the best video element (or null). */
+/** JS evaluated in the guest: the best video element (or null).
+ *
+ * Two deliberate choices:
+ *  - NO `disablePictureInPicture` filter. YouTube sets that flag on music
+ *    content (PiP is Premium-gated there); filtering on it made the
+ *    viewfinder blind to the very songs people play most, and the poll then
+ *    fell back to some other tab's paused video — wrong title, wrong
+ *    duration, wrong position. PiP-gating belongs on the PiP *button*, not
+ *    on detection.
+ *  - The playing video ALWAYS wins, regardless of size. (The old code built
+ *    a playing-first array and then re-sorted it by area, silently
+ *    discarding the preference.) Largest is only the tiebreak among
+ *    non-playing candidates.
+ */
 const BEST_VIDEO_JS = `(() => {
   const vids = [...document.querySelectorAll('video')]
-    .filter(v => v.readyState >= 2 && !v.disablePictureInPicture);
+    .filter(v => v.readyState >= 2);
   if (!vids.length) return null;
   const playing = vids.find(v => !v.paused && !v.ended);
-  const scored = (playing ? [playing] : vids).concat(vids.filter(v => v !== playing));
-  scored.sort((a, b) => (b.videoWidth * b.videoHeight) - (a.videoWidth * a.videoHeight));
-  return scored[0];
+  if (playing) return playing;
+  vids.sort((a, b) => (b.videoWidth * b.videoHeight) - (a.videoWidth * a.videoHeight));
+  return vids[0];
 })()`;
 
 /** Guard an executeJavaScript so a wedged page can't stall the poll loop.

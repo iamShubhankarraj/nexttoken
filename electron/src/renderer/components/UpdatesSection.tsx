@@ -162,7 +162,8 @@ export function UpdatesSection() {
       case "no-feed":
         return (
           <p className="text-[12.5px]" style={{ color: "#c49e4a" }}>
-            No update feed configured yet — paste one below to enable in-app updates.
+            In-app updates are turned off — paste a feed URL below, or reset to
+            the built-in feed, to enable them.
           </p>
         );
       default:
@@ -241,13 +242,15 @@ export function UpdatesSection() {
             Update feed
           </p>
           <p className="mt-0.5 text-[12px]" style={{ color: "var(--nt-text-3)" }}>
-            Static HTTPS location serving <code>latest-mac.yml</code> and the release zip.
+            {status?.feedIsDefault
+              ? "Using the built-in Next Token feed — updates work out of the box. You can point it at your own static HTTPS location serving latest-mac.yml and the release zip instead."
+              : "Static HTTPS location serving latest-mac.yml and the release zip."}
           </p>
           <div className="mt-2 flex gap-2">
             <input
               value={feedInput}
               onChange={(e) => setFeedInput(e.target.value)}
-              placeholder="https://updates.example.com/mac-arm64"
+              placeholder="Built-in feed (leave empty to keep it)"
               spellCheck={false}
               className="nt-r-sm min-w-0 flex-1 border bg-transparent px-2.5 py-1.5 text-[12.5px] outline-none"
               style={{ borderColor: "var(--nt-border)", color: "var(--nt-text-1)" }}
@@ -260,6 +263,29 @@ export function UpdatesSection() {
             >
               {feedSaved ? "Saved ✓" : "Save"}
             </button>
+            {!status?.feedIsDefault && (
+              <button
+                onClick={() => {
+                  if (!status?.defaultFeedUrl) return;
+                  setBusy(true);
+                  nt().updatesSetFeedUrl(status.defaultFeedUrl)
+                    .then((s) => {
+                      setStatus(s);
+                      setFeedInput(s.feedUrl);
+                      setFeedSaved(true);
+                      setTimeout(() => setFeedSaved(false), 2000);
+                    })
+                    .catch(() => {})
+                    .finally(() => setBusy(false));
+                }}
+                disabled={busy}
+                title="Go back to the built-in Next Token update feed"
+                className="nt-r-sm shrink-0 border px-3 py-1.5 text-[12.5px] font-medium transition-colors hover:bg-[var(--nt-bg-hover)] disabled:opacity-60"
+                style={{ borderColor: "var(--nt-border)", color: "var(--nt-text-3)" }}
+              >
+                Reset to built-in
+              </button>
+            )}
           </div>
           <label
             className="mt-2.5 flex cursor-pointer items-center gap-2 text-[12.5px]"

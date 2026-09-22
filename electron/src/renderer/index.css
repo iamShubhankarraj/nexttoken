@@ -574,6 +574,26 @@ input[type="color"].nt-color::-webkit-color-swatch {
   cursor: pointer;
   touch-action: none;
 }
+/* Playhead knob: the visible drag handle riding the curve. cx/cy are
+   transitioned over the same 1s linear sweep as the progress line so the
+   dot and the ember line never separate; the transition is cut while
+   dragging so the knob tracks the pointer exactly. */
+.nt-vf-knob {
+  fill: var(--nt-accent);
+  stroke: rgba(20, 12, 4, 0.55);
+  stroke-width: 1.5;
+  filter: drop-shadow(0 0 5px rgba(232, 163, 61, 0.85));
+  pointer-events: none;
+  transform-box: fill-box;
+  transform-origin: center;
+  transition: cx 1s linear, cy 1s linear, transform 0.15s ease;
+}
+.nt-vf-knob[data-hot="true"] {
+  transform: scale(1.45);
+}
+.nt-vf-knob[data-drag="true"] {
+  transition: transform 0.15s ease;
+}
 /* Transport: play/pause + PiP, seated between the timeline and the film —
    inside the curve, never outside or below. Positioned per frame by the
    geometry loop (left/top via transform). No card, no bubble, no background. */

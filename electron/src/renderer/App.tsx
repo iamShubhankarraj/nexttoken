@@ -71,6 +71,7 @@ function Shell() {
     activeTab,
     splitPick,
     setSplitPick,
+    setSplit,
   } = useBrowser();
   const [commandOpen, setCommandOpen] = useState(false);
   // Keyboard-shortcut cheatsheet (⌘K → "Keyboard shortcuts").
@@ -149,6 +150,33 @@ function Shell() {
     }
     return () => off?.();
   }, []);
+
+  // v0.6.4: main opened a popup for split view — show it side-by-side with
+  // the source tab once both tabs exist in the snapshot (the tab-delta and
+  // this event race, so we wait rather than dropping the split).
+  const [pendingSplit, setPendingSplit] = useState<{
+    leftTabId: string;
+    rightTabId: string;
+  } | null>(null);
+  useEffect(() => {
+    let off: (() => void) | undefined;
+    try {
+      off = nt().onPopupSplit((ids) => setPendingSplit(ids));
+    } catch {
+      /* bridge unavailable */
+    }
+    return () => off?.();
+  }, []);
+  useEffect(() => {
+    if (!pendingSplit || !snapshot) return;
+    const ids = new Set<string>();
+    for (const s of snapshot.spaces)
+      for (const t of s.tabs) ids.add(t.id);
+    if (ids.has(pendingSplit.leftTabId) && ids.has(pendingSplit.rightTabId)) {
+      setSplit({ ...pendingSplit, ratio: 0.5 });
+      setPendingSplit(null);
+    }
+  }, [pendingSplit, snapshot, setSplit]);
 
   // Auto-dismiss the blocked-popup indicator after a while.
   useEffect(() => {
