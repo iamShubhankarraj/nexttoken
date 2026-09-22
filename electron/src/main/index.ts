@@ -70,13 +70,17 @@ import { registerSearchIpc } from './search';
 import { registerSiteInfoIpc } from './siteinfo';
 import { wrapWithActing, dictateUndoJs, type LastDictation } from './voice/acting';
 import { buildTidyPlan, applyTidy } from './tidy';
+// v0.6.3 (impl-4: reading & printing) — reader mode, print/PDF, screenshots.
+import { registerReaderIpc, noteReaderTabDelta, readerFlagsFor } from './reader';
+import { registerCaptureIpc } from './capture';
 import {
   PROVIDER_PRESETS, DEFAULT_DARK_TOKENS
 } from '../shared/ipc';
 import type {
   ActiveModelRef, AdBlockState, AdBlockStats, AgentEvent, BookmarkState, BrainEvent, BrowserSnapshot, ChatSession, JevConfigInput, JevConfigPublic, ModelAssignment,
   ModelChoice, ModelEntryPublic, ModelEvent, ProviderId, ProviderInput, ProviderPublic, ProviderValidateInput, SkillDef, SkillInput, SpaceState,
-  TabDelta, ThemeTokens, TidyActions, TidyPlan, VoiceEngineState, VoiceSettings, VoiceTranscript, LocalModelMetrics
+  TabDelta, ThemeTokens, TidyActions, TidyPlan, VoiceEngineState, VoiceSettings, VoiceTranscript, LocalModelMetrics,
+  DownloadUiEvent
 } from '../shared/ipc';
 
 let win: BrowserWindow | null = null;
@@ -498,7 +502,9 @@ function snapshot(): BrowserSnapshot {
       id: s.id,
       name: s.name,
       accent: store.themeFor(s.id).spaceColor,
-      tabs: stabs.map((t) => tabs.toState(t)),
+      // v0.6.3 (impl-4): reader-mode flags ride the snapshot so full
+      // refreshes don't wipe what the tab deltas reported.
+      tabs: stabs.map((t) => ({ ...tabs.toState(t), ...readerFlagsFor(t.id) })),
       activeTabId: activeInSpace,
       favorites: s.favorites,
       folders: s.folders.map((f) => ({ id: f.id, name: f.name })),
@@ -1858,6 +1864,9 @@ app.whenReady().then(() => {
         siteZoom.applyForTab(store, tab, url);
         httpsUpgrade.maybeUpgrade(store, tab, d.tabId, url);
       }
+      // v0.6.3 (impl-4): reader-mode article detection on load completion,
+      // reader state reset on navigation.
+      noteReaderTabDelta(d);
       win?.webContents.send('nt.tab-delta', d);
     },
     {
@@ -2000,6 +2009,23 @@ app.whenReady().then(() => {
       }
     }
   );
+  // v0.6.3 (impl-4): reader mode + print/PDF/screenshot IPC.
+  registerReaderIpc({
+    store,
+    tabs,
+    sendDelta: (d) => {
+      if (win && !win.isDestroyed()) win.webContents.send('nt.tab-delta', d);
+    },
+  });
+  registerCaptureIpc({
+    store,
+    tabs,
+    getWin: () => win,
+    sendDownload: (payload: DownloadUiEvent) => {
+      if (win && !win.isDestroyed())
+        win.webContents.send('nt.downloads.event', payload);
+    },
+  });
   // Bounded stack of user-closed tabs for ⌘⇧T reopen.
   closedTabStack = new ClosedTabStack();
   initModelTier();
