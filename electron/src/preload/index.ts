@@ -19,6 +19,19 @@ const api: NextTokenAPI = {
   findStop: () => ipcRenderer.invoke('nt.tabs.find-stop'),
   /** Reveal a finished download in Finder. */
   downloadsReveal: (path) => ipcRenderer.invoke('nt.downloads.reveal', path),
+  /** Downloads manager (v0.6.3). */
+  downloadsList: () => ipcRenderer.invoke('nt.downloads.list'),
+  downloadsPause: (id) => ipcRenderer.invoke('nt.downloads.pause', id),
+  downloadsResume: (id) => ipcRenderer.invoke('nt.downloads.resume', id),
+  downloadsCancel: (id) => ipcRenderer.invoke('nt.downloads.cancel', id),
+  downloadsRetry: (id) => ipcRenderer.invoke('nt.downloads.retry', id),
+  downloadsClearFinished: () => ipcRenderer.invoke('nt.downloads.clear-finished'),
+  downloadsOpen: (path) => ipcRenderer.invoke('nt.downloads.open', path),
+  downloadsGetDir: () => ipcRenderer.invoke('nt.downloads.get-dir'),
+  downloadsPickDir: () => ipcRenderer.invoke('nt.downloads.pick-dir'),
+  downloadsSetDir: (dir) => ipcRenderer.invoke('nt.downloads.set-dir', dir),
+  downloadsAutoOpenGet: () => ipcRenderer.invoke('nt.downloads.auto-open-get'),
+  downloadsAutoOpenSet: (exts) => ipcRenderer.invoke('nt.downloads.auto-open-set', exts),
   /** Reader mode: enter the clean article view (default: active tab). */
   readerEnter: (tabId?) => ipcRenderer.invoke('nt.reader.enter', tabId),
   /** Reader mode: leave the article view. */
@@ -77,6 +90,16 @@ const api: NextTokenAPI = {
   privacyDeleteSite: (site) => ipcRenderer.invoke('nt.privacy.delete-site', site),
   privacyClearData: (opts) => ipcRenderer.invoke('nt.privacy.clear-data', opts),
   privacyHistory: () => ipcRenderer.invoke('nt.privacy.history'),
+  /** HTTPS-Strict upgrade toggle (v0.6.3). */
+  privacySetHttpsUpgrade: (enabled) => ipcRenderer.invoke('nt.privacy.set-https-upgrade', enabled),
+  /** Per-origin zoom memory (v0.6.3). */
+  zoomList: () => ipcRenderer.invoke('nt.zoom.list'),
+  zoomReset: (origin) => ipcRenderer.invoke('nt.zoom.reset', origin),
+  /** History manager (v0.6.3). */
+  historyList: (limit) => ipcRenderer.invoke('nt.history.list', limit),
+  historySearch: (query, limit) => ipcRenderer.invoke('nt.history.search', query, limit),
+  historyDelete: (at, url) => ipcRenderer.invoke('nt.history.delete', at, url),
+  historyClearRange: (range) => ipcRenderer.invoke('nt.history.clear-range', range),
   tabsPin: (tabId, pinned) => ipcRenderer.invoke('nt.tabs.pin', tabId, pinned),
   tabsMove: (tabId, spaceId) => ipcRenderer.invoke('nt.tabs.move', tabId, spaceId),
   tabsReorder: (tabId, beforeTabId, folderId) => ipcRenderer.invoke('nt.tabs.reorder', tabId, beforeTabId, folderId),
@@ -121,9 +144,20 @@ const api: NextTokenAPI = {
   foldersRename: (spaceId, folderId, name) => ipcRenderer.invoke('nt.folders.rename', spaceId, folderId, name),
   foldersRemove: (spaceId, folderId) => ipcRenderer.invoke('nt.folders.remove', spaceId, folderId),
   // bookmarks (per Bit)
-  bookmarksAdd: (spaceId, name, url) => ipcRenderer.invoke('nt.bookmarks.add', spaceId, name, url),
+  bookmarksAdd: (spaceId, name, url, folder) => ipcRenderer.invoke('nt.bookmarks.add', spaceId, name, url, folder),
   bookmarksRename: (spaceId, id, name) => ipcRenderer.invoke('nt.bookmarks.rename', spaceId, id, name),
   bookmarksRemove: (spaceId, id) => ipcRenderer.invoke('nt.bookmarks.remove', spaceId, id),
+  /** Move a bookmark to another Bit (v0.6.3). */
+  bookmarksMove: (fromSpaceId, id, toSpaceId) => ipcRenderer.invoke('nt.bookmarks.move', fromSpaceId, id, toSpaceId),
+  /** Bookmarks bar visibility + scope (v0.6.3). */
+  bookmarksBarGet: () => ipcRenderer.invoke('nt.bookmarks.bar-get'),
+  bookmarksBarSet: (v) => ipcRenderer.invoke('nt.bookmarks.bar-set', v),
+  /** On-launch behavior + default browser (v0.6.3). */
+  startupGet: () => ipcRenderer.invoke('nt.startup.get'),
+  startupSet: (v) => ipcRenderer.invoke('nt.startup.set', v),
+  startupIsDefaultBrowser: () => ipcRenderer.invoke('nt.startup.is-default'),
+  startupMakeDefaultBrowser: () => ipcRenderer.invoke('nt.startup.make-default'),
+  startupNudge: () => ipcRenderer.invoke('nt.startup.nudge'),
   // import from other browsers (explicit user action only)
   importDetect: () => ipcRenderer.invoke('nt.import.detect'),
   importRun: (browserId, kinds) => ipcRenderer.invoke('nt.import.run', browserId, kinds),
