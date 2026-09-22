@@ -33,7 +33,7 @@ function isUpgradeable(raw: string): boolean {
 /** Maybe upgrade an http:// navigation. Called on every TabDelta 'url'. */
 export function maybeUpgrade(
   store: Store,
-  tab: { wc?: WebContents } | undefined,
+  tab: { wc?: WebContents | null } | undefined,
   tabId: string,
   url: string
 ): void {

@@ -31,7 +31,7 @@ function originOf(url: string): string | null {
 /** Apply the remembered zoom to one tab after a navigation. */
 export function applyForTab(
   store: Store,
-  tab: { wc?: WebContents } | undefined,
+  tab: { wc?: WebContents | null } | undefined,
   url: string
 ): void {
   const origin = originOf(url);

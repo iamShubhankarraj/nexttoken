@@ -326,8 +326,7 @@ export function getDownloadSettings(store: Store): {
   dir: string | null;
   defaultDir: string;
 } {
-  const s = settingsOf(store);
-  return { dir: s.dir, defaultDir: defaultDir(store) };
+  return { dir: store.d.downloads.dir, defaultDir: defaultDir(store) };
 }
 
 /** Ask the user to pick a download folder (persists when picked). */
