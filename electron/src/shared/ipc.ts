@@ -699,10 +699,20 @@ export const MAX_CHAT_SESSIONS = 5;
 // Native ad blocker (main-process network filter, bundled filter list)
 // ---------------------------------------------------------------------------
 
-/** What the renderer may see — global switch + per-site allowlist. */
+/** What the renderer may see — global switch + per-site allowlist + engine health. */
 export interface AdBlockState {
   enabled: boolean;
   allowedHosts: string[];
+  /** Engine ready (false while filter lists are still loading). */
+  ready: boolean;
+  ruleCount: number;
+  listsLoaded: number;
+  listsTotal: number;
+  /** Epoch ms of the last successful list fetch, null when never. */
+  lastUpdatedMs: number | null;
+  /** List file names that failed on the last load (degraded, not dead). */
+  failedLists: string[];
+  resourcesDegraded: boolean;
 }
 
 /** Live per-tab blocked-request counts pushed from main. */
@@ -751,6 +761,29 @@ export interface SiteDataSummary {
   site: string;
   origins: string[];
   cookies: number;
+}
+
+/** Effective search-engine configuration (preset or custom template). */
+export interface SearchEngineConfig {
+  /** Preset id, or 'custom' for a freeform template. */
+  id: string;
+  name: string;
+  /** Query template (%s or bare-append style). */
+  template: string;
+  /** Keyword shortcut ("g", "ddg", …), null for custom. */
+  keyword: string | null;
+}
+
+/** Connection summary for the address-bar site panel. */
+export interface SiteConnectionInfo {
+  url: string;
+  protocol: string;
+  host: string;
+  origin: string;
+  /** 'secure' = https, 'not-secure' = http, 'internal' = browser page. */
+  security: 'secure' | 'not-secure' | 'internal';
+  /** Set when a certificate error was recorded for this tab's origin. */
+  certError: string | null;
 }
 
 /** One cookie's metadata (values never leave the main process). */
@@ -842,6 +875,8 @@ export interface NextTokenAPI {
   privacySetAutoplay(origin: string, allow: boolean): Promise<PrivacySnapshot>;
   /** Per-site mute. Applied to live tabs. */
   privacySetMuted(origin: string, muted: boolean): Promise<PrivacySnapshot>;
+  /** Connection summary for the active tab (address-bar site panel). */
+  siteinfoGet(): Promise<SiteConnectionInfo | null>;
   /** Cookies & site data grouped per site. */
   privacySites(): Promise<SiteDataSummary[]>;
   /** Cookie names/metadata for one site (values never leave main). */
@@ -923,8 +958,8 @@ export interface NextTokenAPI {
   // settings (voice, search)
   settingsGetVoice(): Promise<VoiceSettings>;
   settingsSetVoice(v: Partial<VoiceSettings>): Promise<void>;
-  settingsGetSearchEngine(): Promise<string>;
-  settingsSetSearchEngine(url: string): Promise<void>;
+  settingsGetSearchEngine(): Promise<SearchEngineConfig>;
+  settingsSetSearchEngine(id: string, template: string): Promise<SearchEngineConfig>;
   // BYOK providers — the provider manager (multiple API gateway providers)
   providersList(): Promise<ProviderPublic[]>;
   providersSave(input: ProviderInput): Promise<ProviderPublic[]>;
@@ -1038,6 +1073,7 @@ export interface NextTokenAPI {
   // native ad blocker
   adblockGet(): Promise<AdBlockState>;
   adblockSetEnabled(enabled: boolean): Promise<AdBlockState>;
+  adblockRefresh(): Promise<AdBlockState>;
   /** allowed=true adds the host to the allowlist (ads show on that site). */
   adblockSetSiteAllowed(host: string, allowed: boolean): Promise<AdBlockState>;
   onAdBlockStats(cb: (s: AdBlockStats) => void): () => void;
