@@ -50,6 +50,10 @@ function applyDeltaToTab(tab: TabState, d: TabDelta): TabState {
       return d.value === null || typeof d.value === "string"
         ? { ...tab, folderId: d.value }
         : tab;
+    case "muted":
+      return typeof d.value === "boolean" ? { ...tab, muted: d.value } : tab;
+    case "audible":
+      return typeof d.value === "boolean" ? { ...tab, audible: d.value } : tab;
     default:
       return tab;
   }
