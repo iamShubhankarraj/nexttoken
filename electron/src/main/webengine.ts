@@ -27,11 +27,12 @@
  * beforeunload) already work in webviews via Chromium defaults — no code
  * needed.
  */
-import { app, dialog, session, shell } from 'electron';
+import { dialog, session, shell } from 'electron';
 import type { BrowserWindow, DownloadItem, WebContents } from 'electron';
 import path from 'node:path';
 import type { Store } from './store';
 import type { DownloadUiEvent } from '../shared/ipc';
+import { handleWillDownload } from './downloads';
 
 /** The partition every tab webview declares. */
 export const GUEST_PARTITION = 'persist:nexttoken';
@@ -88,6 +89,8 @@ const PERMISSION_LABELS: Record<string, string> = {
 };
 
 /** Native allow/block prompt for a sensitive permission request. */
+const inflightPermissionDialogs = new Set<string>();
+
 async function askPermission(
   deps: WebEngineDeps,
   wc: WebContents,
@@ -227,98 +230,41 @@ export function setupGuestSession(deps: WebEngineDeps): void {
     // external apps, …): ask the user. WebAuthn never reaches this
     // handler — Chromium drives the authenticator UI natively.
     // The popup→tab routing never triggers a permission request itself.
+    //
+    // Dialog stacking guard: a page that spams requests (the aggressive
+    // retry pattern behind the old permission-loop bug) must not pile up
+    // modal dialogs — concurrent duplicates for the same origin+permission
+    // are denied while one dialog is already open.
+    const inflightKey = `${origin}|${p}`;
+    if (inflightPermissionDialogs.has(inflightKey)) {
+      console.log(`[permissions] ${origin || '(unknown origin)'} ${p} -> denied (dialog already open)`);
+      callback(false);
+      return;
+    }
+    inflightPermissionDialogs.add(inflightKey);
     console.log(`[permissions] ${origin || '(unknown origin)'} ${p} -> ask`);
-    void askPermission(deps, wc, p, origin, details).then(callback, () => callback(false));
+    const settle = (granted: boolean): void => {
+      inflightPermissionDialogs.delete(inflightKey);
+      callback(granted);
+    };
+    void askPermission(deps, wc, p, origin, details).then(settle, () => settle(false));
   });
 
-  // 3 — downloads: save dialog + progress mirrored to the renderer.
-  let dlSeq = 0;
+  // 3 — downloads: delegated to downloads.ts (save dialog / fixed folder,
+  // progress mirror, pause-cancel-retry registry, auto-open types).
+  // webengine keeps its UA + permission focus; see downloads.ts.
   ses.on('will-download', (_event, item: DownloadItem) => {
     // "Save Image As…" already picked a destination — don't double-prompt.
     if (imageSaveArmed.delete(item.getURL())) return;
-    const id = `dl-${Date.now().toString(36)}-${dlSeq++}`;
-    const filename = item.getFilename() || 'download';
-    const send = (payload: DownloadUiEvent): void => {
-      try {
-        deps.send('nt.downloads.event', payload);
-      } catch {
-        /* renderer gone */
-      }
-    };
-    // Pause immediately so nothing lands in the default folder before the
-    // user picks a destination.
-    try {
-      item.pause();
-    } catch {
-      /* best effort */
-    }
-    void (async () => {
-      const w = deps.getWin();
-      const saveOpts = {
-        title: 'Save file',
-        defaultPath: path.join(app.getPath('downloads'), filename),
-      };
-      const { canceled, filePath } =
-        w && !w.isDestroyed()
-          ? await dialog.showSaveDialog(w, saveOpts)
-          : await dialog.showSaveDialog(saveOpts);
-      if (canceled || !filePath) {
-        try {
-          item.cancel();
-        } catch {
-          /* noop */
-        }
-        send({ kind: 'failed', id, filename, reason: 'cancelled' });
-        return;
-      }
-      try {
-        item.setSavePath(filePath);
-      } catch {
-        try {
-          item.cancel();
-        } catch {
-          /* noop */
-        }
-        send({ kind: 'failed', id, filename, reason: 'save-path' });
-        return;
-      }
-      try {
-        item.resume();
-      } catch {
-        /* noop */
-      }
-      send({ kind: 'started', id, filename });
-      let lastPct = -1;
-      item.on('updated', () => {
-        const received = item.getReceivedBytes();
-        const total = item.getTotalBytes();
-        const percent = total > 0 ? Math.round((received / total) * 100) : -1;
-        if (percent !== lastPct) {
-          lastPct = percent;
-          send({ kind: 'progress', id, filename, received, total, percent });
-        }
-      });
-      item.on('done', (_e, state) => {
-        if (state === 'completed') {
-          let saved = '';
-          try {
-            saved = item.getSavePath();
-          } catch {
-            /* noop */
-          }
-          send({ kind: 'done', id, filename, path: saved });
-        } else {
-          send({ kind: 'failed', id, filename, reason: state });
-        }
-      });
-    })();
+    handleWillDownload(deps, item);
   });
 }
 
 /** Reveal a finished download in Finder. */
 export async function revealDownload(targetPath: string): Promise<void> {
   try {
-    if (targetPath) shell.showItemInFolder(targetPath);
+    // Absolute paths only — this must never become a relative-path surprise.
+    if (targetPath && path.isAbsolute(targetPath)) shell.showItemInFolder(targetPath);
   } catch {
     /* noop */
   }
