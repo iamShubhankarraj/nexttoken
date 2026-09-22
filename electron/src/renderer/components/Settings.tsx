@@ -42,6 +42,7 @@ import { useBrowser } from "../BrowserContext";
 import { nt } from "../nt";
 import { openImportDialog } from "./ImportDialog";
 import { ModelsPanel } from "./ModelsPanel";
+import { PasswordsPanel } from "./PasswordsPanel";
 import { PrivacyAdvanced } from "./PrivacyAdvanced";
 import { SearchEnginePicker } from "./SearchEnginePicker";
 import { AppLogo } from "./AppLogo";
@@ -65,6 +66,7 @@ type Section =
   | "voice"
   | "theme"
   | "privacy"
+  | "passwords"
   | "import"
   | "updates"
   | "downloads"
@@ -79,6 +81,7 @@ const SECTION_IDS: Section[] = [
   "voice",
   "theme",
   "privacy",
+  "passwords",
   "import",
   "updates",
   "downloads",
@@ -93,6 +96,7 @@ const SECTIONS: Array<{ id: Section; label: string; icon: typeof Plug }> = [
   { id: "skills", label: "Skills", icon: Zap },
   { id: "voice", label: "Voice & Search", icon: Mic },
   { id: "privacy", label: "Privacy", icon: Shield },
+  { id: "passwords", label: "Passwords", icon: KeyRound },
   { id: "import", label: "Import", icon: Import },
   { id: "updates", label: "Updates", icon: ArrowDownToLine },
   { id: "theme", label: "Theme", icon: Palette },
@@ -206,6 +210,7 @@ export function Settings({
             {section === "voice" && <VoiceSearchSection />}
             {section === "privacy" && <PrivacySection />}
             {section === "import" && <ImportSection />}
+            {section === "passwords" && <PasswordsPanel />}
             {section === "updates" && <UpdatesSection />}
             {section === "theme" && (
               activeSpace ? (
