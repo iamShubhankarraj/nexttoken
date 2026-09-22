@@ -43,6 +43,8 @@ export interface PrivacySnapshot {
   autoplay: Record<string, 'allow' | 'block'>;
   muted: Record<string, boolean>;
   historyCount: number;
+  /** v0.6.3 (impl-5): Brave-style HTTPS-Strict upgrade. Off by default. */
+  httpsUpgrade: boolean;
 }
 
 export function snapshot(store: Store): PrivacySnapshot {
@@ -54,16 +56,45 @@ export function snapshot(store: Store): PrivacySnapshot {
     autoplay: p.autoplay,
     muted: p.muted,
     historyCount: store.d.history.length,
+    httpsUpgrade: p.httpsUpgrade === true,
   };
 }
 
 /** Set (or clear with null) a per-site permission decision. */
+
+/** Permission names the permission-request handler can actually produce. */
+const KNOWN_PERMISSIONS = new Set([
+  'media', 'geolocation', 'notifications', 'clipboard-read', 'clipboard-sanitized-write',
+  'openExternal', 'display-capture', 'midi', 'midiSysex', 'pointerLock', 'fullscreen',
+  'window-management', 'speaker-selection', 'idle-detection', 'keyboardLock',
+  'storage-access', 'top-level-storage-access', 'fileSystem', 'payment-handler',
+  'identity-credentials-get', 'web-app-installation', 'screen-wake-lock', 'popups',
+  'autoplay',
+]);
+
+/** Normalize a site origin; throws on anything that isn't an http(s) origin. */
+function normalizeOrigin(origin: string): string {
+  const v = String(origin ?? '').trim();
+  try {
+    const u = new URL(v);
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') throw new Error('bad scheme');
+    return u.origin;
+  } catch {
+    throw new Error(`Invalid site origin "${v}".`);
+  }
+}
+
 export function setSitePermission(
   store: Store,
-  origin: string,
-  perm: string,
+  rawOrigin: string,
+  rawPerm: string,
   decision: SitePermDecision | null
 ): PrivacySnapshot {
+  // Validate before touching the store: origins must be real http(s) origins
+  // and the permission must be one the request handler can produce.
+  const origin = normalizeOrigin(rawOrigin);
+  const perm = String(rawPerm ?? '');
+  if (!KNOWN_PERMISSIONS.has(perm)) throw new Error(`Unknown permission "${perm}".`);
   const p = store.d.privacy;
   if (decision === null) {
     if (p.permissions[origin]) {
@@ -83,6 +114,7 @@ export function setPermissionDefault(
   perm: string,
   policy: PermDefaultPolicy
 ): PrivacySnapshot {
+  if (!KNOWN_PERMISSIONS.has(String(perm ?? ''))) throw new Error(`Unknown permission "${perm}".`);
   store.d.privacy.defaults[perm] = policy;
   store.saveSoon();
   return snapshot(store);
@@ -91,9 +123,10 @@ export function setPermissionDefault(
 /** Set (or clear with null → 'ask') a per-site popup policy. */
 export function setPopupPolicy(
   store: Store,
-  origin: string,
+  rawOrigin: string,
   policy: PopupPolicy | null
 ): PrivacySnapshot {
+  const origin = normalizeOrigin(rawOrigin);
   if (policy === null) delete store.d.privacy.popups[origin];
   else store.d.privacy.popups[origin] = policy;
   store.saveSoon();
@@ -103,9 +136,10 @@ export function setPopupPolicy(
 export function setAutoplayPolicy(
   store: Store,
   tabs: TabManager,
-  origin: string,
+  rawOrigin: string,
   allow: boolean
 ): PrivacySnapshot {
+  const origin = normalizeOrigin(rawOrigin);
   if (allow) delete store.d.privacy.autoplay[origin];
   else store.d.privacy.autoplay[origin] = 'block';
   store.saveSoon();
@@ -116,9 +150,10 @@ export function setAutoplayPolicy(
 export function setMuted(
   store: Store,
   tabs: TabManager,
-  origin: string,
+  rawOrigin: string,
   muted: boolean
 ): PrivacySnapshot {
+  const origin = normalizeOrigin(rawOrigin);
   if (muted) store.d.privacy.muted[origin] = true;
   else delete store.d.privacy.muted[origin];
   store.saveSoon();
