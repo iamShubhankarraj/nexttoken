@@ -73,6 +73,8 @@ export interface PrivacyPersist {
   autoplay: Record<string, 'allow' | 'block'>;
   /** origin -> muted */
   muted: Record<string, boolean>;
+  /** origin -> auto-reader (open Reader mode automatically on article pages) */
+  autoReader: Record<string, boolean>;
   // -- v0.6.3 (impl-5: managers & browser settings) -------------------------
   /** origin -> remembered zoom percent (100 = default; absent = default) */
   zoom: Record<string, number>;
@@ -283,6 +285,7 @@ function defaults(): Persisted {
       popups: {},
       autoplay: {},
       muted: {},
+      autoReader: {},
       zoom: {},
       httpsUpgrade: false,
     },
@@ -344,7 +347,7 @@ export class Store {
       // Backfill privacy & security + browsing history for installs that predate them.
       if (!parsed.privacy) parsed.privacy = defaults().privacy;
       else {
-        for (const k of ['permissions', 'defaults', 'popups', 'autoplay', 'muted', 'zoom'] as const) {
+        for (const k of ['permissions', 'defaults', 'popups', 'autoplay', 'muted', 'autoReader', 'zoom'] as const) {
           if (typeof parsed.privacy[k] !== 'object' || parsed.privacy[k] === null) {
             parsed.privacy[k] = {};
           }
