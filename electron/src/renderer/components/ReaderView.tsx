@@ -13,7 +13,7 @@
  * print preview in guests, and ⌘S / ⌘⇧S stay with the sidebar until
  * Implementer 1 finishes the shortcut pass. Everything is button-driven.
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import {
   BookOpen,
@@ -60,7 +60,7 @@ function ToolButton({
   onClick: () => void;
   busy?: boolean;
   disabled?: boolean;
-  children: React.ReactNode;
+  children: ReactNode;
 }) {
   return (
     <button
