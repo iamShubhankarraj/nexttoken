@@ -779,6 +779,8 @@ export interface PrivacySnapshot {
   /** origin -> auto-reader (open Reader mode automatically on article pages) */
   autoReader: Record<string, boolean>;
   historyCount: number;
+  /** v0.6.3 (impl-5): Brave-style HTTPS-Strict upgrade. Off by default. */
+  httpsUpgrade: boolean;
 }
 
 /** Cookies & site data grouped per site. */
