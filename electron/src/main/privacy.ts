@@ -42,6 +42,8 @@ export interface PrivacySnapshot {
   popups: Record<string, PopupPolicy>;
   autoplay: Record<string, 'allow' | 'block'>;
   muted: Record<string, boolean>;
+  /** origin -> auto-reader (open Reader mode automatically on article pages) */
+  autoReader: Record<string, boolean>;
   historyCount: number;
   /** v0.6.3 (impl-5): Brave-style HTTPS-Strict upgrade. Off by default. */
   httpsUpgrade: boolean;
@@ -55,6 +57,7 @@ export function snapshot(store: Store): PrivacySnapshot {
     popups: p.popups,
     autoplay: p.autoplay,
     muted: p.muted,
+    autoReader: p.autoReader,
     historyCount: store.d.history.length,
     httpsUpgrade: p.httpsUpgrade === true,
   };
