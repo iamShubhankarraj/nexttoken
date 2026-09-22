@@ -181,7 +181,7 @@ export function SitePanel() {
   const toggleSite = () => {
     if (!host) return;
     void nt()
-      .adblockSetSiteAllowed(host, siteAllowed)
+      .adblockSetSiteAllowed(host, !siteAllowed)
       .then(setAb)
       .catch(() => {});
   };

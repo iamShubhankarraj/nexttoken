@@ -6,11 +6,16 @@
  * and scriptlet injection — the combination that kills YouTube-style
  * video ads, not just network requests).
  *
- * Filter lists (EasyList + uBlock Origin) are fetched from CDN on first
+ * Filter lists: the `fullLists` set published by `@ghostery/adblocker`
+ * itself — EasyList, EasyPrivacy, Peter Lowe's, uBlock Origin filters +
+ * unbreak/badware/resource-abuse/privacy, the **quick-fixes** list (where
+ * YouTube's rapid-response player-ad counter-measures live), and the
+ * annoyance/cookie lists. Fetched from Ghostery's CDN mirror on first
  * run; the compiled engine is serialized to disk (app userData) and
  * reused on later launches, with a background re-fetch every 24 hours.
- * Offline with no cache: the blocker stays inert (fail-open) — normal
- * browsing keeps working, just unfiltered.
+ * One dead list degrades to an empty list instead of killing the whole
+ * engine; only a total fetch failure leaves the blocker inert (fail-open)
+ * — normal browsing keeps working, just unfiltered.
  *
  * Blocking is wired into the default session AND the webview guest
  * session (partition 'persist:nexttoken'); a web-contents-created hook
@@ -29,9 +34,15 @@ import * as path from 'node:path';
 import {
   ElectronBlocker,
   type Caching,
-  type Fetch,
   type Request,
 } from '@ghostery/adblocker-electron';
+import {
+  FILTER_LIST_URLS,
+  FilterListsUnavailableError,
+  type FetchLike,
+  isPageProtected,
+  makeResilientFetch,
+} from './filtering';
 import type { Store } from '../store';
 
 export interface AdBlockStats {
@@ -48,21 +59,26 @@ const ENGINE_CACHE_FILE = 'adblock-engine.bin';
 /** How often filter lists are re-fetched in the background. */
 const LIST_REFRESH_MS = 24 * 60 * 60 * 1000;
 
-const GHOSTERY_ASSETS =
-  'https://raw.githubusercontent.com/ghostery/adblocker/master/packages/adblocker/assets';
-
-/** EasyList + uBlock Origin, mirrored on Ghostery's CDN. */
-const FILTER_LISTS = [
-  `${GHOSTERY_ASSETS}/easylist/easylist.txt`,
-  `${GHOSTERY_ASSETS}/ublock-origin/filters.txt`,
-];
+/** Diagnostics surfaced to Settings → Privacy. */
+export interface AdBlockDiagnostics {
+  /** Engine loaded and enforcing (false while lists are still fetching). */
+  ready: boolean;
+  ruleCount: number;
+  listsLoaded: number;
+  listsTotal: number;
+  /** Epoch ms of the last successful list fetch, null when never. */
+  lastUpdatedMs: number | null;
+  /** List URLs that failed on the last load/refresh (degraded, not dead). */
+  failedLists: string[];
+  resourcesDegraded: boolean;
+}
 
 /** Cosmetic-injection IPC channels the engine registers per session. */
 const COSMETIC_CHANNEL = '@ghostery/adblocker/inject-cosmetic-filters';
 const MUTATION_CHANNEL = '@ghostery/adblocker/is-mutation-observer-enabled';
 
-/** Node's global fetch satisfies the engine's Fetch interface. */
-const FETCH_IMPL = fetch as unknown as Fetch;
+/** Raw fetch for the resilient wrapper (needs HTTP status, not just text). */
+const FETCH_LIKE = fetch as unknown as FetchLike;
 
 interface GuestTrack {
   tabId: string;
@@ -70,18 +86,15 @@ interface GuestTrack {
   topUrl: string;
 }
 
-function hostOf(url: string): string {
-  try {
-    return new URL(url).hostname.toLowerCase();
-  } catch {
-    return '';
-  }
-}
-
 export class AdBlocker {
   private blocker: ElectronBlocker | null = null;
   private loadPromise: Promise<void> | null = null;
   private cachedRuleCount = 0;
+  private caching: Caching | null = null;
+  private failedLists: string[] = [];
+  private listsLoaded = 0;
+  private lastUpdatedMs: number | null = null;
+  private resourcesDegraded = false;
   /** Every session we've ever seen (for re-enable after refresh/toggle). */
   private knownSessions = new Set<Electron.Session>();
   /** Sessions currently wired for blocking. */
@@ -100,6 +113,27 @@ export class AdBlocker {
   /** Number of loaded filter rules (for diagnostics / settings UI). */
   get ruleCount(): number {
     return this.cachedRuleCount;
+  }
+
+  /** Snapshot of engine health for Settings → Privacy. */
+  getDiagnostics(): AdBlockDiagnostics {
+    return {
+      ready: this.blocker !== null && this.cachedRuleCount > 0,
+      ruleCount: this.cachedRuleCount,
+      listsLoaded: this.listsLoaded,
+      listsTotal: FILTER_LIST_URLS.length,
+      lastUpdatedMs: this.lastUpdatedMs,
+      failedLists: [...this.failedLists],
+      resourcesDegraded: this.resourcesDegraded,
+    };
+  }
+
+  /** Manual "check for filter updates" from Settings (debounced by load). */
+  refreshNow(): Promise<void> {
+    if (!this.caching) return Promise.resolve();
+    return this.refreshLists(this.caching).catch((err) => {
+      console.error('[adblock] manual list refresh failed:', err);
+    });
   }
 
   attach(): void {
@@ -138,12 +172,33 @@ export class AdBlocker {
     };
     // fromLists: read serialized cache if present, else fetch lists from
     // CDN, build the engine, and write the cache for next launch.
+    // The fetch wrapper is resilient: one dead list (404, timeout) degrades
+    // to an empty list instead of rejecting the whole build, and a dead
+    // resources.json degrades scriptlet injection only. Only a total
+    // failure (every list down) throws — and then we stay fail-open.
+    const failed: string[] = [];
+    let resourcesDegraded = false;
+    const resilientFetch = makeResilientFetch(FETCH_LIKE, FILTER_LIST_URLS, {
+      onListFailed: (url, err) => {
+        failed.push(url);
+        console.warn('[adblock] filter list failed, continuing without it:', url, err);
+      },
+      onResourcesFailed: (err) => {
+        resourcesDegraded = true;
+        console.warn('[adblock] scriptlet resources failed, injection degraded:', err);
+      },
+    });
     const blocker = await ElectronBlocker.fromLists(
-      FETCH_IMPL,
-      FILTER_LISTS,
+      resilientFetch,
+      FILTER_LIST_URLS,
       {},
       caching,
     );
+    this.caching = caching;
+    this.failedLists = failed;
+    this.listsLoaded = FILTER_LIST_URLS.length - failed.length;
+    this.lastUpdatedMs = Date.now();
+    this.resourcesDegraded = resourcesDegraded;
     this.installEngine(blocker);
     // Keep lists fresh without blocking startup.
     setInterval(() => {
@@ -173,12 +228,39 @@ export class AdBlocker {
   private async refreshLists(caching: Caching): Promise<void> {
     const old = this.blocker;
     if (!old) return;
-    const fresh = await ElectronBlocker.fromLists(
-      FETCH_IMPL,
-      FILTER_LISTS,
-      {},
-      caching,
-    );
+    const failed: string[] = [];
+    let resourcesDegraded = false;
+    const resilientFetch = makeResilientFetch(FETCH_LIKE, FILTER_LIST_URLS, {
+      onListFailed: (url, err) => {
+        failed.push(url);
+        console.warn('[adblock] filter list failed, continuing without it:', url, err);
+      },
+      onResourcesFailed: (err) => {
+        resourcesDegraded = true;
+        console.warn('[adblock] scriptlet resources failed, injection degraded:', err);
+      },
+    });
+    let fresh: ElectronBlocker;
+    try {
+      fresh = await ElectronBlocker.fromLists(
+        resilientFetch,
+        FILTER_LIST_URLS,
+        {},
+        caching,
+      );
+    } catch (err) {
+      // Total fetch failure (or a corrupt cache): keep the old engine
+      // running on its stale lists rather than going dark.
+      if (err instanceof FilterListsUnavailableError) {
+        console.error('[adblock] background refresh: all lists down, keeping stale engine');
+        return;
+      }
+      throw err;
+    }
+    this.failedLists = failed;
+    this.listsLoaded = FILTER_LIST_URLS.length - failed.length;
+    this.lastUpdatedMs = Date.now();
+    this.resourcesDegraded = resourcesDegraded;
     // Tear down old session wiring first so webRequest listeners and IPC
     // handlers never double up, then install the new engine.
     for (const ses of [...this.enabledSessions]) {
@@ -263,12 +345,11 @@ export class AdBlocker {
 
   /** True when the page may be filtered (global on, site not allowlisted). */
   private isProtected(pageUrl: string | undefined): boolean {
-    if (this.store.d.adblock.enabled === false) return false;
-    if (pageUrl) {
-      const host = hostOf(pageUrl);
-      if (host && this.store.d.adblock.allowedHosts.includes(host)) return false;
-    }
-    return true;
+    return isPageProtected(
+      pageUrl,
+      this.store.d.adblock.enabled !== false,
+      this.store.d.adblock.allowedHosts,
+    );
   }
 
   private onBeforeRequest = (
