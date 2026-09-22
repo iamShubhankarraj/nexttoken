@@ -28,6 +28,11 @@ import {
   CARET_SCRIPT,
   type CaretHintDetail,
 } from "../caretScript";
+import {
+  LOGIN_DETECT_SCRIPT,
+  LOGIN_REPORT_PREFIX,
+  type LoginReport,
+} from "../loginDetectScript";
 import type { WebviewElement, WebviewNewWindowEvent } from "../webview";
 
 /** First-seen URL per tab id — captured once, used as webview `src` once. */
@@ -62,12 +67,40 @@ function attachWebview(el: WebviewElement, tabId: string): void {
     } catch {
       /* non-essential */
     }
+    // Login-form detector (password manager). Same no-preload pattern:
+    // the guest reports via prefixed console messages, routed below.
+    try {
+      void (el as unknown as { executeJavaScript(code: string): Promise<unknown> })
+        .executeJavaScript(LOGIN_DETECT_SCRIPT);
+    } catch {
+      /* non-essential */
+    }
   });
 
   // The caret script reports via prefixed console messages — no guest
   // preload file required.
   el.addEventListener("console-message", (e: Event) => {
     const message = (e as unknown as { message?: string }).message ?? "";
+    if (message.startsWith(LOGIN_REPORT_PREFIX)) {
+      // Login-form report → window event for the PasswordPromptHost.
+      // The password itself is NEVER in this channel (main reads the
+      // guest stash directly from the WebContents).
+      try {
+        const report = JSON.parse(
+          message.slice(LOGIN_REPORT_PREFIX.length),
+        ) as LoginReport;
+        if (report && (report.kind === "form-present" || report.kind === "form-submit")) {
+          window.dispatchEvent(
+            new CustomEvent("nt:login-form-report", {
+              detail: { tabId, report },
+            }),
+          );
+        }
+      } catch {
+        /* ignore malformed payloads */
+      }
+      return;
+    }
     if (!message.startsWith(CARET_HINT_PREFIX)) return;
     try {
       const payload = JSON.parse(message.slice(CARET_HINT_PREFIX.length));

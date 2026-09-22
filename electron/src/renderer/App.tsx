@@ -36,6 +36,7 @@ import { DownloadPill } from "./components/DownloadPill";
 import { FindBar } from "./components/FindBar";
 import { ImportDialog } from "./components/ImportDialog";
 import { NewTabHero } from "./components/NewTabHero";
+import { PasswordPromptHost } from "./components/SavePasswordPrompt";
 import { Settings } from "./components/Settings";
 import { ShortcutCheatsheet } from "./components/ShortcutCheatsheet";
 import { Sidebar } from "./components/Sidebar";
@@ -402,6 +403,7 @@ function Shell() {
         />
       )}
       <ImportDialogHost />
+      <PasswordPromptHost />
     </div>
   );
 }
