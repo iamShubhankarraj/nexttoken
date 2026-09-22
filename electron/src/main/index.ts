@@ -66,6 +66,7 @@ import * as httpsUpgrade from './httpsUpgrade';
 import * as startup from './startup';
 import { VoiceEngine, type CleanupPrompt } from './voice';
 import { allowIpcSender, revokeIpcSender, guardedHandle, guardedOn } from './ipcGuard';
+import { registerPasswordManager } from './passwords';
 import { registerSearchIpc } from './search';
 import { registerSiteInfoIpc } from './siteinfo';
 import { wrapWithActing, dictateUndoJs, type LastDictation } from './voice/acting';
@@ -1593,6 +1594,9 @@ function registerIpc() {
   });
   // Optional HF token for gated repos (safeStorage; registered from models/ipc).
   registerModelsIpc();
+
+  // Password manager (save prompt, origin-bound autofill, vault UI).
+  registerPasswordManager({ tabs, getWin: () => win });
 
   // -- voice engine (local STT/TTS sidecars) -----------------------------------------
   guardedHandle('nt.voice.stt-available', (): boolean => {
