@@ -311,8 +311,9 @@ export async function revealDownload(targetPath: string): Promise<void> {
   }
 }
 
-/** Open a finished download with its default app. */
+/** Open a finished download with its default app (absolute path only). */
 export async function openDownload(targetPath: string): Promise<void> {
+  if (typeof targetPath !== 'string' || !path.isAbsolute(targetPath)) return;
   try {
     if (targetPath) await shell.openPath(targetPath);
   } catch {
@@ -320,7 +321,16 @@ export async function openDownload(targetPath: string): Promise<void> {
   }
 }
 
-/** Ask the user for a download folder. Returns the (possibly unchanged) setting. */
+/** Clean settings getter: { dir: null } = "ask where to save each time". */
+export function getDownloadSettings(store: Store): {
+  dir: string | null;
+  defaultDir: string;
+} {
+  const s = settingsOf(store);
+  return { dir: s.dir, defaultDir: defaultDir(store) };
+}
+
+/** Ask the user to pick a download folder (persists when picked). */
 export async function pickDownloadDir(store: Store): Promise<string | null> {
   const res = await dialog
     .showOpenDialog({

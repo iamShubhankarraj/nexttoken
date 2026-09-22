@@ -1389,25 +1389,10 @@ function registerIpc() {
   guardedHandle('nt.downloads.open', (_e, targetPath: string) => {
     if (typeof targetPath === 'string') void downloads.openDownload(targetPath);
   });
-  guardedHandle('nt.downloads.get-dir', () => ({
-    dir: store.d.downloads.dir,
-    defaultDir: (() => {
-      try {
-        return app.getPath('downloads');
-      } catch {
-        return '';
-      }
-    })(),
-  }));
+  guardedHandle('nt.downloads.get-dir', () => downloads.getDownloadSettings(store));
   guardedHandle('nt.downloads.pick-dir', async () => {
-    const dir = await downloads.pickDownloadDir(store);
-    let defaultDir = '';
-    try {
-      defaultDir = app.getPath('downloads');
-    } catch {
-      /* noop */
-    }
-    return { dir, defaultDir };
+    await downloads.pickDownloadDir(store);
+    return downloads.getDownloadSettings(store);
   });
   guardedHandle('nt.downloads.set-dir', (_e, dir: string | null) => {
     const clean = typeof dir === 'string' && dir.trim() ? dir.trim() : null;
@@ -1786,6 +1771,15 @@ if (!singleInstanceLock) {
 // guests get no preload, no Node, and a sandboxed isolated context, and
 // only web-safe schemes may load. This is the boundary that keeps a
 // compromised renderer from minting a privileged guest.
+//
+// TLS policy: certificate errors are never silently ignored — a broken or
+// attacker-presented chain fails the navigation instead of being bypassed.
+app.on('certificate-error', (event, _webContents, url, error, _certificate, callback) => {
+  console.warn(`[security] certificate error for ${url}: ${error} — navigation blocked`);
+  event.preventDefault();
+  callback(false);
+});
+
 app.on('web-contents-created', (_event, contents) => {
   contents.on('will-attach-webview', (event, webPreferences, params) => {
     if (params.partition !== GUEST_PARTITION) {
