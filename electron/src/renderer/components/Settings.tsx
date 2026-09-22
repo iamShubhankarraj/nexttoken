@@ -10,9 +10,12 @@
 
 import {
   ArrowDownToLine,
+  Bookmark,
   Check,
   ChevronRight,
   Database,
+  Download,
+  History,
   Import,
   KeyRound,
   Loader2,
@@ -20,6 +23,7 @@ import {
   Palette,
   Plug,
   Plus,
+  Power,
   Shield,
   Trash2,
   Volume2,
@@ -44,8 +48,44 @@ import { AppLogo } from "./AppLogo";
 import { SkillsSection } from "./SettingsSkills";
 import { ThemeEditor } from "./ThemeEditor";
 import { UpdatesSection } from "./UpdatesSection";
+// v0.6.3 (impl-5: managers & browser settings)
+import { DownloadsPage } from "./DownloadsPage";
+import { HistoryPage } from "./HistoryPage";
+import { BookmarksManager } from "./BookmarksManager";
+import { StartupSettings } from "./StartupSettings";
+import {
+  SETTINGS_SECTION_EVENT,
+  consumePendingSettingsSection,
+} from "./settingsNav";
 
-type Section = "provider" | "models" | "skills" | "voice" | "theme" | "privacy" | "import" | "updates";
+type Section =
+  | "provider"
+  | "models"
+  | "skills"
+  | "voice"
+  | "theme"
+  | "privacy"
+  | "import"
+  | "updates"
+  | "downloads"
+  | "history"
+  | "bookmarks"
+  | "startup";
+
+const SECTION_IDS: Section[] = [
+  "provider",
+  "models",
+  "skills",
+  "voice",
+  "theme",
+  "privacy",
+  "import",
+  "updates",
+  "downloads",
+  "history",
+  "bookmarks",
+  "startup",
+];
 
 const SECTIONS: Array<{ id: Section; label: string; icon: typeof Plug }> = [
   { id: "provider", label: "AI Provider", icon: Plug },
@@ -56,6 +96,11 @@ const SECTIONS: Array<{ id: Section; label: string; icon: typeof Plug }> = [
   { id: "import", label: "Import", icon: Import },
   { id: "updates", label: "Updates", icon: ArrowDownToLine },
   { id: "theme", label: "Theme", icon: Palette },
+  // v0.6.3 (impl-5: managers & browser settings)
+  { id: "downloads", label: "Downloads", icon: Download },
+  { id: "history", label: "History", icon: History },
+  { id: "bookmarks", label: "Bookmarks", icon: Bookmark },
+  { id: "startup", label: "On startup", icon: Power },
 ];
 
 export function Settings({
@@ -74,6 +119,18 @@ export function Settings({
   useEffect(() => {
     if (modelsFocus) setSection("models");
   }, [modelsFocus]);
+
+  // v0.6.3 (impl-5): cross-component deep-links (Privacy "Manage history",
+  // Downloads pill "All downloads") jump here.
+  useEffect(() => {
+    const jump = () => {
+      const s = consumePendingSettingsSection();
+      if (s && (SECTION_IDS as string[]).includes(s)) setSection(s as Section);
+    };
+    jump();
+    window.addEventListener(SETTINGS_SECTION_EVENT, jump);
+    return () => window.removeEventListener(SETTINGS_SECTION_EVENT, jump);
+  }, []);
 
   return (
     <div
@@ -150,14 +207,20 @@ export function Settings({
             {section === "privacy" && <PrivacySection />}
             {section === "import" && <ImportSection />}
             {section === "updates" && <UpdatesSection />}
-            {section === "theme" &&
-              (activeSpace ? (
+            {section === "theme" && (
+              activeSpace ? (
                 <ThemeEditor spaceId={activeSpace.id} />
               ) : (
                 <p className="text-[13px]" style={{ color: "var(--nt-text-3)" }}>
                   No active Bit.
                 </p>
-              ))}
+              )
+            )}
+            {/* v0.6.3 (impl-5: managers & browser settings) */}
+            {section === "downloads" && <DownloadsPage />}
+            {section === "history" && <HistoryPage />}
+            {section === "bookmarks" && <BookmarksManager />}
+            {section === "startup" && <StartupSettings />}
           </div>
         </div>
       </div>
