@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, Menu } from 'electron';
 import type { WebContents } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -55,8 +55,12 @@ import {
   setupGuestSession,
   noteImageSave,
   revealDownload,
+  GUEST_PARTITION,
 } from './webengine';
 import { VoiceEngine, type CleanupPrompt } from './voice';
+import { allowIpcSender, revokeIpcSender, guardedHandle, guardedOn } from './ipcGuard';
+import { registerSearchIpc } from './search';
+import { registerSiteInfoIpc } from './siteinfo';
 import { wrapWithActing, dictateUndoJs, type LastDictation } from './voice/acting';
 import { buildTidyPlan, applyTidy } from './tidy';
 import {
@@ -539,6 +543,8 @@ async function saveImageAs(wc: WebContents, srcURL: string): Promise<void> {
   } catch {
     /* keep the default */
   }
+  // Never let a crafted URL smuggle path separators into the save dialog.
+  fileName = path.basename(fileName).replace(/^\.+/, '') || 'image';
   if (!/\.[a-z0-9]{2,5}$/i.test(fileName)) fileName += '.png';
   const { canceled, filePath } = await dialog.showSaveDialog(win, {
     title: 'Save Image As',
@@ -594,9 +600,17 @@ async function runVoiceTurn(text: string, source: 'voice' | 'text'): Promise<voi
 // -- native ad blocker --------------------------------------------------------
 // Public ad-block config for the renderer (no internals leak).
 function publicAdBlock(): AdBlockState {
+  const d = adblocker.getDiagnostics();
   return {
     enabled: store.d.adblock.enabled !== false,
-    allowedHosts: [...store.d.adblock.allowedHosts]
+    allowedHosts: [...store.d.adblock.allowedHosts],
+    ready: d.ready,
+    ruleCount: d.ruleCount,
+    listsLoaded: d.listsLoaded,
+    listsTotal: d.listsTotal,
+    lastUpdatedMs: d.lastUpdatedMs,
+    failedLists: d.failedLists.map((u) => u.split('/').pop() ?? u),
+    resourcesDegraded: d.resourcesDegraded,
   };
 }
 
@@ -646,9 +660,36 @@ function createWindow() {
       preload: path.join(__dirname, '../preload/index.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: true, // renderer has no Node; the preload bridge is the only privileged surface
       webviewTag: true // tab contents are <webview> guests; main drives them via WebContents
     }
   });
+
+  // The app shell must never navigate away to attacker-controlled content:
+  // only the dev server (dev) or the packaged app files (prod) may load here.
+  const isAppUrl = (url: string): boolean => {
+    try {
+      if (process.env.ELECTRON_RENDERER_URL) {
+        return url.startsWith(process.env.ELECTRON_RENDERER_URL);
+      }
+      return new URL(url).protocol === 'file:';
+    } catch {
+      return false;
+    }
+  };
+  win.webContents.on('will-navigate', (event, url) => {
+    if (!isAppUrl(url)) {
+      console.warn(`[security] blocked app-shell navigation to ${url}`);
+      event.preventDefault();
+    }
+  });
+  win.webContents.on('will-redirect', (event, url) => {
+    if (!isAppUrl(url)) {
+      console.warn(`[security] blocked app-shell redirect to ${url}`);
+      event.preventDefault();
+    }
+  });
+  allowIpcSender(win.webContents.id);
 
   if (process.env.ELECTRON_RENDERER_URL) {
     win.loadURL(process.env.ELECTRON_RENDERER_URL);
@@ -656,7 +697,10 @@ function createWindow() {
     win.loadFile(path.join(__dirname, '../renderer/index.html'));
   }
 
-  win.on('closed', () => { win = null; });
+  win.on('closed', () => {
+    if (win) revokeIpcSender(win.webContents.id);
+    win = null;
+  });
 }
 
 /**
@@ -694,25 +738,25 @@ function createTabActivated(
 function registerIpc() {
   // Pull-based boot: the renderer's first subscription can miss main's
   // initial push, so it requests the snapshot explicitly on mount.
-  ipcMain.handle('nt.snapshot.get', (): BrowserSnapshot => snapshot());
+  guardedHandle('nt.snapshot.get', (): BrowserSnapshot => snapshot());
   // -- tabs ---------------------------------------------------------------
-  ipcMain.handle('nt.tabs.create', (_e, opts?: { spaceId?: string; url?: string }) => {
+  guardedHandle('nt.tabs.create', (_e, opts?: { spaceId?: string; url?: string }) => {
     const spaceId = opts?.spaceId && store.d.spaces.some((s) => s.id === opts.spaceId)
       ? opts.spaceId
       : store.d.activeSpaceId;
     return createTabActivated(spaceId, opts?.url);
   });
-  ipcMain.handle('nt.tabs.close', (_e, tabId: string) => {
+  guardedHandle('nt.tabs.close', (_e, tabId: string) => {
     adblocker.noteDetach(tabId);
     tabs.close(tabId);
   });
-  ipcMain.handle('nt.tabs.activate', (_e, tabId: string) => tabs.activate(tabId));
+  guardedHandle('nt.tabs.activate', (_e, tabId: string) => tabs.activate(tabId));
   // Picture in Picture: the custom Next Token PiP window (frameless,
   // rounded, with transport controls) for the target tab's video, with the
   // native requestPictureInPicture path as fallback. Toggle semantics —
   // calling again while the window is up closes it. Failures return
   // {ok:false, error} so the renderer can toast them.
-  ipcMain.handle('nt.tabs.pip', async (_e, tabId?: string): Promise<{ ok: boolean; error?: string }> => {
+  guardedHandle('nt.tabs.pip', async (_e, tabId?: string): Promise<{ ok: boolean; error?: string }> => {
     const toast = (message: string) => {
       if (win && !win.isDestroyed()) win.webContents.send('nt.pip-error', message);
     };
@@ -722,29 +766,29 @@ function registerIpc() {
     return r;
   });
   // Transport + close for the custom PiP window's own buttons.
-  ipcMain.handle('nt.pip.toggle', async (): Promise<{ paused: boolean }> => {
+  guardedHandle('nt.pip.toggle', async (): Promise<{ paused: boolean }> => {
     return pipToggleTransport(tabs);
   });
-  ipcMain.handle('nt.pip.close', async (): Promise<void> => {
+  guardedHandle('nt.pip.close', async (): Promise<void> => {
     closePipWindow();
   });
   // Curved media viewfinder: seek / play-pause target the background
   // media tab tracked by the poll (not the active tab). The explicit
   // tabId overload still wins when provided.
-  ipcMain.handle('nt.media.seek', (_e, ratio: number, tabId?: string) =>
+  guardedHandle('nt.media.seek', (_e, ratio: number, tabId?: string) =>
     seekMedia(tabs, Number(ratio), typeof tabId === 'string' ? tabId : currentMediaTabId ?? undefined)
   );
-  ipcMain.handle('nt.media.toggle', (_e, tabId?: string) =>
+  guardedHandle('nt.media.toggle', (_e, tabId?: string) =>
     toggleMedia(tabs, typeof tabId === 'string' ? tabId : currentMediaTabId ?? undefined)
   );
   // Blocked-popup "open anyway" (from the nt.popup.blocked indicator).
-  ipcMain.handle('nt.popup.open', (_e, url: string) => {
+  guardedHandle('nt.popup.open', (_e, url: string) => {
     if (typeof url === 'string' && url)
       createTabActivated(store.d.activeSpaceId, url, true);
   });
   // Guest zoom for the active tab (the app menu's zoom roles only affect
   // the shell window). Returns the new zoom percentage.
-  ipcMain.handle('nt.tabs.zoom', (_e, mode: 'in' | 'out' | 'reset') => {
+  guardedHandle('nt.tabs.zoom', (_e, mode: 'in' | 'out' | 'reset') => {
     const wc = tabs.activeWebContents();
     if (!wc || wc.isDestroyed()) return 100;
     let level = mode === 'reset' ? 0 : wc.getZoomLevel() + (mode === 'in' ? 0.5 : -0.5);
@@ -757,7 +801,7 @@ function registerIpc() {
     return Math.round(Math.pow(1.2, level) * 100);
   });
   // Find in page for the active tab's guest.
-  ipcMain.handle('nt.tabs.find', (_e, query: string) => {
+  guardedHandle('nt.tabs.find', (_e, query: string) => {
     const wc = tabs.activeWebContents();
     lastFindQuery = typeof query === 'string' ? query : '';
     if (wc && !wc.isDestroyed() && lastFindQuery) {
@@ -768,7 +812,7 @@ function registerIpc() {
       }
     }
   });
-  ipcMain.handle('nt.tabs.find-next', (_e, forward: boolean) => {
+  guardedHandle('nt.tabs.find-next', (_e, forward: boolean) => {
     const wc = tabs.activeWebContents();
     if (wc && !wc.isDestroyed() && lastFindQuery) {
       try {
@@ -778,7 +822,7 @@ function registerIpc() {
       }
     }
   });
-  ipcMain.handle('nt.tabs.find-stop', () => {
+  guardedHandle('nt.tabs.find-stop', () => {
     lastFindQuery = '';
     const wc = tabs.activeWebContents();
     try {
@@ -787,49 +831,52 @@ function registerIpc() {
       /* noop */
     }
   });
-  // Reveal a finished download in Finder.
-  ipcMain.handle('nt.downloads.reveal', (_e, targetPath: string) => {
-    if (typeof targetPath === 'string') void revealDownload(targetPath);
+  // Reveal a finished download in Finder. The path must be absolute — the
+  // renderer only ever passes back paths main itself reported as done.
+  guardedHandle('nt.downloads.reveal', (_e, targetPath: string) => {
+    if (typeof targetPath === 'string' && path.isAbsolute(targetPath)) {
+      void revealDownload(targetPath);
+    }
   });
-  ipcMain.handle('nt.tabs.pin', (_e, tabId: string, pinned: boolean) => {
+  guardedHandle('nt.tabs.pin', (_e, tabId: string, pinned: boolean) => {
     const t = tabs.tabs.get(tabId);
     if (t) { t.pinned = pinned; tabs.persistPinned(); sendSnapshot(); }
   });
-  ipcMain.handle('nt.tabs.reorder', (_e, tabId: string, beforeTabId: string | null, folderId: string | null) => {
+  guardedHandle('nt.tabs.reorder', (_e, tabId: string, beforeTabId: string | null, folderId: string | null) => {
     tabs.reorder(tabId, beforeTabId, folderId);
   });
-  ipcMain.handle('nt.tabs.set-folder', (_e, tabId: string, folderId: string | null) => {
+  guardedHandle('nt.tabs.set-folder', (_e, tabId: string, folderId: string | null) => {
     tabs.setFolder(tabId, folderId);
     sendSnapshot();
   });
-  ipcMain.handle('nt.tabs.move', (_e, tabId: string, spaceId: string) => {
+  guardedHandle('nt.tabs.move', (_e, tabId: string, spaceId: string) => {
     tabs.moveToSpace(tabId, spaceId);
     sendSnapshot();
   });
-  ipcMain.handle('nt.tabs.attach', (_e, tabId: string, wcId: number) => {
+  guardedHandle('nt.tabs.attach', (_e, tabId: string, wcId: number) => {
     const tab = tabs.attach(tabId, wcId);
     if (tab) adblocker.noteAttach(tabId, wcId, tab.url);
   });
-  ipcMain.handle('nt.tabs.archive', (_e, tabId: string) => {
+  guardedHandle('nt.tabs.archive', (_e, tabId: string) => {
     adblocker.noteDetach(tabId);
     tabs.archive(tabId, true);
   });
-  ipcMain.handle('nt.tabs.restore', (_e, archivedId: string) => tabs.restore(archivedId));
+  guardedHandle('nt.tabs.restore', (_e, archivedId: string) => tabs.restore(archivedId));
 
   // -- navigation ----------------------------------------------------------
-  ipcMain.handle('nt.nav.go', (_e, raw: string) => tabs.go(raw));
-  ipcMain.handle('nt.nav.back', () => tabs.back());
-  ipcMain.handle('nt.nav.forward', () => tabs.forward());
-  ipcMain.handle('nt.nav.reload', () => tabs.reload());
-  ipcMain.handle('nt.nav.stop', () => tabs.stop());
+  guardedHandle('nt.nav.go', (_e, raw: string) => tabs.go(raw));
+  guardedHandle('nt.nav.back', () => tabs.back());
+  guardedHandle('nt.nav.forward', () => tabs.forward());
+  guardedHandle('nt.nav.reload', () => tabs.reload());
+  guardedHandle('nt.nav.stop', () => tabs.stop());
 
   // -- spaces (user-facing name: Bits) ------------------------------------------
-  ipcMain.handle('nt.spaces.create', (_e, name: string) => {
+  guardedHandle('nt.spaces.create', (_e, name: string) => {
     const s = store.addSpace(name || 'New Bit');
     ensureSpaceTab(s.id);
     return s.id;
   });
-  ipcMain.handle('nt.spaces.switch', (_e, id: string) => {
+  guardedHandle('nt.spaces.switch', (_e, id: string) => {
     if (!store.d.spaces.some((s) => s.id === id)) return;
     store.d.activeSpaceId = id;
     store.saveSoon();
@@ -839,17 +886,17 @@ function registerIpc() {
     if (lastId) tabs.activate(lastId);
     else sendSnapshot();
   });
-  ipcMain.handle('nt.spaces.rename', (_e, id: string, name: string) => {
+  guardedHandle('nt.spaces.rename', (_e, id: string, name: string) => {
     const s = store.d.spaces.find((x) => x.id === id);
     if (s && name.trim()) { s.name = name.trim(); store.saveSoon(); sendSnapshot(); }
   });
-  ipcMain.handle('nt.spaces.set-accent', (_e, id: string, spaceColor: string) => {
+  guardedHandle('nt.spaces.set-accent', (_e, id: string, spaceColor: string) => {
     const t = store.themeFor(id);
     store.d.themes[id] = { ...t, spaceColor };
     store.saveSoon();
     sendSnapshot();
   });
-  ipcMain.handle('nt.spaces.add-favorite', (_e, spaceId: string, name: string, url: string) => {
+  guardedHandle('nt.spaces.add-favorite', (_e, spaceId: string, name: string, url: string) => {
     const s = store.d.spaces.find((x) => x.id === spaceId);
     if (s) {
       import('node:crypto').then(({ randomUUID }) => {
@@ -859,7 +906,7 @@ function registerIpc() {
       });
     }
   });
-  ipcMain.handle('nt.spaces.remove-favorite', (_e, spaceId: string, favId: string) => {
+  guardedHandle('nt.spaces.remove-favorite', (_e, spaceId: string, favId: string) => {
     const s = store.d.spaces.find((x) => x.id === spaceId);
     if (s) {
       s.favorites = s.favorites.filter((f) => f.id !== favId);
@@ -867,7 +914,7 @@ function registerIpc() {
       sendSnapshot();
     }
   });
-  ipcMain.handle('nt.spaces.delete', (_e, id: string) => {
+  guardedHandle('nt.spaces.delete', (_e, id: string) => {
     if (!store.d.spaces.some((s) => s.id === id)) return;
     if (store.d.spaces.length <= 1) throw new Error('You need at least one Bit.');
     // Every tab goes to the Archive first — deleting a Bit never loses tabs.
@@ -880,33 +927,33 @@ function registerIpc() {
   });
 
   // -- folders (per Bit) -------------------------------------------------------
-  ipcMain.handle('nt.folders.create', (_e, spaceId: string, name: string) => {
+  guardedHandle('nt.folders.create', (_e, spaceId: string, name: string) => {
     const f = store.addFolder(spaceId, name);
     sendSnapshot();
     return { id: f.id, name: f.name };
   });
-  ipcMain.handle('nt.folders.rename', (_e, spaceId: string, folderId: string, name: string) => {
+  guardedHandle('nt.folders.rename', (_e, spaceId: string, folderId: string, name: string) => {
     store.renameFolder(spaceId, folderId, name);
     sendSnapshot();
   });
-  ipcMain.handle('nt.folders.remove', (_e, spaceId: string, folderId: string) => {
+  guardedHandle('nt.folders.remove', (_e, spaceId: string, folderId: string) => {
     store.removeFolder(spaceId, folderId);
     tabs.clearFolder(spaceId, folderId);
     sendSnapshot();
   });
 
   // -- bookmarks (per Bit) ------------------------------------------------------
-  ipcMain.handle('nt.bookmarks.add', (_e, spaceId: string, name: string, url: string): BookmarkState[] => {
+  guardedHandle('nt.bookmarks.add', (_e, spaceId: string, name: string, url: string): BookmarkState[] => {
     const list = store.addBookmark(spaceId, name, url);
     sendSnapshot();
     return list;
   });
-  ipcMain.handle('nt.bookmarks.rename', (_e, spaceId: string, id: string, name: string): BookmarkState[] => {
+  guardedHandle('nt.bookmarks.rename', (_e, spaceId: string, id: string, name: string): BookmarkState[] => {
     const list = store.renameBookmark(spaceId, id, name);
     sendSnapshot();
     return list;
   });
-  ipcMain.handle('nt.bookmarks.remove', (_e, spaceId: string, id: string): BookmarkState[] => {
+  guardedHandle('nt.bookmarks.remove', (_e, spaceId: string, id: string): BookmarkState[] => {
     const list = store.removeBookmark(spaceId, id);
     sendSnapshot();
     return list;
@@ -922,7 +969,7 @@ function registerIpc() {
     arc: { service: 'Arc Safe Storage', account: 'Arc' },
   };
 
-  ipcMain.handle('nt.import.detect', async () => {
+  guardedHandle('nt.import.detect', async () => {
     try {
       const found = await detectBrowsers();
       return found.map((b) => ({
@@ -938,7 +985,7 @@ function registerIpc() {
     }
   });
 
-  ipcMain.handle(
+  guardedHandle(
     'nt.import.run',
     async (_e, browserId: string, kinds: Array<'bookmarks' | 'tabs' | 'passwords'>) => {
       const result: {
@@ -1050,11 +1097,11 @@ function registerIpc() {
     },
   );
 
-  ipcMain.handle('nt.import.password-guidance', async (_e, browserId: 'safari' | 'firefox') => {
+  guardedHandle('nt.import.password-guidance', async (_e, browserId: 'safari' | 'firefox') => {
     return passwordImportGuidance(browserId);
   });
 
-  ipcMain.handle('nt.import.logins-count', () => {
+  guardedHandle('nt.import.logins-count', () => {
     try {
       return getStoredLogins(app.getPath('userData')).length;
     } catch {
@@ -1063,32 +1110,32 @@ function registerIpc() {
   });
 
   // -- AI tidy (local models only — tab URLs never leave the device) -------------
-  ipcMain.handle('nt.tidy.plan', async (_e, spaceId: string): Promise<TidyPlan> => {
+  guardedHandle('nt.tidy.plan', async (_e, spaceId: string): Promise<TidyPlan> => {
     return buildTidyPlan(store, tabs, modelRouter, spaceId);
   });
-  ipcMain.handle('nt.tidy.apply', (_e, spaceId: string, actions: TidyActions) => {
+  guardedHandle('nt.tidy.apply', (_e, spaceId: string, actions: TidyActions) => {
     applyTidy(store, tabs, spaceId, actions);
     sendSnapshot();
   });
 
   // -- ui --------------------------------------------------------------------
-  ipcMain.handle('nt.ui.sidebar-collapsed', (_e, c: boolean) => {
+  guardedHandle('nt.ui.sidebar-collapsed', (_e, c: boolean) => {
     store.d.sidebarCollapsed = c; store.saveSoon(); sendSnapshot();
   });
-  ipcMain.handle('nt.ui.agent-panel', (_e, o: boolean) => {
+  guardedHandle('nt.ui.agent-panel', (_e, o: boolean) => {
     store.d.agentPanelOpen = o; store.saveSoon(); sendSnapshot();
   });
-  ipcMain.handle('nt.ui.settings-open', (_e, o: boolean) => {
+  guardedHandle('nt.ui.settings-open', (_e, o: boolean) => {
     settingsOpen = o; sendSnapshot();
   });
-  ipcMain.handle('nt.ui.sidebar-width', (_e, w: unknown) => {
+  guardedHandle('nt.ui.sidebar-width', (_e, w: unknown) => {
     store.d.sidebarWidth =
       typeof w === 'number' && Number.isFinite(w)
         ? Math.min(320, Math.max(160, Math.round(w)))
         : null;
     store.saveSoon(); sendSnapshot();
   });
-  ipcMain.handle('nt.ui.agent-panel-width', (_e, w: unknown) => {
+  guardedHandle('nt.ui.agent-panel-width', (_e, w: unknown) => {
     store.d.agentPanelWidth =
       typeof w === 'number' && Number.isFinite(w)
         ? Math.min(560, Math.max(300, Math.round(w)))
@@ -1097,7 +1144,7 @@ function registerIpc() {
   });
 
   // -- agent -------------------------------------------------------------------
-  ipcMain.handle('nt.agent.chat', (_e, message: string, opts?: { voice?: boolean }) => {
+  guardedHandle('nt.agent.chat', (_e, message: string, opts?: { voice?: boolean }) => {
     if (!win) throw new Error('No window');
     const p = startAgentRun(
       message,
@@ -1120,43 +1167,52 @@ function registerIpc() {
     }
     return p;
   });
-  ipcMain.handle('nt.agent.cancel', (_e, runId: string) => cancelAgentRun(runId));
-  ipcMain.handle('nt.agent.history', () => store.d.agentHistory);
-  ipcMain.handle('nt.agent.clear-history', () => {
+  guardedHandle('nt.agent.cancel', (_e, runId: string) => cancelAgentRun(runId));
+  guardedHandle('nt.agent.history', () => store.d.agentHistory);
+  guardedHandle('nt.agent.clear-history', () => {
     store.d.agentHistory = [];
     store.saveSoon();
   });
-  ipcMain.handle('nt.agent.new-chat', () => {
+  guardedHandle('nt.agent.new-chat', () => {
     store.archiveChatSession();
   });
-  ipcMain.handle('nt.agent.sessions', (): ChatSession[] => store.d.chatSessions);
-  ipcMain.handle('nt.agent.open-session', (_e, id: string) => {
+  guardedHandle('nt.agent.sessions', (): ChatSession[] => store.d.chatSessions);
+  guardedHandle('nt.agent.open-session', (_e, id: string) => {
     store.openChatSession(id);
   });
 
   // -- skills ------------------------------------------------------------------
-  ipcMain.handle('nt.skills.list', (): SkillDef[] => store.listSkills());
-  ipcMain.handle('nt.skills.save', (_e, input: SkillInput): SkillDef[] => {
+  guardedHandle('nt.skills.list', (): SkillDef[] => store.listSkills());
+  guardedHandle('nt.skills.save', (_e, input: SkillInput): SkillDef[] => {
     store.saveSkill(input);
     return store.listSkills();
   });
-  ipcMain.handle('nt.skills.remove', (_e, id: string): SkillDef[] => {
+  guardedHandle('nt.skills.remove', (_e, id: string): SkillDef[] => {
     store.removeSkill(id);
     return store.listSkills();
   });
-  ipcMain.handle('nt.skills.reset', (): SkillDef[] => {
+  guardedHandle('nt.skills.reset', (): SkillDef[] => {
     store.resetSkills();
     return store.listSkills();
   });
 
   // -- BYOK providers (provider manager: multiple API gateway providers) -----------
-  ipcMain.handle('nt.providers.list', (): ProviderPublic[] => publicProviders());
-  ipcMain.handle('nt.providers.save', (_e, input: ProviderInput): ProviderPublic[] => {
+  guardedHandle('nt.providers.list', (): ProviderPublic[] => publicProviders());
+  guardedHandle('nt.providers.save', (_e, input: ProviderInput): ProviderPublic[] => {
     const preset = PROVIDER_PRESETS.find((x) => x.id === input.presetId);
     if (!preset) throw new Error(`Unknown provider preset "${input.presetId}"`);
     const id = input.id ?? randomUUID();
     const existing = store.d.providers.find((p) => p.id === id);
     if (!existing && input.id) throw new Error('Provider not found.');
+    // The base URL is fetched by the main process on validate/chat — it must
+    // be a real http(s) endpoint, never a file:/javascript:/etc. URL.
+    const rawBase = input.baseUrl.trim() || preset.baseUrl;
+    try {
+      const u = new URL(rawBase);
+      if (u.protocol !== 'http:' && u.protocol !== 'https:') throw new Error('bad scheme');
+    } catch {
+      throw new Error(`Provider base URL must be an http(s) URL, got "${input.baseUrl}".`);
+    }
     // Save the key FIRST so a keychain failure leaves prior settings untouched.
     const apiKey = (input.apiKey ?? '').trim();
     if (apiKey && !store.setProviderKey(id, apiKey)) {
@@ -1166,7 +1222,7 @@ function registerIpc() {
       id,
       presetId: input.presetId,
       name: input.name.trim() || preset.name,
-      baseUrl: input.baseUrl.trim() || preset.baseUrl,
+      baseUrl: rawBase,
       model: input.model.trim(),
       api: input.api ?? preset.api,
       enabled: existing ? !!input.enabled : (input.enabled ?? true),
@@ -1177,7 +1233,7 @@ function registerIpc() {
     store.saveSoon();
     return publicProviders();
   });
-  ipcMain.handle('nt.providers.remove', (_e, id: string): ProviderPublic[] => {
+  guardedHandle('nt.providers.remove', (_e, id: string): ProviderPublic[] => {
     const i = store.d.providers.findIndex((p) => p.id === id);
     if (i === -1) throw new Error('Provider not found.');
     store.d.providers.splice(i, 1);
@@ -1192,21 +1248,21 @@ function registerIpc() {
     store.saveSoon();
     return publicProviders();
   });
-  ipcMain.handle('nt.providers.set-enabled', (_e, id: string, enabled: boolean): ProviderPublic[] => {
+  guardedHandle('nt.providers.set-enabled', (_e, id: string, enabled: boolean): ProviderPublic[] => {
     const p = store.d.providers.find((x) => x.id === id);
     if (!p) throw new Error('Provider not found.');
     p.enabled = !!enabled;
     store.saveSoon();
     return publicProviders();
   });
-  ipcMain.handle('nt.providers.validate', async (_e, input: ProviderValidateInput) => {
+  guardedHandle('nt.providers.validate', async (_e, input: ProviderValidateInput) => {
     return modelRouter.validateProvider(input);
   });
 
   // -- unified model routing --------------------------------------------------
-  ipcMain.handle('nt.models.choices', (): Promise<ModelChoice[]> => modelRouter.listChoices());
-  ipcMain.handle('nt.models.active.get', (): ActiveModelRef => modelRouter.getActive());
-  ipcMain.handle('nt.models.active.set', (_e, ref: ActiveModelRef): ActiveModelRef => {
+  guardedHandle('nt.models.choices', (): Promise<ModelChoice[]> => modelRouter.listChoices());
+  guardedHandle('nt.models.active.get', (): ActiveModelRef => modelRouter.getActive());
+  guardedHandle('nt.models.active.set', (_e, ref: ActiveModelRef): ActiveModelRef => {
     const saved = modelRouter.setActive(ref);
     emitActiveModel();
     // Switching to a downloaded local model warms its server now, in the
@@ -1214,8 +1270,8 @@ function registerIpc() {
     if (saved.kind === 'local' && saved.id) void prewarmLocalModel(saved.id, 'chat');
     return saved;
   });
-  ipcMain.handle('nt.settings.voice.get', () => store.d.voice);
-  ipcMain.handle('nt.settings.voice.set', (_e, v: Partial<VoiceSettings>) => {
+  guardedHandle('nt.settings.voice.get', () => store.d.voice);
+  guardedHandle('nt.settings.voice.set', (_e, v: Partial<VoiceSettings>) => {
     store.d.voice = {
       enabled: v.enabled ?? store.d.voice.enabled,
       speakReplies: v.speakReplies ?? store.d.voice.speakReplies,
@@ -1229,49 +1285,56 @@ function registerIpc() {
     };
     store.saveSoon();
   });
-  ipcMain.handle('nt.settings.search-engine.get', () => store.d.searchEngine);
+  // -- search engines (presets + keyword shortcuts; own module) ------------
+  registerSearchIpc(store);
   // -- native ad blocker --------------------------------------------------
-  ipcMain.handle('nt.adblock.get', (): AdBlockState => publicAdBlock());
+  guardedHandle('nt.adblock.get', (): AdBlockState => publicAdBlock());
+  guardedHandle('nt.adblock.refresh', async (): Promise<AdBlockState> => {
+    await adblocker.refreshNow();
+    return publicAdBlock();
+  });
 
   // -- Privacy & security → Advanced (Settings) ---------------------------
-  ipcMain.handle('nt.privacy.snapshot', () => snapshotPrivacy(store));
-  ipcMain.handle('nt.privacy.set-permission', (_e, origin: string, perm: string, decision: 'allow' | 'block' | null) =>
+  guardedHandle('nt.privacy.snapshot', () => snapshotPrivacy(store));
+  guardedHandle('nt.privacy.set-permission', (_e, origin: string, perm: string, decision: 'allow' | 'block' | null) =>
     setSitePermission(store, String(origin), String(perm), decision ?? null)
   );
-  ipcMain.handle('nt.privacy.set-default', (_e, perm: string, policy: 'allow' | 'block' | 'ask') => {
+  guardedHandle('nt.privacy.set-default', (_e, perm: string, policy: 'allow' | 'block' | 'ask') => {
     const snap = setPermissionDefault(store, String(perm), policy);
     // The autoplay default is enforced per-tab; re-apply so live tabs pick
     // up the change without a reload.
     if (String(perm) === 'autoplay') tabs.applySitePoliciesToAll();
     return snap;
   });
-  ipcMain.handle('nt.privacy.set-popup', (_e, origin: string, policy: 'allow' | 'block' | 'ask' | null) =>
+  guardedHandle('nt.privacy.set-popup', (_e, origin: string, policy: 'allow' | 'block' | 'ask' | null) =>
     setPopupPolicy(store, String(origin), policy ?? null)
   );
-  ipcMain.handle('nt.privacy.set-autoplay', (_e, origin: string, allow: boolean) =>
+  guardedHandle('nt.privacy.set-autoplay', (_e, origin: string, allow: boolean) =>
     setAutoplayPolicy(store, tabs, String(origin), !!allow)
   );
-  ipcMain.handle('nt.privacy.set-muted', (_e, origin: string, muted: boolean) =>
+  guardedHandle('nt.privacy.set-muted', (_e, origin: string, muted: boolean) =>
     setMuted(store, tabs, String(origin), !!muted)
   );
-  ipcMain.handle('nt.privacy.sites', () => siteDataSummaries());
-  ipcMain.handle('nt.privacy.site-cookies', (_e, site: string) => siteCookieDetails(String(site)));
-  ipcMain.handle('nt.privacy.delete-site', (_e, site: string) => deleteSiteData(String(site)));
-  ipcMain.handle('nt.privacy.clear-data', (_e, opts: { cookies: boolean; cache: boolean; history: boolean }) =>
+  guardedHandle('nt.privacy.sites', () => siteDataSummaries());
+  guardedHandle('nt.privacy.site-cookies', (_e, site: string) => siteCookieDetails(String(site)));
+  guardedHandle('nt.privacy.delete-site', (_e, site: string) => deleteSiteData(String(site)));
+  guardedHandle('nt.privacy.clear-data', (_e, opts: { cookies: boolean; cache: boolean; history: boolean }) =>
     clearBrowsingData(store, {
       cookies: !!opts?.cookies,
       cache: !!opts?.cache,
       history: !!opts?.history,
     })
   );
-  ipcMain.handle('nt.privacy.history', () => store.d.history.slice(0, 200));
-  ipcMain.handle('nt.adblock.set-enabled', (_e, enabled: boolean): AdBlockState => {
+  guardedHandle('nt.privacy.history', () => store.d.history.slice(0, 200));
+  // -- address-bar site panel (connection info; own module) ----------------
+  registerSiteInfoIpc(tabs);
+  guardedHandle('nt.adblock.set-enabled', (_e, enabled: boolean): AdBlockState => {
     store.d.adblock.enabled = !!enabled;
     store.saveSoon();
     adblocker.refreshConfig();
     return publicAdBlock();
   });
-  ipcMain.handle('nt.adblock.set-site-allowed', (_e, host: string, allowed: boolean): AdBlockState => {
+  guardedHandle('nt.adblock.set-site-allowed', (_e, host: string, allowed: boolean): AdBlockState => {
     const h = String(host ?? '').trim().toLowerCase();
     if (h) {
       const list = store.d.adblock.allowedHosts;
@@ -1283,25 +1346,22 @@ function registerIpc() {
     }
     return publicAdBlock();
   });
-  ipcMain.handle('nt.settings.search-engine.set', (_e, url: string) => {
-    if (url.trim()) { store.d.searchEngine = url.trim(); store.saveSoon(); }
-  });
 
   // -- themes ----------------------------------------------------------------------
-  ipcMain.handle('nt.themes.get', (_e, spaceId: string): ThemeTokens => ({ ...store.themeFor(spaceId) }));
-  ipcMain.handle('nt.themes.set', (_e, spaceId: string, tokens: ThemeTokens) => {
+  guardedHandle('nt.themes.get', (_e, spaceId: string): ThemeTokens => ({ ...store.themeFor(spaceId) }));
+  guardedHandle('nt.themes.set', (_e, spaceId: string, tokens: ThemeTokens) => {
     store.d.themes[spaceId] = { ...DEFAULT_DARK_TOKENS, ...tokens };
     store.saveSoon();
     sendSnapshot();
   });
-  ipcMain.handle('nt.themes.reset', (_e, spaceId: string) => {
+  guardedHandle('nt.themes.reset', (_e, spaceId: string) => {
     delete store.d.themes[spaceId];
     store.saveSoon();
     sendSnapshot();
   });
 
   // -- local models ---------------------------------------------------------------
-  ipcMain.handle('nt.models.list', (): ModelEntryPublic[] => {
+  guardedHandle('nt.models.list', (): ModelEntryPublic[] => {
     const d = store.d.models;
     return MODEL_CATALOG.map((e) => {
       const rec = d.downloaded[e.id];
@@ -1322,17 +1382,17 @@ function registerIpc() {
       };
     });
   });
-  ipcMain.handle('nt.models.download', (_e, id: string) => {
+  guardedHandle('nt.models.download', (_e, id: string) => {
     const entry = catalogEntry(id);
     if (!entry) throw new Error(`Unknown model "${id}"`);
     if (store.d.models.downloaded[id] || dlProgress.has(id)) return;
     // Fire-and-forget: progress/errors arrive via nt.model-event.
     void downloader.download(entry).then(undefined, () => { /* reported via event */ });
   });
-  ipcMain.handle('nt.models.cancel-download', (_e, id: string) => {
+  guardedHandle('nt.models.cancel-download', (_e, id: string) => {
     downloader.cancel(id);
   });
-  ipcMain.handle('nt.models.remove', async (_e, id: string) => {
+  guardedHandle('nt.models.remove', async (_e, id: string) => {
     const entry = catalogEntry(id);
     if (!entry) throw new Error(`Unknown model "${id}"`);
     for (const slot of ['chat', 'vision'] as const) {
@@ -1355,7 +1415,7 @@ function registerIpc() {
     }
     store.saveSoon();
   });
-  ipcMain.handle('nt.models.assignment.get', (): ModelAssignment => {
+  guardedHandle('nt.models.assignment.get', (): ModelAssignment => {
     const a = store.d.models.assignment;
     // Tolerate the pre-standardisation 'applefm' spelling from early installs.
     return {
@@ -1363,7 +1423,7 @@ function registerIpc() {
       vision: a.vision === 'applefm' ? APPLE_FM_REF : a.vision
     };
   });
-  ipcMain.handle('nt.models.assignment.set', (_e, task: 'chat' | 'vision', ref: string) => {
+  guardedHandle('nt.models.assignment.set', (_e, task: 'chat' | 'vision', ref: string) => {
     if (task !== 'chat' && task !== 'vision') throw new Error(`Unknown task "${task}"`);
     if (ref !== APPLE_FM_REF && ref !== CLOUD_REF && ref !== 'none') {
       const entry = catalogEntry(ref);
@@ -1382,13 +1442,13 @@ function registerIpc() {
     store.saveSoon();
   });
   // Task-model registry: the four task slots and what serves each.
-  ipcMain.handle('nt.models.task-models', () => {
+  guardedHandle('nt.models.task-models', () => {
     return describeTaskModels(store, store.d.models.appleFmAvailable === true);
   });
-  ipcMain.handle('nt.models.set-vision', (_e, ref: string) => {
+  guardedHandle('nt.models.set-vision', (_e, ref: string) => {
     setVisionRef(store, ref);
   });
-  ipcMain.handle('nt.models.applefm', async () => {
+  guardedHandle('nt.models.applefm', async () => {
     const probe = await appleFm.probe();
     store.d.models.appleFmAvailable = probe.available;
     store.saveSoon();
@@ -1396,23 +1456,23 @@ function registerIpc() {
   });
   // Step-by-step Apple FM diagnostics (Settings → Models → "Run diagnostics"):
   // timed probe + tiny inference with the bridge's REAL stderr surfaced.
-  ipcMain.handle('nt.models.applefm-diagnose', () => appleFm.diagnose());
+  guardedHandle('nt.models.applefm-diagnose', () => appleFm.diagnose());
   // Model Advisor: device capabilities + ranked chat-model recommendations.
-  ipcMain.handle('nt.models.device-info', () => getDeviceInfo());
-  ipcMain.handle('nt.models.advisor', async () => recommendForDevice(MODEL_CATALOG, await getDeviceInfo()));
-  ipcMain.handle('nt.models.disk-usage', () => downloader.diskUsage());
+  guardedHandle('nt.models.device-info', () => getDeviceInfo());
+  guardedHandle('nt.models.advisor', async () => recommendForDevice(MODEL_CATALOG, await getDeviceInfo()));
+  guardedHandle('nt.models.disk-usage', () => downloader.diskUsage());
   // Latest measured local-model (llama-server) turn; null until the first one completes.
-  ipcMain.handle('nt.models.local-metrics', (): LocalModelMetrics | null => store.d.models.localMetrics);
+  guardedHandle('nt.models.local-metrics', (): LocalModelMetrics | null => store.d.models.localMetrics);
   // In-app updater (custom feed checker — see main/updater.ts).
-  ipcMain.handle('nt.updates.status', () => updateStatus());
-  ipcMain.handle('nt.updates.check', () => checkForUpdates(true));
-  ipcMain.handle('nt.updates.download', () => downloadUpdate());
-  ipcMain.handle('nt.updates.install', () => installUpdate());
-  ipcMain.handle('nt.updates.set-feed-url', (_e, url: string) => {
+  guardedHandle('nt.updates.status', () => updateStatus());
+  guardedHandle('nt.updates.check', () => checkForUpdates(true));
+  guardedHandle('nt.updates.download', () => downloadUpdate());
+  guardedHandle('nt.updates.install', () => installUpdate());
+  guardedHandle('nt.updates.set-feed-url', (_e, url: string) => {
     setFeedUrl(typeof url === 'string' ? url : '');
     return updateStatus();
   });
-  ipcMain.handle('nt.updates.set-auto-check', (_e, on: boolean) => {
+  guardedHandle('nt.updates.set-auto-check', (_e, on: boolean) => {
     setAutoCheck(on === true);
     return updateStatus();
   });
@@ -1420,25 +1480,25 @@ function registerIpc() {
   registerModelsIpc();
 
   // -- voice engine (local STT/TTS sidecars) -----------------------------------------
-  ipcMain.handle('nt.voice.stt-available', (): boolean => {
+  guardedHandle('nt.voice.stt-available', (): boolean => {
     return sttModelFile() !== null && whisperBinaryAvailable();
   });
   // Granular STT readiness for the voice guided-setup card: the renderer
   // needs to tell "no model yet" (one-tap download) apart from "model ready
   // but whisper-cli missing" (manual install steps).
-  ipcMain.handle('nt.voice.stt-status', () => ({
+  guardedHandle('nt.voice.stt-status', () => ({
     model: sttModelFile() !== null,
     binary: whisperBinaryAvailable(),
     binarySteps: whisperManualSteps(binDir),
   }));
-  ipcMain.handle('nt.voice.start-listening', () => {
+  guardedHandle('nt.voice.start-listening', () => {
     voiceEngine.startListening();
   });
   // Own the macOS microphone permission prompt from the main process so it
   // is attributed to Next Token. (A renderer getUserMedia prompt can be
   // misattributed to the launching terminal for an unsigned app started
   // from the command line.)
-  ipcMain.handle('nt.voice.ensure-mic', async (): Promise<{ granted: boolean }> => {
+  guardedHandle('nt.voice.ensure-mic', async (): Promise<{ granted: boolean }> => {
     if (process.platform !== 'darwin') return { granted: true };
     try {
       const { systemPreferences } = await import('electron');
@@ -1451,26 +1511,26 @@ function registerIpc() {
       return { granted: true };
     }
   });
-  ipcMain.handle('nt.voice.audio-chunk', (_e, data: Uint8Array) => {
+  guardedHandle('nt.voice.audio-chunk', (_e, data: Uint8Array) => {
     voiceEngine.pushAudio(Buffer.from(data));
   });
-  ipcMain.handle('nt.voice.stop-listening', async (): Promise<VoiceTranscript> => {
+  guardedHandle('nt.voice.stop-listening', async (): Promise<VoiceTranscript> => {
     // Single dispatch: the transcript is returned to the renderer, which owns
     // routing (fixed commands → runVoiceCommand, voice-control → brain).
     // Main never dispatches here — that used to run every utterance twice.
     return voiceEngine.stopListening();
   });
-  ipcMain.handle('nt.voice.cancel-listening', () => {
+  guardedHandle('nt.voice.cancel-listening', () => {
     voiceEngine.cancelListening();
   });
-  ipcMain.handle('nt.voice.speak', async (_e, text: string): Promise<Uint8Array> => {
+  guardedHandle('nt.voice.speak', async (_e, text: string): Promise<Uint8Array> => {
     const wav = await voiceEngine.speak(text);
     return new Uint8Array(wav);
   });
   // Barge-in: abort in-flight TTS (child killed, queue invalidated), cancel
   // any voice-driven agent run, and return to idle so a new listen can
   // start immediately. No zombie audio or stale replies survive this.
-  ipcMain.handle('nt.voice.stop-speaking', () => {
+  guardedHandle('nt.voice.stop-speaking', () => {
     for (const runId of voiceRunIds) cancelAgentRun(runId);
     voiceRunIds.clear();
     voiceEngine.stopSpeaking();
@@ -1480,24 +1540,24 @@ function registerIpc() {
   });
   // Mic amplitude (renderer → main), fire-and-forget at ~15 Hz. The toolbar
   // voice chip consumes it via the main window's nt:voice-amplitude event.
-  ipcMain.on('nt.voice.amplitude', (_e, level: number) => {
+  guardedOn('nt.voice.amplitude', (_e, level: number) => {
     if (typeof level === 'number' && Number.isFinite(level)) {
       win?.webContents.send('nt:voice-amplitude', Math.max(0, Math.min(1, level)));
     }
   });
   // Renderer TTS playback state (drives the toolbar voice chip).
-  ipcMain.on('nt.voice.playback-started', () => {
+  guardedOn('nt.voice.playback-started', () => {
     pillPlaybackSpeaking = true;
     win?.webContents.send('nt:voice-playback-state', true);
   });
-  ipcMain.on('nt.voice.playback-ended', () => {
+  guardedOn('nt.voice.playback-ended', () => {
     pillPlaybackSpeaking = false;
     win?.webContents.send('nt:voice-playback-state', false);
   });
   // Self-heal Kokoro TTS: make sure espeak-ng-data exists inside the TTS
   // model dir (manually placed models often lack it, which used to kill
   // TTS and trigger the old system-voice fallback). Best-effort.
-  ipcMain.handle('nt.voice.repair-tts', async (): Promise<{ ok: boolean; error?: string }> => {
+  guardedHandle('nt.voice.repair-tts', async (): Promise<{ ok: boolean; error?: string }> => {
     try {
       await repairTtsEngine();
       return { ok: true };
@@ -1506,7 +1566,7 @@ function registerIpc() {
     }
   });
   // Undo the last in-page voice dictation (the renderer's "⌘Z to undo" toast).
-  ipcMain.handle('nt.voice.dictate-undo', async (): Promise<boolean> => {
+  guardedHandle('nt.voice.dictate-undo', async (): Promise<boolean> => {
     const d = lastDictation;
     if (!d || Date.now() - d.at > 5 * 60 * 1000) return false;
     const tab = tabs.tabs.get(d.tabId);
@@ -1523,18 +1583,28 @@ function registerIpc() {
     }
   });
   // "Take over" — the user halts the voice-driven agent mid-action.
-  ipcMain.handle('nt.voice.takeover', async () => {
+  guardedHandle('nt.voice.takeover', async () => {
     win?.webContents.send('nt:voice-takeover');
   });
 
   // -- brain (Jev System-One orchestration) --------------------------------------
   // The Jev API key lives in the OS keychain via JevCredentialStore and never
   // leaves main: nt.brain.jev.get only reports whether one is configured.
-  ipcMain.handle('nt.brain.jev.get', (): JevConfigPublic =>
+  guardedHandle('nt.brain.jev.get', (): JevConfigPublic =>
     ({ configured: jevCreds.hasKey, baseUrl: store.d.brain.jevBaseUrl }));
-  ipcMain.handle('nt.brain.jev.set', (_e, input: JevConfigInput): JevConfigPublic => {
+  guardedHandle('nt.brain.jev.set', (_e, input: JevConfigInput): JevConfigPublic => {
     if (typeof input.baseUrl === 'string') {
-      store.d.brain.jevBaseUrl = input.baseUrl.trim();
+      const v = input.baseUrl.trim();
+      // Main fetches this URL — it must be a real http(s) endpoint.
+      if (v) {
+        try {
+          const u = new URL(v);
+          if (u.protocol !== 'http:' && u.protocol !== 'https:') throw new Error('bad scheme');
+        } catch {
+          throw new Error('Jev base URL must be an http(s) URL.');
+        }
+      }
+      store.d.brain.jevBaseUrl = v;
       store.saveSoon();
     }
     if (input.apiKey && input.apiKey.trim()) {
@@ -1544,18 +1614,18 @@ function registerIpc() {
     }
     return { configured: jevCreds.hasKey, baseUrl: store.d.brain.jevBaseUrl };
   });
-  ipcMain.handle('nt.brain.jev.test', async () => {
+  guardedHandle('nt.brain.jev.test', async () => {
     const r = await jevClient.booleanCheck('connectivity test', 'This is a connectivity test, not a real request');
     return r.ok ? { ok: true, latencyMs: 0 } : { ok: false, error: r.message };
   });
-  ipcMain.handle('nt.brain.jev.validate', async (_e, apiKey: string, baseUrl?: string) => {
+  guardedHandle('nt.brain.jev.validate', async (_e, apiKey: string, baseUrl?: string) => {
     // ONE lightweight call with a transient client. The key is never persisted
     // here — the renderer only calls nt.brain.jev.set after explicit Save.
     const probe = new JevClient({ apiKey, baseUrl: baseUrl?.trim() || undefined, timeoutMs: 4000 });
     const r = await probe.booleanCheck('validation probe', 'Is this a validation probe?');
     return r.ok ? { ok: true } : { ok: false, error: r.message };
   });
-  ipcMain.handle('nt.brain.utterance', (_e, text: string, source: 'voice' | 'text') => {
+  guardedHandle('nt.brain.utterance', (_e, text: string, source: 'voice' | 'text') => {
     // Fire-and-forget: runVoiceTurn owns the turn's voice state and the
     // orchestrator speaks its own errors — the renderer never blocks here.
     void runVoiceTurn(text, source).catch((e) =>
@@ -1580,6 +1650,41 @@ if (!singleInstanceLock) {
     }
   });
 }
+
+// Webview-tag policy: every <webview> guest the app shell attaches is
+// validated here. Only the app's own guest partition may host webviews;
+// guests get no preload, no Node, and a sandboxed isolated context, and
+// only web-safe schemes may load. This is the boundary that keeps a
+// compromised renderer from minting a privileged guest.
+app.on('web-contents-created', (_event, contents) => {
+  contents.on('will-attach-webview', (event, webPreferences, params) => {
+    if (params.partition !== GUEST_PARTITION) {
+      console.warn(`[security] blocked webview with unexpected partition '${params.partition}'`);
+      event.preventDefault();
+      return;
+    }
+    const prefs = webPreferences as unknown as Record<string, unknown>;
+    delete prefs.preload;
+    delete prefs.preloadURL;
+    webPreferences.nodeIntegration = false;
+    prefs.nodeIntegrationInWorker = false;
+    prefs.nodeIntegrationInSubFrames = false;
+    webPreferences.contextIsolation = true;
+    webPreferences.sandbox = true;
+    webPreferences.webSecurity = true;
+    prefs.allowRunningInsecureContent = false;
+    let scheme = '';
+    try {
+      scheme = new URL(params.src).protocol;
+    } catch {
+      /* fall through to deny */
+    }
+    if (!['http:', 'https:', 'data:', 'file:', 'about:'].includes(scheme)) {
+      console.warn(`[security] blocked webview with disallowed src scheme '${scheme || params.src}'`);
+      event.preventDefault();
+    }
+  });
+});
 
 app.whenReady().then(() => {
   // The app must always appear in the macOS dock as the active app, with a
