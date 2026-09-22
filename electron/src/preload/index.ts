@@ -67,6 +67,24 @@ const api: NextTokenAPI = {
   tabsAttach: (tabId, webContentsId) => ipcRenderer.invoke('nt.tabs.attach', tabId, webContentsId),
   tabsArchive: (tabId) => ipcRenderer.invoke('nt.tabs.archive', tabId),
   tabsRestore: (archivedId) => ipcRenderer.invoke('nt.tabs.restore', archivedId),
+  /** Tab-level mute toggle (sidebar speaker icon / tab context menu). */
+  tabsSetMuted: (tabId, muted) => ipcRenderer.invoke('nt.tabs.mute', tabId, muted),
+  /** Duplicate a tab right after the original, in the same Bit. */
+  tabsDuplicate: (tabId) => ipcRenderer.invoke('nt.tabs.duplicate', tabId),
+  /** Reload a specific tab. */
+  tabsReloadTab: (tabId) => ipcRenderer.invoke('nt.tabs.reload-tab', tabId),
+  /** Close every other unpinned tab in the tab's Bit. */
+  tabsCloseOthers: (tabId) => ipcRenderer.invoke('nt.tabs.close-others', tabId),
+  /** Close unpinned tabs to the right in sidebar order. */
+  tabsCloseRight: (tabId) => ipcRenderer.invoke('nt.tabs.close-right', tabId),
+  /** Reopen the most recently user-closed tab (⌘⇧T). */
+  tabsReopenClosed: () => ipcRenderer.invoke('nt.tabs.reopen-closed'),
+  /** Shell shortcut forwarded from a focused guest webview. */
+  onGuestShortcut: (cb) => {
+    const l = (_e: unknown, info: Parameters<Parameters<NextTokenAPI['onGuestShortcut']>[0]>[0]) => cb(info);
+    ipcRenderer.on('nt.guest.shortcut', l);
+    return () => ipcRenderer.removeListener('nt.guest.shortcut', l);
+  },
   // navigation
   navGo: (raw) => ipcRenderer.invoke('nt.nav.go', raw),
   navBack: () => ipcRenderer.invoke('nt.nav.back'),
@@ -94,6 +112,23 @@ const api: NextTokenAPI = {
   importRun: (browserId, kinds) => ipcRenderer.invoke('nt.import.run', browserId, kinds),
   importPasswordGuidance: (browserId) => ipcRenderer.invoke('nt.import.password-guidance', browserId),
   importLoginsCount: () => ipcRenderer.invoke('nt.import.logins-count'),
+  // password manager (save prompt, origin-bound autofill, vault UI)
+  passwordsList: () => ipcRenderer.invoke('nt.passwords.list'),
+  passwordsLookup: (tabId, origin) => ipcRenderer.invoke('nt.passwords.lookup', tabId, origin),
+  passwordsAutofill: (tabId, username) => ipcRenderer.invoke('nt.passwords.autofill', tabId, username),
+  passwordsLoginDetected: (tabId, origin, username) =>
+    ipcRenderer.invoke('nt.passwords.login-detected', tabId, origin, username),
+  passwordsSaveDecision: (token, decision) => ipcRenderer.invoke('nt.passwords.save-decision', token, decision),
+  passwordsReveal: (origin, username) => ipcRenderer.invoke('nt.passwords.reveal', origin, username),
+  passwordsCopy: (origin, username) => ipcRenderer.invoke('nt.passwords.copy', origin, username),
+  passwordsDelete: (origin, username) => ipcRenderer.invoke('nt.passwords.delete', origin, username),
+  passwordsBlocked: () => ipcRenderer.invoke('nt.passwords.blocked'),
+  passwordsUnblock: (origin) => ipcRenderer.invoke('nt.passwords.unblock', origin),
+  onPasswordsSavePrompt: (cb) => {
+    const l = (_e: unknown, p: Parameters<Parameters<NextTokenAPI['onPasswordsSavePrompt']>[0]>[0]) => cb(p);
+    ipcRenderer.on('nt.passwords.save-prompt', l);
+    return () => ipcRenderer.removeListener('nt.passwords.save-prompt', l);
+  },
   // AI tidy — local models only
   tidyPlan: (spaceId) => ipcRenderer.invoke('nt.tidy.plan', spaceId),
   tidyApply: (spaceId, actions) => ipcRenderer.invoke('nt.tidy.apply', spaceId, actions),
