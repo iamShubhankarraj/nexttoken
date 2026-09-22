@@ -54,6 +54,7 @@ const api: NextTokenAPI = {
   privacySetPopup: (origin, policy) => ipcRenderer.invoke('nt.privacy.set-popup', origin, policy),
   privacySetAutoplay: (origin, allow) => ipcRenderer.invoke('nt.privacy.set-autoplay', origin, allow),
   privacySetMuted: (origin, muted) => ipcRenderer.invoke('nt.privacy.set-muted', origin, muted),
+  siteinfoGet: () => ipcRenderer.invoke('nt.siteinfo.get'),
   privacySites: () => ipcRenderer.invoke('nt.privacy.sites'),
   privacySiteCookies: (site) => ipcRenderer.invoke('nt.privacy.site-cookies', site),
   privacyDeleteSite: (site) => ipcRenderer.invoke('nt.privacy.delete-site', site),
@@ -133,7 +134,7 @@ const api: NextTokenAPI = {
   settingsGetVoice: () => ipcRenderer.invoke('nt.settings.voice.get'),
   settingsSetVoice: (v) => ipcRenderer.invoke('nt.settings.voice.set', v),
   settingsGetSearchEngine: () => ipcRenderer.invoke('nt.settings.search-engine.get'),
-  settingsSetSearchEngine: (url) => ipcRenderer.invoke('nt.settings.search-engine.set', url),
+  settingsSetSearchEngine: (id, template) => ipcRenderer.invoke('nt.settings.search-engine.set', id, template),
   // themes
   themesGet: (spaceId) => ipcRenderer.invoke('nt.themes.get', spaceId),
   themesSet: (spaceId, tokens) => ipcRenderer.invoke('nt.themes.set', spaceId, tokens),
@@ -276,6 +277,7 @@ const api: NextTokenAPI = {
   adblockGet: () => ipcRenderer.invoke('nt.adblock.get'),
   adblockSetEnabled: (enabled) => ipcRenderer.invoke('nt.adblock.set-enabled', enabled),
   adblockSetSiteAllowed: (host, allowed) => ipcRenderer.invoke('nt.adblock.set-site-allowed', host, allowed),
+  adblockRefresh: () => ipcRenderer.invoke('nt.adblock.refresh'),
   onAdBlockStats: (cb) => {
     const l = (_e: unknown, s: Parameters<Parameters<NextTokenAPI['onAdBlockStats']>[0]>[0]) => cb(s);
     ipcRenderer.on('nt.adblock.stats', l);
