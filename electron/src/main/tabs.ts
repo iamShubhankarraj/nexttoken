@@ -101,7 +101,11 @@ export function resolveInput(raw: string, searchEngine: string): string {
   if (/^localhost(:\d+)?(\/\S*)?$/i.test(t)) return 'http://' + t;
   // domain-like: no spaces, has a dot, plausible TLD-ish shape
   if (/^[^\s]+\.[^\s]{2,}(\/\S*)?$/.test(t) && !/\s/.test(t)) return 'https://' + t;
-  return searchEngine + encodeURIComponent(t);
+  // Search query: %s templates get a substitution, bare templates an append
+  // (the Settings UI documents %s, so both styles must work).
+  return searchEngine.includes('%s')
+    ? searchEngine.replace('%s', encodeURIComponent(t))
+    : searchEngine + encodeURIComponent(t);
 }
 
 export class TabManager {
