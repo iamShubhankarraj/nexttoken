@@ -39,5 +39,5 @@
     "test:adblock": "node scripts/adblock-test.mjs",
     "bench:adblock": "node scripts/adblock-bench.mjs"
   },
-  "version": "0.6.2"
+  "version": "0.6.3"
 }
