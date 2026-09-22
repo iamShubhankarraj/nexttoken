@@ -205,7 +205,7 @@ export async function toggleMedia(
 /**
  * Capture a small live thumbnail of the media tab's best video.
  * Crops capturePage to the video's rect and downscales — cheap enough for
- * ~2-3 fps while the viewfinder is visible. Returns a data URL or null.
+ * ~1 fps while the viewfinder is visible. Returns a data URL or null.
  */
 export async function captureMediaThumb(
   tabs: TabManager,

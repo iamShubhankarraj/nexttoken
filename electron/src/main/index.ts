@@ -19,7 +19,7 @@ import { executeControl, runTerminalControl, type ControlEnv } from './brain/con
 import { MODEL_CATALOG, ModelDownloader, targetPathFor, ensureEspeakNgData, type DownloadEvent } from './models';
 import { ensureSidecar, whisperManualSteps } from './models/binaries';
 import { registerModelsIpc } from './models/ipc';
-import { setVisionRef, describeTaskModels, resolveVisionModel } from './models/task-models';
+import { setVisionRef, describeTaskModels } from './models/task-models';
 import { setupUpdater, checkForUpdatesManually, updateStatus, checkForUpdates, downloadUpdate, installUpdate, setFeedUrl, setAutoCheck } from './updater';
 import { detectBrowsers, type DetectedBrowser } from './import/browsers';
 import { importBookmarks, importTabs, type ImportDeps, type ImportReport } from './import/index';
@@ -463,10 +463,8 @@ function prewarmAssignedLocalModels(): void {
   if (active?.kind === 'local' && active.id) {
     void prewarmLocalModel(active.id, 'chat');
   }
-  const vision = resolveVisionModel(store);
-  if (vision.kind === 'local') {
-    void prewarmLocalModel(vision.entry.id, 'vision');
-  }
+  // Vision is warmed on first use via ensureWarm() — holding a multi-GB
+  // model in RAM from every launch for a rarely used slot is pure cost.
 }
 
 /** Push the active model to the renderer (Agent tab switcher stays in sync). */
@@ -716,7 +714,13 @@ function createWindow() {
   }
 
   win.on('closed', () => {
-    if (win) revokeIpcSender(win.webContents.id);
+    // 'closed' fires after the native window is destroyed — reading
+    // win.webContents here throws "TypeError: Object has been destroyed".
+    try {
+      if (win && !win.isDestroyed()) revokeIpcSender(win.webContents.id);
+    } catch {
+      /* window already gone */
+    }
     win = null;
   });
 }
@@ -2048,7 +2052,7 @@ app.whenReady().then(() => {
   // Curved media viewfinder: sweep all tabs ~1Hz for the background media
   // tab (a video in a NON-active tab) and push its state to the renderer.
   // The viewfinder appears only when the user is not on the media tab.
-  // A ~2.5fps thumbnail stream feeds both the viewfinder's curved ribbon
+  // A ~1fps thumbnail stream feeds both the viewfinder's curved ribbon
   // and the custom PiP window; it pauses when hidden.
   startMediaPolling(tabs, {
     send: (s) => {
@@ -2071,7 +2075,7 @@ app.whenReady().then(() => {
         /* never break the loop on a transient capture failure */
       }
     })();
-  }, 400);
+  }, 1000);
   setupUpdater({
     store,
     send: (channel, payload) => {
@@ -2155,6 +2159,15 @@ app.whenReady().then(() => {
   // background: the first agent/voice turn must not pay spawn + model-load.
   // The delay keeps startup itself snappy; failures only log.
   setTimeout(() => prewarmAssignedLocalModels(), 5_000);
+
+  // Idle-unload: a warmed model with no agent/voice turn for 15 minutes is
+  // stopped so it stops holding gigabytes of RAM. The next turn re-warms
+  // transparently through ensureWarm().
+  setInterval(() => {
+    void llama?.sweepIdle().catch(() => {
+      /* best effort */
+    });
+  }, 60_000);
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

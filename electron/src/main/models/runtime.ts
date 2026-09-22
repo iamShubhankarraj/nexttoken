@@ -31,6 +31,8 @@ interface SlotState {
   baseUrl: string;
   /** Set false the moment the process exits (or we kill it). */
   alive: boolean;
+  /** Last ensureWarm() call — drives the idle-unload sweeper. */
+  lastUsedAt: number;
   /** Last ~2KB of stderr, kept for error reports. */
   stderrTail: string;
 }
@@ -41,6 +43,8 @@ const READY_TIMEOUT_MS = 120_000;
 /** Grace period for SIGTERM before escalating to SIGKILL. */
 const STOP_GRACE_MS = 3_000;
 const CTX_SIZE = 8192;
+/** A warmed server with no ensureWarm() call for this long is stopped to free RAM. */
+const IDLE_STOP_MS = 15 * 60_000;
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
@@ -184,6 +188,7 @@ export class LlamaServer {
     return this.withLock(slot, async () => {
       const st = this.slots.get(slot);
       if (st && st.alive && st.proc.exitCode === null && st.modelId === entry.id) {
+        st.lastUsedAt = Date.now();
         return { baseUrl: st.baseUrl, warm: true, spawnMs: 0, loadMs: 0 };
       }
       const r = await this.spawnLocked(entry, slot);
@@ -249,6 +254,7 @@ export class LlamaServer {
       baseUrl,
       alive: true,
       stderrTail: '',
+      lastUsedAt: Date.now(),
     };
     proc.stderr?.on('data', (d: Buffer) => appendTail(state, d));
     proc.on('error', (err) => {
@@ -309,6 +315,27 @@ export class LlamaServer {
   /** Stop every running server. Call from app before-quit. */
   async stopAll(): Promise<void> {
     await Promise.all([this.stop('chat'), this.stop('vision')]);
+  }
+
+  /**
+   * Stop servers that have seen no ensureWarm() call for IDLE_STOP_MS.
+   * Every real inference path goes through ensureWarm() first, so an idle
+   * server is by definition unused — the next turn re-warms transparently.
+   */
+  async sweepIdle(): Promise<void> {
+    const now = Date.now();
+    const idle: ServerSlot[] = [];
+    for (const [slot, state] of this.slots) {
+      if (state.alive && state.proc.exitCode === null && now - state.lastUsedAt > IDLE_STOP_MS) {
+        idle.push(slot);
+      }
+    }
+    for (const slot of idle) {
+      console.log(`[local-model] idle-stop slot=${slot} after ${IDLE_STOP_MS / 60000}min without use`);
+      await this.stop(slot).catch(() => {
+        /* best effort */
+      });
+    }
   }
 
   status(slot: ServerSlot): LocalServerStatus {

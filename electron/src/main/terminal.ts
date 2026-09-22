@@ -30,7 +30,10 @@ export async function runTerminal(
 ): Promise<TerminalResult> {
   const dir = cwd || os.homedir();
 
-  const { response } = await dialog.showMessageBox(win!, {
+  // The window can close while the agent waits on this gate — a destroyed
+  // parent throws "Object has been destroyed", so fall back to unparented.
+  const parent = win && !win.isDestroyed() ? win : undefined;
+  const { response } = await dialog.showMessageBox(parent!, {
     type: 'warning',
     buttons: ['Run command', 'Cancel'],
     defaultId: 1,
