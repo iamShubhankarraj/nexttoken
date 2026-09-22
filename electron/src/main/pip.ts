@@ -17,6 +17,7 @@
 import { BrowserWindow, screen } from 'electron';
 import path from 'node:path';
 import type { TabManager } from './tabs';
+import { allowIpcSender, revokeIpcSender } from './ipcGuard';
 import { captureMediaThumb, enterNativePictureInPicture, hasPlayableVideo, toggleMedia } from './media';
 
 let pipWin: BrowserWindow | null = null;
@@ -38,6 +39,13 @@ export function closePipWindow(): void {
   emptyFrames = 0;
   const w = pipWin;
   pipWin = null;
+  if (w) {
+    try {
+      revokeIpcSender(w.webContents.id);
+    } catch {
+      /* already gone */
+    }
+  }
   try {
     if (w && !w.isDestroyed()) w.close();
   } catch {
@@ -150,11 +158,15 @@ export async function togglePipWindow(
       webPreferences: {
         preload: path.join(__dirname, '../preload/pip.js'),
         contextIsolation: true,
-        sandbox: false,
+        nodeIntegration: false,
+        sandbox: true, // the PiP page needs no Node; the preload bridge is enough
       },
     });
     pipTabId = targetId ?? null;
+    const pipWcId = pipWin.webContents.id;
+    allowIpcSender(pipWcId);
     pipWin.on('closed', () => {
+      revokeIpcSender(pipWcId);
       if (pipWin) {
         pipWin = null;
       }

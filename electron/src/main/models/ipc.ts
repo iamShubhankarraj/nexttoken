@@ -32,12 +32,12 @@
  * handler changes.
  */
 
-import { ipcMain } from 'electron';
+import { guardedHandle } from '../ipcGuard';
 import { MODEL_CATALOG } from './catalog';
 import { hasHfToken, hfTokenStorageAvailable, setHfToken } from './hfToken';
 
 export function registerModelsIpc(): void {
-  ipcMain.handle('nt.models.hf-token.set', (_e, token: string): { ok: true } => {
+  guardedHandle('nt.models.hf-token.set', (_e, token: string): { ok: true } => {
     const value = typeof token === 'string' ? token.trim() : '';
     // Boundary check first: never accept a token we can't encrypt.
     if (value && !hfTokenStorageAvailable()) {
@@ -49,13 +49,13 @@ export function registerModelsIpc(): void {
     return { ok: true };
   });
 
-  ipcMain.handle('nt.models.hf-token.has', (): boolean => hasHfToken());
+  guardedHandle('nt.models.hf-token.has', (): boolean => hasHfToken());
 
-  ipcMain.handle('nt.models.hf-token.clear', (): void => {
+  guardedHandle('nt.models.hf-token.clear', (): void => {
     setHfToken('');
   });
 
-  ipcMain.handle('nt.models.gated-ids', (): string[] =>
+  guardedHandle('nt.models.gated-ids', (): string[] =>
     MODEL_CATALOG.filter((e) => e.gated).map((e) => e.id)
   );
 }

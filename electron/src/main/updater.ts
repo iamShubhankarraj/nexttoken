@@ -236,6 +236,39 @@ export async function checkForUpdates(manual = false): Promise<void> {
   }
 }
 
+/**
+ * Zip-slip guard for the update bundle: list the archive's entries before
+ * extracting and refuse any absolute path or `..` segment. ditto would
+ * otherwise happily write such entries outside the staging directory.
+ */
+async function assertArchiveContained(zipPath: string): Promise<void> {
+  const out: string = await new Promise((resolve, reject) => {
+    execFile('/usr/bin/unzip', ['-l', zipPath], { timeout: 60_000 }, (err, stdout) => {
+      if (err) reject(new Error(`could not list update archive: ${err.message}`));
+      else resolve(String(stdout));
+    });
+  });
+  const bad: string[] = [];
+  for (const line of out.split('\n')) {
+    // unzip -l rows look like: "   1234  2026-01-01 00:00   path/to/entry"
+    const m = /^\s*\d+\s+\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}(?::\d{2})?\s+(.*\S)\s*$/.exec(line);
+    if (!m) continue;
+    const name = m[1];
+    if (
+      name.startsWith('/') ||
+      /^[A-Za-z]:[\\/]/.test(name) ||
+      /(^|[\\/])\.\.([\\/]|$)/.test(name)
+    ) {
+      bad.push(name);
+    }
+  }
+  if (bad.length > 0) {
+    throw new Error(
+      `update archive contains unsafe paths (${bad.slice(0, 3).join(', ')}${bad.length > 3 ? '…' : ''}) — discarded`
+    );
+  }
+}
+
 /** Download the staged update zip with progress + sha512 verification. */
 export async function downloadUpdate(): Promise<void> {
   if (!deps || !app.isPackaged) return;
@@ -248,6 +281,7 @@ export async function downloadUpdate(): Promise<void> {
   }
   setState('downloading');
   progressPct = 0;
+  const stageDir = join(tmpdir(), `next-token-update-${availableVersion}`);
   try {
     const yml = await fetchText(`${base}/${FEED_FILE}`);
     const feed = parseFeed(yml);
@@ -255,7 +289,6 @@ export async function downloadUpdate(): Promise<void> {
       throw new Error('feed changed during download — re-check for updates');
     }
     const fileUrl = new URL(feed.url, `${base}/`).toString();
-    const stageDir = join(tmpdir(), `next-token-update-${feed.version}`);
     await fsp.rm(stageDir, { recursive: true, force: true });
     await fsp.mkdir(stageDir, { recursive: true });
     const zipPath = join(stageDir, basename(feed.url));
@@ -304,6 +337,8 @@ export async function downloadUpdate(): Promise<void> {
     }
 
     // Unzip (ditto preserves macOS metadata); the zip's top level is Next Token.app.
+    // Zip-slip guard first: refuse archives with absolute or `..` entries.
+    await assertArchiveContained(zipPath);
     const extractDir = join(stageDir, 'extracted');
     await fsp.mkdir(extractDir, { recursive: true });
     await new Promise<void>((resolve, reject) => {
@@ -325,6 +360,14 @@ export async function downloadUpdate(): Promise<void> {
     const msg = e instanceof Error ? e.message : String(e);
     setState('error', msg);
     emit({ type: 'error', message: msg });
+    // Never leave a half-staged update on disk — the next attempt starts clean.
+    try {
+      await fsp.rm(stageDir, { recursive: true, force: true });
+    } catch {
+      /* best effort */
+    }
+    stagedAppPath = '';
+    stagedVersion = '';
   }
 }
 
@@ -341,6 +384,12 @@ function exeAppPath(): string {
  * Guards: App Translocation (read-only copy) and non-writable bundle dirs
  * fall back to a guided manual install instead of failing silently.
  */
+
+/** Single-quote a string for POSIX shell (JSON.stringify is NOT shell-safe). */
+function shQuote(s: string): string {
+  return `'${s.replace(/'/g, `'\\''`)}'`;
+}
+
 export async function installUpdate(): Promise<void> {
   if (!deps || state !== 'downloaded' || !stagedAppPath) return;
   const oldApp = exeAppPath();
@@ -394,10 +443,10 @@ export async function installUpdate(): Promise<void> {
   const scriptPath = join(tmpdir(), `nt-update-${Date.now()}.sh`);
   const script = `#!/bin/bash
 set -u
-OLD_APP=${JSON.stringify(oldApp)}
-NEW_APP=${JSON.stringify(stagedAppPath)}
-BACKUP_APP=${JSON.stringify(backupApp)}
-APP_NAME=${JSON.stringify(app.getName())}
+OLD_APP=${shQuote(oldApp)}
+NEW_APP=${shQuote(stagedAppPath)}
+BACKUP_APP=${shQuote(backupApp)}
+APP_NAME=${shQuote(app.getName())}
 # Wait for the running app to fully quit (up to 60s).
 for i in $(seq 1 60); do
   pgrep -x "$APP_NAME" >/dev/null || break
@@ -409,7 +458,7 @@ mv "$NEW_APP" "$OLD_APP" || { mv "$BACKUP_APP" "$OLD_APP"; exit 1; }
 xattr -cr "$OLD_APP" || true
 open "$OLD_APP"
 rm -rf "$BACKUP_APP"
-rm -f ${JSON.stringify(scriptPath)}
+rm -f ${shQuote(scriptPath)}
 `;
   await fsp.writeFile(scriptPath, script, { mode: 0o755 });
   // Detach: the script outlives us; then quit so it can do the swap.
@@ -460,7 +509,14 @@ export async function checkForUpdatesManually(): Promise<void> {
 
 export function setFeedUrl(url: string): void {
   if (!deps) return;
-  deps.store.d.updates.feedUrl = url.trim().replace(/\/+$/, '');
+  const v = url.trim().replace(/\/+$/, '');
+  // The feed is fetched and its bytes become a new app bundle — plain http
+  // (or file:/etc. schemes) would let a network attacker or a pasted typo
+  // serve a malicious update. Empty clears the feed (feature dormant).
+  if (v && !/^https:\/\//i.test(v)) {
+    throw new Error('Update feed URL must be an https:// URL.');
+  }
+  deps.store.d.updates.feedUrl = v;
   deps.store.saveSoon();
 }
 
