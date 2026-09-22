@@ -335,8 +335,8 @@ export function registerPasswordManager(deps: PasswordManagerDeps): void {
       const norm = normalizeOrigin(origin);
       if (!norm) return null;
       const win = deps.getWin();
-      const { response } = await dialog.showMessageBox(win ?? undefined, {
-        type: 'question',
+      const options = {
+        type: 'question' as const,
         title: 'Reveal saved password?',
         message: `Reveal the saved password for ${norm} (${username.slice(0, 128)})?`,
         detail: 'Make sure nobody is looking at your screen.',
@@ -344,7 +344,13 @@ export function registerPasswordManager(deps: PasswordManagerDeps): void {
         defaultId: 1,
         cancelId: 1,
         noLink: true,
-      });
+      };
+      // Two-arg overload requires a live window; fall back to the
+      // options-only overload when the shell is gone.
+      const { response } =
+        win && !win.isDestroyed()
+          ? await dialog.showMessageBox(win, options)
+          : await dialog.showMessageBox(options);
       if (response !== 0) return null;
       try {
         return getLoginPassword(userDataDir(), norm, username.slice(0, 256));
@@ -362,8 +368,8 @@ export function registerPasswordManager(deps: PasswordManagerDeps): void {
       const norm = normalizeOrigin(origin);
       if (!norm) return { ok: false };
       const win = deps.getWin();
-      const { response } = await dialog.showMessageBox(win ?? undefined, {
-        type: 'question',
+      const options = {
+        type: 'question' as const,
         title: 'Copy saved password?',
         message: `Copy the saved password for ${norm} (${username.slice(0, 128)}) to the clipboard?`,
         detail: 'It stays in your clipboard until you copy something else.',
@@ -371,7 +377,11 @@ export function registerPasswordManager(deps: PasswordManagerDeps): void {
         defaultId: 1,
         cancelId: 1,
         noLink: true,
-      });
+      };
+      const { response } =
+        win && !win.isDestroyed()
+          ? await dialog.showMessageBox(win, options)
+          : await dialog.showMessageBox(options);
       if (response !== 0) return { ok: false };
       try {
         const pw = getLoginPassword(userDataDir(), norm, username.slice(0, 256));
