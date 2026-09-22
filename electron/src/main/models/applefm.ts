@@ -95,7 +95,7 @@ export interface AppleFmDiagnosis {
 }
 
 const PROBE_TIMEOUT_MS = 10_000;
-const CHAT_TIMEOUT_MS = 120_000;
+const CHAT_TIMEOUT_MS = 45_000;
 const DIAG_INFERENCE_TIMEOUT_MS = 90_000;
 const MAX_LINE_BYTES = 4 * 1024 * 1024; // 4MB response cap
 const MAX_STDERR_BYTES = 64 * 1024; // 64KB stderr cap for diagnostics

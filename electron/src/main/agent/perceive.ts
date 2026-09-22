@@ -129,6 +129,11 @@ async function parseDomSnapshot(
     const h = layout.bounds[l * 4 + 3] ?? 0;
     if (w > 0 && h > 0) rendered.add(ni);
   }
+  // If the snapshot carries no layout info at all (page still loading, or
+  // the protocol omitted it), the "rendered" set is empty and would filter
+  // out EVERY element — fall back to no visibility filtering instead of
+  // reporting a blank page.
+  const hasLayout = (layout.nodeIndex?.length ?? 0) > 0;
 
   const textOf = (i: number): string => {
     let t = '';
@@ -151,7 +156,7 @@ async function parseDomSnapshot(
     if (tag === 'input' && (a['type'] || '').toLowerCase() === 'hidden') continue;
     if (tag === 'a' && !a['href']) continue;
     total++;
-    if (!rendered.has(i)) continue; // not painted — skip
+    if (hasLayout && !rendered.has(i)) continue; // not painted — skip
     const ref = elements.length;
     const name = (a['aria-label'] || a['placeholder'] || a['title'] || a['alt'] || textOf(i) || a['value'] || '').slice(0, 90);
     const backendNodeId = nodes.backendNodeId[i];

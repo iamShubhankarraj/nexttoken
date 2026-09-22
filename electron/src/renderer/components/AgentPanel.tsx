@@ -55,6 +55,43 @@ import { ModelSwitcher } from "./ModelSwitcher";
 /** Default agent-panel width (px) when no explicit width is set. */
 const AGENT_DEFAULT_W = 400;
 
+/**
+ * Render chat text with tappable links: bare URLs become anchors that open
+ * in a real browser tab. Agent replies previously rendered URLs as plain
+ * text, so there was nothing to tap.
+ */
+const URL_RE = /(https?:\/\/[^\s<>"')\]]+)/g;
+
+function renderRichText(text: string): React.ReactNode {
+  const parts = text.split(URL_RE);
+  if (parts.length === 1) return text;
+  return parts.map((p, i) =>
+    i % 2 === 1 ? (
+      <a
+        key={i}
+        href={p}
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          try {
+            void nt()
+              .tabsCreate({ url: p })
+              .catch(() => {});
+          } catch {
+            /* bridge unavailable */
+          }
+        }}
+        className="underline"
+        style={{ color: "var(--nt-accent)", cursor: "pointer", overflowWrap: "anywhere" }}
+      >
+        {p}
+      </a>
+    ) : (
+      <span key={i}>{p}</span>
+    )
+  );
+}
+
 /** One-line label for a brain pipeline event in the trace feed. */
 function brainEventLabel(e: BrainEvent): string {
   switch (e.kind) {
@@ -843,7 +880,7 @@ export function AgentPanel() {
                     className="mt-0.5 whitespace-pre-wrap text-[12.5px] leading-relaxed"
                     style={{ color: "var(--nt-text-2)" }}
                   >
-                    {m.text}
+                    {renderRichText(m.text)}
                   </p>
                 </div>
               </div>
@@ -872,7 +909,7 @@ export function AgentPanel() {
                       }
                 }
               >
-                {m.text}
+                {renderRichText(m.text)}
               </div>
             </div>
           );
