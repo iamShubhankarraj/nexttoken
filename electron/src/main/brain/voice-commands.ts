@@ -109,14 +109,14 @@ export const VOICE_COMMANDS: VoiceCommandDef[] = [
   cmd('browser.nav.stop', 'Navigation', 'Stop the page loading', ['stop loading', 'stop']),
 
   // -- Spaces -----------------------------------------------------------------
-  cmd('browser.space.switch', 'Spaces', 'Switch to a different Space', [
-    'switch to Work space', 'go to the Research space'
-  ], { slots: [{ name: 'name', type: 'text', description: 'Space name to switch to' }] }),
-  cmd('browser.space.create', 'Spaces', 'Create a new Space with a name', [
-    'create a space called Reading', 'new space named Side Project'
-  ], { slots: [{ name: 'name', type: 'text', description: 'Name for the new Space' }] }),
-  cmd('browser.space.list', 'Spaces', 'List all my Spaces', [
-    'which spaces do I have', 'list my spaces'
+  cmd('browser.space.switch', 'Bits', 'Switch to a different Bit', [
+    'switch to the Work bit', 'go to the Research bit'
+  ], { slots: [{ name: 'name', type: 'text', description: 'Bit name to switch to' }] }),
+  cmd('browser.space.create', 'Bits', 'Create a new Bit with a name', [
+    'create a bit called Reading', 'new bit named Side Project'
+  ], { slots: [{ name: 'name', type: 'text', description: 'Name for the new Bit' }] }),
+  cmd('browser.space.list', 'Bits', 'List all my Bits', [
+    'which bits do I have', 'list my bits'
   ]),
 
   // -- Interface ---------------------------------------------------------------
