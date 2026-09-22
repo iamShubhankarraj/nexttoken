@@ -105,6 +105,8 @@ export interface BrowserSnapshot {
   /** Explicit sidebar widths (px), null = automatic. */
   sidebarWidth: number | null;
   agentPanelWidth: number | null;
+  /** v0.6.3 (impl-5): bookmarks bar visibility + scope. */
+  bookmarksBar: { visible: boolean; scope: 'bit' | 'all' };
 }
 
 /** A tab swept up by auto-archive (or manually). Restorable. */
@@ -837,7 +839,27 @@ export type DownloadUiEvent =
       percent: number;
     }
   | { kind: 'done'; id: string; filename: string; path: string }
-  | { kind: 'failed'; id: string; filename: string; reason?: string };
+  | { kind: 'failed'; id: string; filename: string; reason?: string }
+  // v0.6.3 (impl-5): pause/resume for the download manager.
+  | { kind: 'paused'; id: string; filename: string }
+  | { kind: 'resumed'; id: string; filename: string };
+
+/** One guest download for the Downloads manager page (newest first). */
+export interface DownloadRecord {
+  id: string;
+  filename: string;
+  url: string;
+  received: number;
+  total: number; // -1 = unknown
+  state: 'active' | 'paused' | 'done' | 'failed' | 'cancelled';
+  path?: string;
+  startedAt: number;
+  endedAt?: number;
+  reason?: string;
+}
+
+/** On-launch behavior (v0.6.3, impl-5). */
+export type StartupMode = 'restore' | 'newtab' | 'pages';
 
 /** find-in-page match counts for the active tab's guest. */
 export interface FindResult {
@@ -866,6 +888,22 @@ export interface NextTokenAPI {
   findStop(): Promise<void>;
   /** Reveal a finished download in Finder. */
   downloadsReveal(path: string): Promise<void>;
+  /** Downloads manager (v0.6.3): records, pause/resume/cancel/retry, settings. */
+  downloadsList(): Promise<DownloadRecord[]>;
+  downloadsPause(id: string): Promise<void>;
+  downloadsResume(id: string): Promise<void>;
+  downloadsCancel(id: string): Promise<void>;
+  downloadsRetry(id: string): Promise<void>;
+  downloadsClearFinished(): Promise<void>;
+  /** Open a finished download with its default app. */
+  downloadsOpen(path: string): Promise<void>;
+  /** { dir: null } = ask where to save each time. */
+  downloadsGetDir(): Promise<{ dir: string | null; defaultDir: string }>;
+  downloadsPickDir(): Promise<{ dir: string | null; defaultDir: string }>;
+  downloadsSetDir(dir: string | null): Promise<{ dir: string | null; defaultDir: string }>;
+  /** Lowercase extensions (no dots) auto-opened on completion. */
+  downloadsAutoOpenGet(): Promise<string[]>;
+  downloadsAutoOpenSet(exts: string[]): Promise<string[]>;
   /** Open a blocked popup anyway (from the blocked-popup indicator). */
   popupOpenBlocked(url: string): Promise<void>;
   /** Download progress/completion events for the downloads pill. */
@@ -904,6 +942,17 @@ export interface NextTokenAPI {
   privacyClearData(opts: { cookies: boolean; cache: boolean; history: boolean }): Promise<void>;
   /** Recent browsing history (newest first, capped). */
   privacyHistory(): Promise<HistoryEntry[]>;
+  /** Brave-style HTTPS-Strict upgrade (off by default). Returns the snapshot. */
+  privacySetHttpsUpgrade(enabled: boolean): Promise<PrivacySnapshot>;
+  /** Per-origin zoom memory (v0.6.3): list remembered zooms. */
+  zoomList(): Promise<Array<{ origin: string; percent: number }>>;
+  /** Forget one origin's zoom (live tabs reset to 100%). Returns the list. */
+  zoomReset(origin: string): Promise<Array<{ origin: string; percent: number }>>;
+  /** History manager (v0.6.3): search / per-item delete / clear-by-range. */
+  historyList(limit?: number): Promise<HistoryEntry[]>;
+  historySearch(query: string, limit?: number): Promise<HistoryEntry[]>;
+  historyDelete(at: number, url: string): Promise<void>;
+  historyClearRange(range: 'hour' | 'day' | 'week' | 'all'): Promise<void>;
   tabsPin(tabId: string, pinned: boolean): Promise<void>;
   tabsMove(tabId: string, spaceId: string): Promise<void>;
   /** Reorder a tab: move it before `beforeTabId` (null = end of its folder/section). */
@@ -948,9 +997,21 @@ export interface NextTokenAPI {
   foldersRename(spaceId: string, folderId: string, name: string): Promise<void>;
   foldersRemove(spaceId: string, folderId: string): Promise<void>;
   // bookmarks (per Bit)
-  bookmarksAdd(spaceId: string, name: string, url: string): Promise<BookmarkState[]>;
+  bookmarksAdd(spaceId: string, name: string, url: string, folder?: string): Promise<BookmarkState[]>;
   bookmarksRename(spaceId: string, id: string, name: string): Promise<BookmarkState[]>;
   bookmarksRemove(spaceId: string, id: string): Promise<BookmarkState[]>;
+  /** Move a bookmark to another Bit (bookmarks manager). */
+  bookmarksMove(fromSpaceId: string, id: string, toSpaceId: string): Promise<void>;
+  /** Bookmarks bar (v0.6.3): visibility + scope. */
+  bookmarksBarGet(): Promise<{ visible: boolean; scope: 'bit' | 'all' }>;
+  bookmarksBarSet(v: { visible?: boolean; scope?: 'bit' | 'all' }): Promise<{ visible: boolean; scope: 'bit' | 'all' }>;
+  /** On-launch behavior + default browser (v0.6.3). */
+  startupGet(): Promise<{ mode: StartupMode; pages: string[] }>;
+  startupSet(v: { mode?: StartupMode; pages?: string[] }): Promise<{ mode: StartupMode; pages: string[] }>;
+  startupIsDefaultBrowser(): Promise<boolean>;
+  startupMakeDefaultBrowser(): Promise<{ ok: boolean; isDefault: boolean }>;
+  /** One-time first-run default-browser nudge. */
+  startupNudge(): Promise<{ show: boolean }>;
   // import from other browsers (explicit user action only; main owns all secrets)
   importDetect(): Promise<DetectedBrowserState[]>;
   importRun(
