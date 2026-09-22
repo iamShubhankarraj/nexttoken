@@ -2072,7 +2072,9 @@ app.whenReady().then(() => {
   // Curved media viewfinder: sweep all tabs ~1Hz for the background media
   // tab (a video in a NON-active tab) and push its state to the renderer.
   // The viewfinder appears only when the user is not on the media tab.
-  // A ~8fps frame stream feeds the viewfinder's curved video band.
+  // A ~4fps frame stream feeds the viewfinder's thin curved video line.
+  // The line is only ~16px wide, so 200px frames are plenty — cheap enough
+  // to never regress whole-Mac responsiveness.
   startMediaPolling(tabs, {
     send: (s) => {
       currentMediaTabId = s.hasVideo && s.background ? (s.tabId ?? null) : null;
@@ -2086,7 +2088,7 @@ app.whenReady().then(() => {
       try {
         const tabId = currentMediaTabId;
         if (!tabId || !win || win.isDestroyed() || !win.isVisible()) return;
-        const dataUrl = await captureMediaThumb(tabs, tabId, 320);
+        const dataUrl = await captureMediaThumb(tabs, tabId, 200);
         if (dataUrl && win && !win.isDestroyed()) {
           win.webContents.send('nt.media.thumb', { tabId, dataUrl });
         }
@@ -2094,7 +2096,7 @@ app.whenReady().then(() => {
         /* never break the loop on a transient capture failure */
       }
     })();
-  }, 125);
+  }, 250);
   setupUpdater({
     store,
     send: (channel, payload) => {

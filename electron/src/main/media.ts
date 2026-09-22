@@ -205,8 +205,8 @@ export async function toggleMedia(
 /**
  * Capture a live frame of the media tab's best video.
  * Crops capturePage to the video's rect and downscales — the width sets the
- * quality tier: 160px for tiny previews, 320px for the sidebar viewfinder,
- * 480px for the PiP window. Returns a data URL or null.
+ * quality tier: 160px for tiny previews, 200px for the sidebar viewfinder's
+ * thin video line, 640px for the PiP window. Returns a data URL or null.
  */
 export async function captureMediaThumb(
   tabs: TabManager,
@@ -237,7 +237,8 @@ export async function captureMediaThumb(
     if (shot.isEmpty()) return null;
     // Downscale to the requested tier — the caller picks the quality.
     const small = shot.resize({ width });
-    // JPEG at good quality: crisp enough for PiP, cheap enough for 8fps.
+    // JPEG at good quality: crisp enough for PiP, cheap enough for the
+    // low-fps viewfinder stream.
     return 'data:image/jpeg;base64,' + small.toJPEG(82).toString('base64');
   } catch {
     return null;

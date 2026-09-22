@@ -569,34 +569,15 @@ input[type="color"].nt-color::-webkit-color-swatch {
 /* Wide invisible hit lane so drag-seek is easy along the curve. */
 .nt-vf-seam-hit {
   stroke: rgba(0, 0, 0, 0);
-  stroke-width: 20;
+  stroke-width: 22;
   pointer-events: stroke;
   cursor: pointer;
   touch-action: none;
 }
-/* Playhead knob: the visible drag handle riding the curve. cx/cy are
-   transitioned over the same 1s linear sweep as the progress line so the
-   dot and the ember line never separate; the transition is cut while
-   dragging so the knob tracks the pointer exactly. */
-.nt-vf-knob {
-  fill: var(--nt-accent);
-  stroke: rgba(20, 12, 4, 0.55);
-  stroke-width: 1.5;
-  filter: drop-shadow(0 0 5px rgba(232, 163, 61, 0.85));
-  pointer-events: none;
-  transform-box: fill-box;
-  transform-origin: center;
-  transition: cx 1s linear, cy 1s linear, transform 0.15s ease;
-}
-.nt-vf-knob[data-hot="true"] {
-  transform: scale(1.45);
-}
-.nt-vf-knob[data-drag="true"] {
-  transition: transform 0.15s ease;
-}
-/* Transport: play/pause + PiP, seated between the timeline and the film —
-   inside the curve, never outside or below. Positioned per frame by the
-   geometry loop (left/top via transform). No card, no bubble, no background. */
+/* Transport: play/pause + PiP, seated BETWEEN the video line and the
+   timeline at notch height — inside the curve, never outside or below.
+   Positioned per frame by the geometry loop (left/top via transform).
+   No card, no bubble, no background. */
 .nt-vf-btns {
   position: absolute;
   left: 0;
@@ -609,7 +590,7 @@ input[type="color"].nt-color::-webkit-color-swatch {
 .nt-media-viewfinder[data-on="true"] .nt-vf-btns {
   pointer-events: auto;
 }
-/* Thin curved thumbnail film hugging the timeline. The image is clipped to
+/* Thin curved video line hugging the timeline. The image is clipped to
    the strip polygon; the edge is a hairline ember stroke. Nothing renders
    until a live frame arrives. */
 .nt-vf-film-edge {
@@ -617,17 +598,17 @@ input[type="color"].nt-color::-webkit-color-swatch {
   stroke: rgba(232, 163, 61, 0.4);
   stroke-width: 1;
 }
-/* Paused indicator: a soft play glyph floating over the video band. */
+/* Paused indicator: a small play glyph on the video line at notch height.
+   Positioned per frame by the geometry loop (left/top via transform). */
 .nt-vf-paused {
   position: absolute;
-  left: 50%;
-  top: 50%;
-  transform: translate(-50%, -50%);
+  left: 0;
+  top: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 36px;
-  height: 36px;
+  width: 26px;
+  height: 26px;
   border-radius: 50%;
   background: rgba(0, 0, 0, 0.45);
   color: #fff;
