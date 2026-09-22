@@ -1,9 +1,9 @@
-version: 0.6.6
+version: 0.6.7
 files:
   - kind: mac-zip
-    url: https://filebin.net/nexttoken-v0666-release/Next-Token-0.6.6-arm64-mac.zip
-    sha512: tOzQN0yfDVIxksvDwvcI4gQjdLEnKJdFfqCHG3Rly+H8c++kFG7V4HeUecm8UdAQQ4PAE2K+pNQfyWfwmc6Zhw==
-    size: 344441746
-path: Next-Token-0.6.6-arm64-mac.zip
-sha512: tOzQN0yfDVIxksvDwvcI4gQjdLEnKJdFfqCHG3Rly+H8c++kFG7V4HeUecm8UdAQQ4PAE2K+pNQfyWfwmc6Zhw==
-releaseDate: '2026-09-22T15:26:18.000Z'
+    url: https://github.com/iamShubhankarraj/nexttoken/releases/download/v0.6.7/Next-Token-0.6.7-arm64-mac.zip
+    sha512: gQOXngOWnCkMgwf1p/X0/3gUFbQKoG6vgpndq163i8047BGhiR/CxHL+KC76A4RGLPpEEI5bzWmqTMtRhpf7wA==
+    size: 127071288
+path: Next-Token-0.6.7-arm64-mac.zip
+sha512: gQOXngOWnCkMgwf1p/X0/3gUFbQKoG6vgpndq163i8047BGhiR/CxHL+KC76A4RGLPpEEI5bzWmqTMtRhpf7wA==
+releaseDate: '2026-09-23T04:25:00.000Z'
