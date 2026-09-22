@@ -59,6 +59,11 @@ import {
   revealDownload,
   GUEST_PARTITION,
 } from './webengine';
+// v0.6.3 (impl-5: managers & browser settings) — own modules, own IPC below.
+import * as downloads from './downloads';
+import * as siteZoom from './siteZoom';
+import * as httpsUpgrade from './httpsUpgrade';
+import * as startup from './startup';
 import { VoiceEngine, type CleanupPrompt } from './voice';
 import { allowIpcSender, revokeIpcSender, guardedHandle, guardedOn } from './ipcGuard';
 import { registerSearchIpc } from './search';
@@ -515,6 +520,8 @@ function snapshot(): BrowserSnapshot {
     agentPanelOpen: d.agentPanelOpen,
     sidebarWidth: d.sidebarWidth ?? null,
     agentPanelWidth: d.agentPanelWidth ?? null,
+    // v0.6.3 (impl-5): bookmarks bar visibility + scope.
+    bookmarksBar: { visible: d.bookmarksBar.visible, scope: d.bookmarksBar.scope },
     settingsOpen
   };
 }
@@ -806,7 +813,14 @@ function registerIpc() {
     } catch {
       /* noop */
     }
-    return Math.round(Math.pow(1.2, level) * 100);
+    const percent = Math.round(Math.pow(1.2, level) * 100);
+    // v0.6.3 (impl-5): remember the zoom for this origin.
+    try {
+      siteZoom.recordZoom(store, wc.getURL(), percent);
+    } catch {
+      /* never break zoom on a store write */
+    }
+    return percent;
   });
   // Find in page for the active tab's guest.
   guardedHandle('nt.tabs.find', (_e, query: string) => {
@@ -958,8 +972,8 @@ function registerIpc() {
   });
 
   // -- bookmarks (per Bit) ------------------------------------------------------
-  guardedHandle('nt.bookmarks.add', (_e, spaceId: string, name: string, url: string): BookmarkState[] => {
-    const list = store.addBookmark(spaceId, name, url);
+  guardedHandle('nt.bookmarks.add', (_e, spaceId: string, name: string, url: string, folder?: string): BookmarkState[] => {
+    const list = store.addBookmark(spaceId, name, url, folder);
     sendSnapshot();
     return list;
   });
@@ -972,6 +986,22 @@ function registerIpc() {
     const list = store.removeBookmark(spaceId, id);
     sendSnapshot();
     return list;
+  });
+  // -- v0.6.3 (impl-5): bookmarks manager + bar --------------------------------
+  guardedHandle('nt.bookmarks.move', (_e, fromSpaceId: string, id: string, toSpaceId: string) => {
+    store.moveBookmark(String(fromSpaceId), String(id), String(toSpaceId));
+    sendSnapshot();
+  });
+  guardedHandle('nt.bookmarks.bar-get', () => ({
+    visible: store.d.bookmarksBar.visible,
+    scope: store.d.bookmarksBar.scope,
+  }));
+  guardedHandle('nt.bookmarks.bar-set', (_e, v: { visible?: boolean; scope?: 'bit' | 'all' }) => {
+    if (typeof v?.visible === 'boolean') store.d.bookmarksBar.visible = v.visible;
+    if (v?.scope === 'bit' || v?.scope === 'all') store.d.bookmarksBar.scope = v.scope;
+    store.saveSoon();
+    sendSnapshot();
+    return { visible: store.d.bookmarksBar.visible, scope: store.d.bookmarksBar.scope };
   });
 
   // -- import from other browsers (explicit user action only) --------------------
@@ -1341,6 +1371,85 @@ function registerIpc() {
     })
   );
   guardedHandle('nt.privacy.history', () => store.d.history.slice(0, 200));
+  // -- v0.6.3 (impl-5): downloads manager ------------------------------------
+  guardedHandle('nt.downloads.list', () => downloads.listRecords());
+  guardedHandle('nt.downloads.pause', (_e, id: string) => { downloads.pauseDownload(String(id)); });
+  guardedHandle('nt.downloads.resume', (_e, id: string) => { downloads.resumeDownload(String(id)); });
+  guardedHandle('nt.downloads.cancel', (_e, id: string) => { downloads.cancelDownload(String(id)); });
+  guardedHandle('nt.downloads.retry', (_e, id: string) => {
+    downloads.retryDownload(String(id), tabs.activeWebContents());
+  });
+  guardedHandle('nt.downloads.clear-finished', () => { downloads.clearFinished(); });
+  guardedHandle('nt.downloads.open', (_e, targetPath: string) => {
+    if (typeof targetPath === 'string') void downloads.openDownload(targetPath);
+  });
+  guardedHandle('nt.downloads.get-dir', () => ({
+    dir: store.d.downloads.dir,
+    defaultDir: (() => {
+      try {
+        return app.getPath('downloads');
+      } catch {
+        return '';
+      }
+    })(),
+  }));
+  guardedHandle('nt.downloads.pick-dir', async () => {
+    const dir = await downloads.pickDownloadDir(store);
+    let defaultDir = '';
+    try {
+      defaultDir = app.getPath('downloads');
+    } catch {
+      /* noop */
+    }
+    return { dir, defaultDir };
+  });
+  guardedHandle('nt.downloads.set-dir', (_e, dir: string | null) => {
+    const clean = typeof dir === 'string' && dir.trim() ? dir.trim() : null;
+    store.d.downloads.dir = clean;
+    store.saveSoon();
+    return { dir: clean, defaultDir: clean ?? '' };
+  });
+  guardedHandle('nt.downloads.auto-open-get', () => [...store.d.downloads.autoOpenTypes]);
+  guardedHandle('nt.downloads.auto-open-set', (_e, exts: string[]) =>
+    downloads.setAutoOpenTypes(store, exts)
+  );
+  // -- v0.6.3 (impl-5): history manager --------------------------------------
+  guardedHandle('nt.history.list', (_e, limit?: number) =>
+    store.d.history.slice(0, Math.min(Math.max(Number(limit) || 300, 1), 1000))
+  );
+  guardedHandle('nt.history.search', (_e, query: string, limit?: number) =>
+    store.searchHistory(String(query ?? ''), Math.min(Math.max(Number(limit) || 300, 1), 1000))
+  );
+  guardedHandle('nt.history.delete', (_e, at: number, url: string) => {
+    store.deleteHistoryEntry(Number(at), String(url));
+  });
+  guardedHandle('nt.history.clear-range', (_e, range: string) => {
+    const now = Date.now();
+    const since =
+      range === 'hour' ? now - 3_600_000 :
+      range === 'day' ? now - 86_400_000 :
+      range === 'week' ? now - 7 * 86_400_000 : 0;
+    store.clearHistorySince(since);
+    sendSnapshot();
+  });
+  // -- v0.6.3 (impl-5): per-origin zoom memory --------------------------------
+  guardedHandle('nt.zoom.list', () => siteZoom.listZooms(store));
+  guardedHandle('nt.zoom.reset', (_e, origin: string) =>
+    siteZoom.resetZoom(store, (cb) => tabs.forEachWebContents((_tab, wc) => cb(wc)), String(origin))
+  );
+  guardedHandle('nt.privacy.set-https-upgrade', (_e, enabled: boolean) => {
+    store.d.privacy.httpsUpgrade = enabled === true;
+    store.saveSoon();
+    return snapshotPrivacy(store);
+  });
+  // -- v0.6.3 (impl-5): on-launch behavior + default browser -----------------
+  guardedHandle('nt.startup.get', () => ({ ...store.d.startup }));
+  guardedHandle('nt.startup.set', (_e, v: { mode?: unknown; pages?: unknown }) =>
+    startup.setStartupSettings(store, v ?? {})
+  );
+  guardedHandle('nt.startup.is-default', () => startup.isDefaultBrowser());
+  guardedHandle('nt.startup.make-default', () => startup.makeDefaultBrowser());
+  guardedHandle('nt.startup.nudge', () => startup.nudgeState(store));
   // -- address-bar site panel (connection info; own module) ----------------
   registerSiteInfoIpc(tabs);
   guardedHandle('nt.adblock.set-enabled', (_e, enabled: boolean): AdBlockState => {
@@ -1730,6 +1839,10 @@ app.whenReady().then(() => {
     },
     store,
   });
+  // v0.6.3 (impl-5): downloads pause/resume events use the same channel.
+  downloads.bindSend((payload) => {
+    if (win && !win.isDestroyed()) win.webContents.send('nt.downloads.event', payload);
+  });
   tabs = new TabManager(
     store,
     () => sendSnapshot(),
@@ -1738,6 +1851,13 @@ app.whenReady().then(() => {
       if (d.type === 'url') adblocker.noteNavigation(d.tabId, String(d.value));
       // A navigation changes the restorable session — persist it (debounced).
       if (d.type === 'url') tabs.persistSessionSoon();
+      if (d.type === 'url') {
+        // v0.6.3 (impl-5): per-origin zoom memory + HTTPS-Strict upgrade.
+        const url = String(d.value);
+        const tab = tabs.tabs.get(d.tabId);
+        siteZoom.applyForTab(store, tab, url);
+        httpsUpgrade.maybeUpgrade(store, tab, d.tabId, url);
+      }
       win?.webContents.send('nt.tab-delta', d);
     },
     {
@@ -1976,10 +2096,13 @@ app.whenReady().then(() => {
   );
   createWindow();
 
-  // Restore pinned tabs + last session's open tabs; guarantee at least one tab in the active space.
-  tabs.restorePinned();
-  tabs.restoreSessions();
-  ensureSpaceTab(store.d.activeSpaceId);
+  // v0.6.3 (impl-5): on-launch behavior — restore session / new tab /
+  // specific pages. Pinned tabs always restore.
+  startup.applyLaunchBehavior({
+    store,
+    tabs,
+    ensureSpaceTab,
+  });
   const firstId = tabs.lastActiveTabId(store.d.activeSpaceId);
   if (firstId) tabs.activate(firstId);
   sendSnapshot();
