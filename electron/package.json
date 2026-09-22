@@ -2,6 +2,7 @@
   "author": "Next Token",
   "dependencies": {
     "@ghostery/adblocker-electron": "^2.18.2",
+    "@mozilla/readability": "0.6.0",
     "bplist-parser": "^0.5.0",
     "electron-updater": "^6.8.9",
     "lucide-react": "^1.47.0",
@@ -34,7 +35,9 @@
     "dist": "npm run build && electron-builder --mac --arm64",
     "dist:dir": "npm run build && electron-builder --mac --arm64 --dir",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
-    "smoke": "node scripts/smoke.mjs"
+    "smoke": "node scripts/smoke.mjs",
+    "test:adblock": "node scripts/adblock-test.mjs",
+    "bench:adblock": "node scripts/adblock-bench.mjs"
   },
   "version": "0.6.2"
 }

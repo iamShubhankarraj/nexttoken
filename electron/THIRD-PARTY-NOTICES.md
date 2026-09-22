@@ -69,3 +69,15 @@ licensed under the MIT License.
 
 - Source: https://github.com/joeferner/node-bplist-parser
 - License: MIT (Copyright (c) 2012 Joe Ferner)
+
+## @mozilla/readability — Reader mode article extraction (Apache-2.0)
+
+Next Token's Reader mode (`electron/src/main/reader.ts`) detects
+article-like pages with `isProbablyReaderable` and extracts the article
+with the Readability parser from **@mozilla/readability** by Mozilla,
+licensed under the Apache License 2.0. The library is loaded at runtime
+from node_modules and executed inside the guest page's main world; no
+page content is sent anywhere.
+
+- Source: https://github.com/mozilla/readability
+- License: Apache License 2.0 (Copyright (c) 2010 Arc90 Inc, Copyright (c) Mozilla)
