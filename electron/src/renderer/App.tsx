@@ -9,12 +9,19 @@
  * tokens are applied as inline style on the app root (id="nt-root"),
  * so switching spaces visibly re-skins the chrome (delight moment).
  *
- * Global shortcuts:
+ * Global shortcuts (all work with page focus — guest <webview> keys are
+ * forwarded via the before-input-event bridge in main):
  *   ⌘/Ctrl+K ……… command bar
  *   ⌘/Ctrl+E ……… toggle agent panel
  *   ⌘/Ctrl+T ……… new tab
- *   ⌘/Ctrl+1…9 …… switch space
- *   ⌘/Ctrl+S ……… toggle sidebar
+ *   ⌘/Ctrl+Shift+T … reopen last closed tab
+ *   ⌘/Ctrl+W ……… close active tab
+ *   ⌘/Ctrl+L ……… focus the omnibox
+ *   ⌘/Ctrl+1…9 …… switch Bit
+ *   ⌘/Ctrl+B ……… toggle sidebar
+ *   ⌘/Ctrl+F ……… find in page
+ *   ⌘/Ctrl+D ……… bookmark this page
+ *   ⌘/Ctrl+= / - / 0 … guest zoom in / out / reset
  *   Alt+V / ⌘/Ctrl+Shift+V … voice command listening
  *   Esc …………… close topmost overlay / cancel split-pick
  */
@@ -30,6 +37,7 @@ import { FindBar } from "./components/FindBar";
 import { ImportDialog } from "./components/ImportDialog";
 import { NewTabHero } from "./components/NewTabHero";
 import { Settings } from "./components/Settings";
+import { ShortcutCheatsheet } from "./components/ShortcutCheatsheet";
 import { Sidebar } from "./components/Sidebar";
 import { TabViews } from "./components/TabView";
 import { VoiceSession } from "./components/VoiceSession";
@@ -61,6 +69,8 @@ function Shell() {
     setSplitPick,
   } = useBrowser();
   const [commandOpen, setCommandOpen] = useState(false);
+  // Keyboard-shortcut cheatsheet (⌘K → "Keyboard shortcuts").
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   // Models nudge: main asks us to open Settings → Models, optionally
   // highlighting one task section (vision-missing nudge).
   const [modelsFocus, setModelsFocus] = useState<{ task?: string } | undefined>(
@@ -88,6 +98,13 @@ function Shell() {
     const open = () => setCommandOpen(true);
     window.addEventListener("nt:open-command-bar", open);
     return () => window.removeEventListener("nt:open-command-bar", open);
+  }, []);
+
+  // Shortcut cheatsheet (opened from ⌘K → "Keyboard shortcuts").
+  useEffect(() => {
+    const open = () => setShortcutsOpen(true);
+    window.addEventListener("nt:open-shortcuts", open);
+    return () => window.removeEventListener("nt:open-shortcuts", open);
   }, []);
 
   // Main-process nudge: open Settings → Models (e.g. a vision task found no
@@ -198,8 +215,18 @@ function Shell() {
           void nt().uiSetAgentPanelOpen(!snapshot.agentPanelOpen);
       } else if (k === "t") {
         e.preventDefault();
-        void nt().tabsCreate({});
-      } else if (k === "s") {
+        // ⌘⇧T reopens the last closed tab; plain ⌘T opens a new one.
+        if (e.shiftKey) void nt().tabsReopenClosed();
+        else void nt().tabsCreate({});
+      } else if (k === "w") {
+        e.preventDefault();
+        if (activeTab) void nt().tabsClose(activeTab.id);
+      } else if (k === "l") {
+        e.preventDefault();
+        window.dispatchEvent(new CustomEvent("nt:focus-omnibox"));
+      } else if (k === "b") {
+        // Sidebar toggle lives on ⌘B — ⌘S is deliberately unbound so the
+        // page keeps its own save shortcut.
         e.preventDefault();
         if (snapshot)
           void nt().uiSetSidebarCollapsed(!snapshot.sidebarCollapsed);
@@ -214,6 +241,32 @@ function Shell() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [snapshot, closeOverlays]);
+
+  // Shell shortcuts forwarded from a focused guest <webview>
+  // (before-input-event bridge in main): replay them through the same
+  // handler above via a synthetic key event, so ⌘T/⌘W/⌘K/… work with
+  // page focus. Main already preventDefault'd the guest key, and only
+  // ⌘-combos the shell owns are ever forwarded.
+  useEffect(() => {
+    let off: (() => void) | undefined;
+    try {
+      off = nt().onGuestShortcut((info) => {
+        window.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key: info.key,
+            metaKey: true,
+            shiftKey: info.shift,
+            altKey: info.alt,
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+      });
+    } catch {
+      /* bridge unavailable */
+    }
+    return () => off?.();
+  }, []);
 
   if (bridgeError) {
     return (
@@ -310,6 +363,9 @@ function Shell() {
 
       {snapshot.agentPanelOpen && <AgentPanel />}
       {commandOpen && <CommandBar onClose={() => setCommandOpen(false)} />}
+      {shortcutsOpen && (
+        <ShortcutCheatsheet onClose={() => setShortcutsOpen(false)} />
+      )}
       {findOpen && <FindBar onClose={closeFind} />}
       <DownloadPill />
       {popupBlocked && (

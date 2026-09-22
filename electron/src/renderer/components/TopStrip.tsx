@@ -145,7 +145,7 @@ export function TopStrip() {
         <AppLogo size={20} />
       </div>
       <button
-        title="Toggle sidebar (⌘S)"
+        title="Toggle sidebar (⌘B)"
         onClick={() =>
           void nt().uiSetSidebarCollapsed(!(snapshot?.sidebarCollapsed ?? false))
         }

@@ -16,13 +16,16 @@ import {
   Archive,
   ArchiveRestore,
   ArrowLeft,
+  ArrowRight,
   Bookmark as BookmarkIcon,
   BookmarkPlus,
   ChevronDown,
   ChevronRight,
+  Copy,
   Folder,
   FolderPlus,
   Globe,
+  Link,
   MoreHorizontal,
   Pencil,
   Pin,
@@ -34,6 +37,8 @@ import {
   Sparkles,
   Star,
   Trash2,
+  Volume2,
+  VolumeX,
   X,
   PanelLeftClose,
 } from "lucide-react";
@@ -1436,7 +1441,7 @@ function TabContextMenu({
       className="nt-popover nt-r-md fixed z-[70] w-56 border p-1.5 shadow-xl"
       style={{
         left: Math.min(menu.x, window.innerWidth - 240),
-        top: Math.min(menu.y, window.innerHeight - 380),
+        top: Math.min(menu.y, window.innerHeight - 620),
         background: "var(--nt-bg-overlay)",
         borderColor: "var(--nt-border)",
         boxShadow: "var(--nt-shadow-pop)",
@@ -1509,6 +1514,72 @@ function TabContextMenu({
           <Pin size={16} strokeWidth={1.75} style={{ color: "var(--nt-text-3)" }} />
         )}
         {menu.tab.pinned ? "Unpin" : "Pin"}
+      </button>
+      <div className="my-1 border-t" style={{ borderColor: "var(--nt-border)" }} />
+      <button
+        className={itemCls}
+        style={{ color: "var(--nt-text-1)" }}
+        onClick={act(() => void nt().tabsSetMuted(menu.tab.id, !menu.tab.muted))}
+        role="menuitem"
+      >
+        {menu.tab.muted ? (
+          <VolumeX size={16} strokeWidth={1.75} style={{ color: "var(--nt-text-3)" }} />
+        ) : (
+          <Volume2 size={16} strokeWidth={1.75} style={{ color: "var(--nt-text-3)" }} />
+        )}
+        {menu.tab.muted ? "Unmute tab" : "Mute tab"}
+      </button>
+      <button
+        className={itemCls}
+        style={{ color: "var(--nt-text-1)" }}
+        onClick={act(() => void nt().tabsDuplicate(menu.tab.id))}
+        role="menuitem"
+      >
+        <Copy size={16} strokeWidth={1.75} style={{ color: "var(--nt-text-3)" }} />
+        Duplicate tab
+      </button>
+      <button
+        className={itemCls}
+        style={{ color: "var(--nt-text-1)" }}
+        onClick={act(() => void nt().tabsReloadTab(menu.tab.id))}
+        role="menuitem"
+      >
+        <RotateCw size={16} strokeWidth={1.75} style={{ color: "var(--nt-text-3)" }} />
+        Reload tab
+      </button>
+      <button
+        className={itemCls}
+        style={{ color: "var(--nt-text-1)" }}
+        onClick={act(() => {
+          try {
+            void navigator.clipboard.writeText(menu.tab.url).catch(() => {});
+          } catch {
+            /* clipboard unavailable */
+          }
+        })}
+        role="menuitem"
+      >
+        <Link size={16} strokeWidth={1.75} style={{ color: "var(--nt-text-3)" }} />
+        Copy URL
+      </button>
+      <div className="my-1 border-t" style={{ borderColor: "var(--nt-border)" }} />
+      <button
+        className={itemCls}
+        style={{ color: "var(--nt-text-1)" }}
+        onClick={act(() => void nt().tabsCloseOthers(menu.tab.id))}
+        role="menuitem"
+      >
+        <X size={16} strokeWidth={1.75} style={{ color: "var(--nt-text-3)" }} />
+        Close other tabs
+      </button>
+      <button
+        className={itemCls}
+        style={{ color: "var(--nt-text-1)" }}
+        onClick={act(() => void nt().tabsCloseRight(menu.tab.id))}
+        role="menuitem"
+      >
+        <ArrowRight size={16} strokeWidth={1.75} style={{ color: "var(--nt-text-3)" }} />
+        Close tabs to the right
       </button>
       {spaces.length > 1 && (
         <>
@@ -1642,6 +1713,31 @@ const TabRow = memo(function TabRow({
           >
             {tab.title || "New tab"}
           </p>
+          {/* Audio indicator: visible while the tab makes sound or is
+              muted; click toggles mute. Always visible in those states so
+              the user can spot (and silence) a noisy tab at a glance. */}
+          {(tab.audible || tab.muted) && (
+            <button
+              title={tab.muted ? "Unmute tab" : "Mute tab"}
+              aria-label={tab.muted ? "Unmute tab" : "Mute tab"}
+              onClick={(e) => {
+                e.stopPropagation();
+                void nt().tabsSetMuted(tab.id, !tab.muted);
+              }}
+              className="nt-r-sm shrink-0 p-1 transition-colors hover:bg-[var(--nt-bg-hover)]"
+              style={{
+                color: tab.muted
+                  ? "var(--nt-text-faint)"
+                  : "var(--nt-accent)",
+              }}
+            >
+              {tab.muted ? (
+                <VolumeX size={13} strokeWidth={1.75} />
+              ) : (
+                <Volume2 size={13} strokeWidth={1.75} />
+              )}
+            </button>
+          )}
           <span className="hidden shrink-0 items-center gap-0.5 group-hover:flex">
             <button
               title={tab.pinned ? "Unpin" : "Pin"}

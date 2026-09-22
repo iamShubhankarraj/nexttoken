@@ -13,6 +13,13 @@ export interface TabHooks {
   /** Fired when a guest page shows a context menu (e.g. right-click on video). */
   onContextMenu?: (wc: WebContents, params: ContextMenuParams) => void;
   /**
+   * Fired when a ⌘-shortcut the shell owns is pressed while a guest
+   * <webview> has focus (before-input-event bridge). Main already called
+   * preventDefault so the page never sees the key; index.ts replays it to
+   * the shell window so ⌘T/⌘W/⌘K/… work with page focus.
+   */
+  onGuestShortcut?: (tabId: string, key: GuestKeyInfo) => void;
+  /**
    * Fired when the guest asks to open a URL in a new window/tab
    * (target=_blank, window.open, cmd/middle-click). Main decides what to
    * do with it (open a real tab); tabs.ts just routes the request.
@@ -49,7 +56,31 @@ export interface TabRec {
   wc: WebContents | null;
   canGoBack: boolean;
   canGoForward: boolean;
+  /** Tab-level mute (sidebar speaker toggle / context menu). */
+  muted: boolean;
+  /** Currently producing sound (media-started-playing / media-paused). */
+  audible: boolean;
 }
+
+/** Key info forwarded from a guest's before-input-event (⌘-only). */
+export interface GuestKeyInfo {
+  /** Lowercased key, e.g. 't' (shift state carried separately). */
+  key: string;
+  shift: boolean;
+  alt: boolean;
+}
+
+/**
+ * ⌘-shortcuts the shell owns. Guest <webview>s swallow keys, so these are
+ * intercepted in before-input-event and replayed to the shell window.
+ * Only ⌘ (meta) combos are ever intercepted — web apps keep every other
+ * key (⌘C/⌘V/⌘A etc. are NOT in this set and stay with the page).
+ */
+const SHELL_SHORTCUT_KEYS = new Set([
+  't', 'w', 'l', 'k', 'e', 'f', 'd', 'b',
+  '1', '2', '3', '4', '5', '6', '7', '8', '9',
+  '=', '+', '-', '_', '0',
+]);
 
 /** Fresh tabs open a blank titled page — the renderer draws the large
  * centered command bar over it (Dia pattern: no tile page). A data: URL
@@ -61,6 +92,9 @@ const START_URL =
 export function resolveInput(raw: string, searchEngine: string): string {
   const t = raw.trim();
   if (!t) return START_URL;
+  // Script schemes can never be a navigation target — even the `scheme://`
+  // form below would otherwise pass them through to loadURL.
+  if (/^(javascript|vbscript):/i.test(t)) return searchEngine + encodeURIComponent(t);
   // Already a full URL or an internal page — pass through untouched.
   if (/^(data|about|file):/i.test(t)) return t;
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(t)) return t; // has a scheme
@@ -111,7 +145,8 @@ export class TabManager {
       folderId: null,
       favicon: this.faviconFor(url),
       lastActive: Date.now(), wc: null,
-      canGoBack: false, canGoForward: false
+      canGoBack: false, canGoForward: false,
+      muted: false, audible: false
     };
     this.tabs.set(tab.id, tab);
     this.order.push(tab.id);
@@ -252,6 +287,33 @@ export class TabManager {
     // (copy address, open in new tab) when right-clicking a video element.
     wc.on('context-menu', (_e, params) => {
       try { this.hooks?.onContextMenu?.(wc, params); } catch { /* noop */ }
+    });
+    // Shell shortcuts with page focus: guest <webview>s swallow keys, so
+    // intercept the ⌘-combos the shell owns here and replay them to the
+    // shell window via the onGuestShortcut hook. preventDefault stops the
+    // page from also acting on the key. Only ⌘ (meta) combos in
+    // SHELL_SHORTCUT_KEYS are intercepted — web apps keep their own keys.
+    wc.on('before-input-event', (event, input) => {
+      if (!input.meta || input.type !== 'keyDown' || typeof input.key !== 'string') return;
+      const key = input.key.toLowerCase();
+      if (!SHELL_SHORTCUT_KEYS.has(key)) return;
+      try { event.preventDefault(); } catch { /* noop */ }
+      try {
+        this.hooks?.onGuestShortcut?.(tab.id, { key, shift: !!input.shift, alt: !!input.alt });
+      } catch { /* noop */ }
+    });
+    // Per-tab audio state for the sidebar speaker indicator.
+    wc.on('media-started-playing', () => {
+      if (!tab.audible) {
+        tab.audible = true;
+        this.onDelta({ tabId: tab.id, type: 'audible', value: true });
+      }
+    });
+    wc.on('media-paused', () => {
+      if (tab.audible) {
+        tab.audible = false;
+        this.onDelta({ tabId: tab.id, type: 'audible', value: false });
+      }
     });
     wc.once('destroyed', () => { tab.wc = null; });
   }
@@ -586,16 +648,27 @@ export class TabManager {
     if (!origin.startsWith('http')) return;
     const p = this.store.d.privacy;
     try {
-      if (p.muted[origin]) wc.setAudioMuted(true);
+      if (p.muted[origin]) {
+        wc.setAudioMuted(true);
+        // Keep the tab record in sync so the sidebar speaker shows muted.
+        if (!tab.muted) {
+          tab.muted = true;
+          this.onDelta({ tabId: tab.id, type: 'muted', value: true });
+        }
+      }
     } catch {
       /* noop */
     }
-    // Per-site block, or the global autoplay default when the site has no
-    // override (backend stores only "block" or no-override per site).
-    const autoplayBlocked =
-      p.autoplay[origin] === 'block' ||
-      (p.autoplay[origin] === undefined && p.defaults['autoplay'] === 'block');
-    if (autoplayBlocked) {
+    // Per-site autoplay policy: per-site override, else the global
+    // default (unset = 'ask'). 'block' AND 'ask' install the play
+    // interceptor — playback waits for real user activation
+    // (document-user-activation-required semantics). 'allow' bypasses it
+    // entirely. Electron has no per-webContents autoplay content-setting
+    // API, hence the capture-phase play interceptor.
+    const perSite = p.autoplay[origin];
+    const policy = perSite === 'block' ? 'block' : (p.defaults['autoplay'] ?? 'ask');
+    const interceptAutoplay = policy === 'block' || policy === 'ask';
+    if (interceptAutoplay) {
       try {
         void wc
           .executeJavaScript(
@@ -658,6 +731,54 @@ export class TabManager {
   reload() { try { this.active()?.wc?.reload(); } catch { /* noop */ } }
   stop() { try { this.active()?.wc?.stop(); } catch { /* noop */ } }
 
+  /** Reload a specific tab (not just the active one). */
+  reloadTab(tabId: string) {
+    try { this.tabs.get(tabId)?.wc?.reload(); } catch { /* noop */ } }
+
+  /** Tab-level mute toggle (sidebar speaker icon / context menu). */
+  setMuted(tabId: string, muted: boolean) {
+    const tab = this.tabs.get(tabId);
+    if (!tab || tab.muted === muted) return;
+    tab.muted = muted;
+    try { tab.wc?.setAudioMuted(muted); } catch { /* noop */ }
+    this.onDelta({ tabId, type: 'muted', value: muted });
+  }
+
+  /** Duplicate a tab in its Bit, placed right after the original. */
+  duplicate(tabId: string): TabRec | null {
+    const tab = this.tabs.get(tabId);
+    if (!tab) return null;
+    const dup = this.create(tab.spaceId, tab.url);
+    dup.title = tab.title;
+    const sibs = this.orderedTabs(tab.spaceId);
+    const idx = sibs.findIndex((t) => t.id === tabId);
+    const next = sibs[idx + 1];
+    this.reorder(dup.id, next && next.id !== dup.id ? next.id : null, tab.folderId);
+    this.activate(dup.id);
+    return dup;
+  }
+
+  /** Close every other unpinned tab in the tab's Bit. */
+  closeOthers(tabId: string) {
+    const tab = this.tabs.get(tabId);
+    if (!tab) return;
+    for (const t of this.orderedTabs(tab.spaceId)) {
+      if (t.id !== tabId && !t.pinned) this.close(t.id);
+    }
+  }
+
+  /** Close unpinned tabs to the right of the tab in sidebar order. */
+  closeRight(tabId: string) {
+    const tab = this.tabs.get(tabId);
+    if (!tab) return;
+    const sibs = this.orderedTabs(tab.spaceId);
+    const idx = sibs.findIndex((t) => t.id === tabId);
+    if (idx === -1) return;
+    for (const t of sibs.slice(idx + 1)) {
+      if (!t.pinned) this.close(t.id);
+    }
+  }
+
   // -- archive ----------------------------------------------------------------
   archive(tabId: string, manual = false) {
     const tab = this.tabs.get(tabId);
@@ -703,6 +824,7 @@ export class TabManager {
     return {
       id: tab.id, spaceId: tab.spaceId, url: tab.url, title: tab.title,
       loading: tab.loading, pinned: tab.pinned,
+      muted: tab.muted, audible: tab.audible,
       favicon: tab.favicon ?? this.faviconFor(tab.url),
       folderId: tab.folderId,
       canGoBack: tab.canGoBack, canGoForward: tab.canGoForward

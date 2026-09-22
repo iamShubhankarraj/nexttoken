@@ -52,6 +52,13 @@ export function Omnibox() {
     setOverride("auto");
   };
 
+  // ⌘L (focus omnibox) — dispatched by the shell shortcut handler.
+  useEffect(() => {
+    const focus = () => startEditing();
+    window.addEventListener("nt:focus-omnibox", focus);
+    return () => window.removeEventListener("nt:focus-omnibox", focus);
+  }, []);
+
   const submit = (raw: string) => {
     const value = raw;
     cancel();
