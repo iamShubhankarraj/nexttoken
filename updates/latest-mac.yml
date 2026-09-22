@@ -1,8 +1,9 @@
 version: 0.6.5
 files:
-  - url: https://drive.google.com/uc?id=1qOanSTz9nED2sMpLGS12jb7RRTKdzkeG&export=download
+  - kind: mac-zip
+    url: https://drive.google.com/uc?id=1qOanSTz9nED2sMpLGS12jb7RRTKdzkeG&export=download
     sha512: We8VogxwE8yd7oyFGz6S6JcOK8EfQT/i7Kwh86JrgBHiAwl666NfDRCNQJO3SIYTpepn6I7gzeKlTgcqQ/y+cg==
     size: 344441151
 path: Next-Token-0.6.5-arm64-mac.zip
 sha512: We8VogxwE8yd7oyFGz6S6JcOK8EfQT/i7Kwh86JrgBHiAwl666NfDRCNQJO3SIYTpepn6I7gzeKlTgcqQ/y+cg==
-releaseDate: '2026-09-22T12:11:16.000Z'
+releaseDate: '2026-09-22T12:11:48.000Z'
