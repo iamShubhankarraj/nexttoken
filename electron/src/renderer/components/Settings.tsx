@@ -20,7 +20,6 @@ import {
   Palette,
   Plug,
   Plus,
-  Search,
   Shield,
   Trash2,
   Volume2,
@@ -40,6 +39,7 @@ import { nt } from "../nt";
 import { openImportDialog } from "./ImportDialog";
 import { ModelsPanel } from "./ModelsPanel";
 import { PrivacyAdvanced } from "./PrivacyAdvanced";
+import { SearchEnginePicker } from "./SearchEnginePicker";
 import { AppLogo } from "./AppLogo";
 import { SkillsSection } from "./SettingsSkills";
 import { ThemeEditor } from "./ThemeEditor";
@@ -716,9 +716,7 @@ function VoiceSearchSection() {
     quickCleanMaxWords: 12,
     micDeviceId: "",
   });
-  const [engine, setEngine] = useState("");
   const [loaded, setLoaded] = useState(false);
-  const [savedTick, setSavedTick] = useState(false);
   const [mics, setMics] = useState<{ deviceId: string; label: string }[]>([]);
   const supported =
     typeof window !== "undefined" &&
@@ -726,11 +724,10 @@ function VoiceSearchSection() {
 
   useEffect(() => {
     let alive = true;
-    Promise.all([nt().settingsGetVoice(), nt().settingsGetSearchEngine()])
-      .then(([v, e]) => {
+    Promise.all([nt().settingsGetVoice()])
+      .then(([v]) => {
         if (!alive) return;
         setVoice(v);
-        setEngine(e);
         setLoaded(true);
       })
       .catch(() => setLoaded(true));
@@ -756,16 +753,6 @@ function VoiceSearchSection() {
   const setVoiceCfg = (next: VoiceSettings) => {
     setVoice(next);
     nt().settingsSetVoice(next).catch(() => {});
-  };
-
-  const saveEngine = () => {
-    nt()
-      .settingsSetSearchEngine(engine.trim())
-      .then(() => {
-        setSavedTick(true);
-        setTimeout(() => setSavedTick(false), 1600);
-      })
-      .catch(() => {});
   };
 
   if (!loaded) {
@@ -875,30 +862,9 @@ function VoiceSearchSection() {
           className="mb-2 flex items-center gap-2 text-[13px] font-semibold"
           style={{ color: "var(--nt-text-1)" }}
         >
-          <Search size={14} strokeWidth={1.75} /> Search engine
+          Search engine
         </h3>
-        <p className="mb-2 text-[12px]" style={{ color: "var(--nt-text-3)" }}>
-          Used when the address bar input isn't a URL. Use{" "}
-          <code className="nt-r-sm bg-[var(--nt-bg-hover)] px-1">%s</code> for
-          the query.
-        </p>
-        <div className="flex gap-2">
-          <input
-            value={engine}
-            onChange={(e) => setEngine(e.target.value)}
-            placeholder="https://www.google.com/search?q=%s"
-            spellCheck={false}
-            className="nt-r-sm flex-1 border bg-[var(--nt-bg-base)] px-3 py-2 text-[13px] outline-none placeholder:text-[var(--nt-text-3)] focus:border-[var(--nt-accent)]"
-            style={{ borderColor: "var(--nt-border)", color: "var(--nt-text-1)" }}
-          />
-          <button
-            onClick={saveEngine}
-            className="nt-r-sm flex items-center gap-1.5 px-4 py-2 text-[13px] font-semibold transition-transform hover:scale-[1.02]"
-            style={{ background: "var(--nt-accent)", color: "var(--nt-accent-text)" }}
-          >
-            {savedTick ? "Saved ✓" : "Save"}
-          </button>
-        </div>
+        <SearchEnginePicker />
       </div>
 
       <div>
@@ -1021,8 +987,16 @@ function PrivacySection() {
   const [state, setState] = useState<AdBlockState>({
     enabled: true,
     allowedHosts: [],
+    ready: false,
+    ruleCount: 0,
+    listsLoaded: 0,
+    listsTotal: 0,
+    lastUpdatedMs: null,
+    failedLists: [],
+    resourcesDegraded: false,
   });
   const [loaded, setLoaded] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -1049,6 +1023,23 @@ function PrivacySection() {
     void nt().adblockSetSiteAllowed(host, false).then(setState).catch(() => {});
   };
 
+  const refreshLists = () => {
+    setRefreshing(true);
+    void nt()
+      .adblockRefresh()
+      .then(setState)
+      .catch(() => {})
+      .finally(() => setRefreshing(false));
+  };
+
+  const updatedLabel = (() => {
+    if (state.lastUpdatedMs === null) return "never";
+    const mins = Math.max(0, Math.round((Date.now() - state.lastUpdatedMs) / 60000));
+    if (mins < 1) return "just now";
+    if (mins < 60) return `${mins}m ago`;
+    return `${Math.round(mins / 60)}h ago`;
+  })();
+
   if (!loaded) {
     return (
       <p className="text-[13px]" style={{ color: "var(--nt-text-3)" }}>
@@ -1069,10 +1060,48 @@ function PrivacySection() {
         <div className="space-y-2">
           <ToggleRow
             label="Block ads and trackers"
-            hint="Built-in filter list, enforced at the network layer. No remote lists are ever fetched."
+            hint="Native engine (EasyList, EasyPrivacy, uBlock Origin filters). Lists are fetched from a CDN mirror, stored on this device, and refreshed daily — no browsing data ever leaves the browser for filtering."
             checked={state.enabled}
             onChange={setEnabled}
           />
+          <div
+            className="flex flex-wrap items-center gap-x-3 gap-y-1 px-1 text-[11px]"
+            style={{ color: "var(--nt-text-3)" }}
+          >
+            <span className="nt-mono">
+              {state.ready
+                ? `${state.ruleCount.toLocaleString("en-US")} rules · ${state.listsLoaded}/${state.listsTotal} lists · updated ${updatedLabel}`
+                : "Loading filter lists…"}
+            </span>
+            {state.ready && (
+              <button
+                onClick={refreshLists}
+                disabled={refreshing}
+                className="nt-r-sm px-1.5 py-0.5 underline-offset-2 transition-colors hover:underline disabled:opacity-50"
+                style={{ color: "var(--nt-accent)" }}
+              >
+                {refreshing ? "Checking…" : "Check for updates"}
+              </button>
+            )}
+          </div>
+          {state.failedLists.length > 0 && (
+            <p
+              className="px-1 text-[11px]"
+              style={{ color: "var(--nt-accent)" }}
+            >
+              {state.failedLists.length} list{state.failedLists.length === 1 ? "" : "s"} failed to download
+              ({state.failedLists.slice(0, 3).join(", ")}
+              {state.failedLists.length > 3 ? ", …" : ""}) — blocking continues with the rest.
+            </p>
+          )}
+          {state.resourcesDegraded && (
+            <p
+              className="px-1 text-[11px]"
+              style={{ color: "var(--nt-accent)" }}
+            >
+              Scriptlet resources failed to download — video-ad defusing on sites like YouTube is reduced until the next update.
+            </p>
+          )}
         </div>
       </div>
 
