@@ -247,9 +247,10 @@ export class TabManager {
       // disposition is cast because this Electron's typings omit it.
       if ((disposition as string) === 'save-to-disk') return { action: 'allow' };
       // Per-site popup policy (Settings → Privacy & security). 'ask' is the
-      // default: the opener-scripted case shows the blocked-popup indicator
-      // with "open anyway"; 'allow' opens silently as a background tab and
-      // 'block' drops it silently.
+      // default: popups open as real tabs; 'allow' opens silently as a
+      // background tab; 'block' denies but surfaces the blocked-popup
+      // indicator with "open anyway" — a clicked link is never silently
+      // dropped in any policy path.
       const policy = this.popupPolicyFor(tab.url);
       if (!url || url === 'about:blank') {
         // Opener-scripted popups (OAuth, payments, previews): window.open()
@@ -266,7 +267,17 @@ export class TabManager {
         }
         return { action: 'deny' };
       }
-      if (policy === 'block') return { action: 'deny' };
+      if (policy === 'block') {
+        // The popup policy says no — but a clicked link must never be
+        // silently dropped: surface the blocked-popup indicator (with its
+        // "open anyway" action) instead of vanishing the click.
+        try {
+          this.hooks?.onPopupBlocked?.(tab, url);
+        } catch {
+          /* never break the guest on a hook failure */
+        }
+        return { action: 'deny' };
+      }
       try {
         if (policy === 'allow') {
           this.hooks?.onPopup?.(tab, url, 'background-tab');

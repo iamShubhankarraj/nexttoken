@@ -316,12 +316,23 @@ function TabWebview({
 
   if (!visible) {
     // Kept mounted so the guest survives; hidden from layout.
+    // v0.6.6 — allowpopups MUST be emitted as a string *attribute*:
+    // React 19's setValueForAttribute() actively REMOVES boolean-valued
+    // attributes (except data-/aria-), because <webview> has no hyphen it
+    // is not treated as a custom element, so a bare `allowpopups` prop
+    // leaves the attribute absent — and Electron's native popup gate then
+    // silently swallows every guest window.open()/target=_blank *before*
+    // setWindowOpenHandler runs, so left-clicked links die with no tab and
+    // no feedback. The cast only satisfies @types/react's inaccurate
+    // `boolean` typing; at runtime React sees a string and calls
+    // setAttribute('allowpopups', '') during initial mount, before the
+    // element is inserted and the guest is created.
     return (
       <webview
         ref={ref}
         src={src}
         partition="persist:nexttoken"
-        allowpopups
+        allowpopups={"" as unknown as boolean}
         style={{ display: "none" }}
       />
     );
@@ -332,7 +343,7 @@ function TabWebview({
       ref={ref}
       src={src}
       partition="persist:nexttoken"
-      allowpopups
+      allowpopups={"" as unknown as boolean}
       style={
         absolute
           ? {
