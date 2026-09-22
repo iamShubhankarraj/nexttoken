@@ -12,6 +12,7 @@ import {
   Columns2,
   Compass,
   Globe,
+  Keyboard,
   LayoutGrid,
   PanelLeft,
   Plus,
@@ -165,6 +166,12 @@ export function CommandBar({ onClose }: { onClose: () => void }) {
         "Providers, voice, search, themes",
         Settings,
         () => api.uiSetSettingsOpen(true),
+      ],
+      [
+        "Keyboard shortcuts",
+        "Every shortcut in one place",
+        Keyboard,
+        () => window.dispatchEvent(new CustomEvent("nt:open-shortcuts")),
       ],
       [
         "New Bit",
