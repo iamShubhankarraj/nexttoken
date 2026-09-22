@@ -54,6 +54,14 @@ function applyDeltaToTab(tab: TabState, d: TabDelta): TabState {
       return typeof d.value === "boolean" ? { ...tab, muted: d.value } : tab;
     case "audible":
       return typeof d.value === "boolean" ? { ...tab, audible: d.value } : tab;
+    case "reader-available":
+      return typeof d.value === "boolean"
+        ? { ...tab, readerAvailable: d.value }
+        : tab;
+    case "reader-active":
+      return typeof d.value === "boolean"
+        ? { ...tab, readerActive: d.value }
+        : tab;
     default:
       return tab;
   }
