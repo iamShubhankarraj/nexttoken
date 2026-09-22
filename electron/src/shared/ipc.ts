@@ -19,6 +19,10 @@ export interface TabState {
   pinned: boolean;
   canGoBack: boolean;
   canGoForward: boolean;
+  /** Tab-level mute (sidebar speaker toggle / context menu). */
+  muted: boolean;
+  /** Currently producing sound (webContents media events). */
+  audible: boolean;
   /** Favicon captured from the page (page-favicon-updated), cached per host. data: URL. */
   favicon?: string;
   /** Folder this tab is filed into; null = ungrouped. */
@@ -130,10 +134,23 @@ export interface SiteBoost {
 /** Live per-tab updates pushed from main. */
 export interface TabDelta {
   tabId: string;
-  type: 'title' | 'url' | 'loading' | 'nav-state' | 'favicon' | 'folder';
+  type: 'title' | 'url' | 'loading' | 'nav-state' | 'favicon' | 'folder' | 'muted' | 'audible';
   value: string | boolean | null;
   canGoBack?: boolean;
   canGoForward?: boolean;
+}
+
+/**
+ * Shell shortcut key forwarded from a focused guest webview
+ * (before-input-event bridge). Only ⌘-combos the shell owns are ever
+ * forwarded — main already preventDefault'd the guest key.
+ */
+export interface GuestShortcutInfo {
+  tabId: string;
+  /** Lowercased key, e.g. 't' (shift state carried separately). */
+  key: string;
+  shift: boolean;
+  alt: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -928,6 +945,30 @@ export interface NextTokenAPI {
   ): Promise<ImportRunResult>;
   importPasswordGuidance(browserId: 'safari' | 'firefox'): Promise<PasswordGuidance>;
   importLoginsCount(): Promise<number>;
+  // Password manager — save prompt, origin-bound autofill, vault UI.
+  // Passwords are never listed; only reveal returns one, behind approval.
+  /** List stored logins (origin + username only). */
+  passwordsList(): Promise<Array<{ origin: string; username: string }>>;
+  /** Does the tab's live origin have saved logins? (autofill offer) */
+  passwordsLookup(tabId: string, origin: string): Promise<{ has: boolean; usernames: string[] }>;
+  /** Fill the tab's guest login fields. User-approved only. */
+  passwordsAutofill(tabId: string, username: string): Promise<{ ok: boolean; error?: string }>;
+  /** Report a guest login-form submission; returns a pending-save token or null. */
+  passwordsLoginDetected(tabId: string, origin: string, username: string): Promise<{ token: string | null }>;
+  /** The approval gate: 'save' stores, 'never' blocklists the origin, else discards. */
+  passwordsSaveDecision(token: string, decision: 'save' | 'dismiss' | 'never'): Promise<{ ok: boolean }>;
+  /** Reveal a password after the native approval dialog. Null when declined. */
+  passwordsReveal(origin: string, username: string): Promise<string | null>;
+  /** Copy a password to the clipboard in main after the approval dialog. */
+  passwordsCopy(origin: string, username: string): Promise<{ ok: boolean }>;
+  /** Delete a stored login. The renderer confirms first. */
+  passwordsDelete(origin: string, username: string): Promise<{ ok: boolean }>;
+  /** Origins on the "never ask to save" blocklist. */
+  passwordsBlocked(): Promise<string[]>;
+  /** Remove an origin from the never-ask blocklist. */
+  passwordsUnblock(origin: string): Promise<{ ok: boolean }>;
+  /** Main pushes this when a login submission needs the save decision. */
+  onPasswordsSavePrompt(cb: (p: { token: string; origin: string; username: string }) => void): () => void;
   // AI tidy — local models only; tab URLs never leave the device
   /** Produce a reviewable tidy plan. Nothing is applied until tidyApply is called. */
   tidyPlan(spaceId: string): Promise<TidyPlan>;
