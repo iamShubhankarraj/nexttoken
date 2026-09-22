@@ -83,8 +83,6 @@ export function MediaViewfinder({ media }: { media: MediaState | null }) {
   const trackRef = useRef<SVGPathElement>(null);
   const progressRef = useRef<SVGPathElement>(null);
   const hitRef = useRef<SVGPathElement>(null);
-  /** Mirror of the poll-driven progress ratio, readable from the rAF loop. */
-  const progRatioRef = useRef(0);
   /** Always-mounted invisible path: the geometry source for both lines and
       the button row, even when the timeline itself is hidden (live). */
   const geoRef = useRef<SVGPathElement>(null);
@@ -386,10 +384,6 @@ export function MediaViewfinder({ media }: { media: MediaState | null }) {
 
   const progress =
     duration > 0 ? Math.min(1, Math.max(0, (media?.position ?? 0) / duration)) : 0;
-  // Mirror for the rAF geometry loop (it can't read render-scope locals).
-  useEffect(() => {
-    progRatioRef.current = progress;
-  }, [progress]);
   const showTimeline = on && !live && duration > 0;
   const showTip = on && duration > 0 && (dragOn || hoverOn);
 
