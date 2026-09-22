@@ -914,6 +914,20 @@ export interface NextTokenAPI {
   tabsAttach(tabId: string, webContentsId: number): Promise<void>;
   tabsArchive(tabId: string): Promise<void>;
   tabsRestore(archivedId: string): Promise<void>;
+  /** Tab-level mute toggle (sidebar speaker icon / tab context menu). */
+  tabsSetMuted(tabId: string, muted: boolean): Promise<void>;
+  /** Duplicate a tab right after the original, in the same Bit. */
+  tabsDuplicate(tabId: string): Promise<void>;
+  /** Reload a specific tab (navReload only targets the active one). */
+  tabsReloadTab(tabId: string): Promise<void>;
+  /** Close every other unpinned tab in the tab's Bit. */
+  tabsCloseOthers(tabId: string): Promise<void>;
+  /** Close unpinned tabs to the right in sidebar order. */
+  tabsCloseRight(tabId: string): Promise<void>;
+  /** Reopen the most recently user-closed tab (⌘⇧T). */
+  tabsReopenClosed(): Promise<void>;
+  /** Shell shortcut forwarded from a focused guest webview. */
+  onGuestShortcut(cb: (info: GuestShortcutInfo) => void): () => void;
   // navigation (active tab)
   navGo(raw: string): Promise<void>;
   navBack(): Promise<void>;
