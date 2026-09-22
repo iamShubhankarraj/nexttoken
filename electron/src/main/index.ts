@@ -1540,6 +1540,26 @@ function registerIpc() {
     }
     store.saveSoon();
   });
+  /**
+   * Local llama-server status — powers the "Running now" card in
+   * Settings → Models, where the user can stop a hot local model
+   * with one click instead of waiting for the 15-minute idle sweep.
+   */
+  guardedHandle('nt.models.server-status', (): {
+    chat: { running: boolean; modelId: string | null };
+    vision: { running: boolean; modelId: string | null };
+  } => {
+    const snap = (slot: 'chat' | 'vision') => {
+      const st = llama.status(slot);
+      return { running: !!st.running, modelId: st.modelId ?? null };
+    };
+    return { chat: snap('chat'), vision: snap('vision') };
+  });
+  /** Stop a running local model server immediately (user-triggered). */
+  guardedHandle('nt.models.stop-server', async (_e, slot: 'chat' | 'vision') => {
+    if (slot !== 'chat' && slot !== 'vision') throw new Error(`Unknown slot "${slot}"`);
+    await llama.stop(slot);
+  });
   guardedHandle('nt.models.assignment.get', (): ModelAssignment => {
     const a = store.d.models.assignment;
     // Tolerate the pre-standardisation 'applefm' spelling from early installs.
@@ -2052,8 +2072,7 @@ app.whenReady().then(() => {
   // Curved media viewfinder: sweep all tabs ~1Hz for the background media
   // tab (a video in a NON-active tab) and push its state to the renderer.
   // The viewfinder appears only when the user is not on the media tab.
-  // A ~1fps thumbnail stream feeds both the viewfinder's curved ribbon
-  // and the custom PiP window; it pauses when hidden.
+  // A ~8fps frame stream feeds the viewfinder's curved video band.
   startMediaPolling(tabs, {
     send: (s) => {
       currentMediaTabId = s.hasVideo && s.background ? (s.tabId ?? null) : null;
@@ -2067,7 +2086,7 @@ app.whenReady().then(() => {
       try {
         const tabId = currentMediaTabId;
         if (!tabId || !win || win.isDestroyed() || !win.isVisible()) return;
-        const dataUrl = await captureMediaThumb(tabs, tabId);
+        const dataUrl = await captureMediaThumb(tabs, tabId, 320);
         if (dataUrl && win && !win.isDestroyed()) {
           win.webContents.send('nt.media.thumb', { tabId, dataUrl });
         }
@@ -2075,7 +2094,7 @@ app.whenReady().then(() => {
         /* never break the loop on a transient capture failure */
       }
     })();
-  }, 1000);
+  }, 125);
   setupUpdater({
     store,
     send: (channel, payload) => {

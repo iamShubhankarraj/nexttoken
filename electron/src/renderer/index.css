@@ -617,6 +617,22 @@ input[type="color"].nt-color::-webkit-color-swatch {
   stroke: rgba(232, 163, 61, 0.4);
   stroke-width: 1;
 }
+/* Paused indicator: a soft play glyph floating over the video band. */
+.nt-vf-paused {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.45);
+  color: #fff;
+  pointer-events: none;
+}
 .nt-vf-live-dot {
   fill: #ff6b5e;
 }

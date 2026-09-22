@@ -203,13 +203,15 @@ export async function toggleMedia(
 }
 
 /**
- * Capture a small live thumbnail of the media tab's best video.
- * Crops capturePage to the video's rect and downscales — cheap enough for
- * ~1 fps while the viewfinder is visible. Returns a data URL or null.
+ * Capture a live frame of the media tab's best video.
+ * Crops capturePage to the video's rect and downscales — the width sets the
+ * quality tier: 160px for tiny previews, 320px for the sidebar viewfinder,
+ * 480px for the PiP window. Returns a data URL or null.
  */
 export async function captureMediaThumb(
   tabs: TabManager,
-  tabId: string
+  tabId: string,
+  width = 160
 ): Promise<string | null> {
   const wc = tabs.webContentsFor(tabId);
   if (!wc) return null;
@@ -233,9 +235,10 @@ export async function captureMediaThumb(
       height: Math.round(rect.h),
     });
     if (shot.isEmpty()) return null;
-    // Downscale hard: the ribbon is a thin sliver — 160px wide is plenty.
-    const small = shot.resize({ width: 160 });
-    return small.toDataURL();
+    // Downscale to the requested tier — the caller picks the quality.
+    const small = shot.resize({ width });
+    // JPEG at good quality: crisp enough for PiP, cheap enough for 8fps.
+    return 'data:image/jpeg;base64,' + small.toJPEG(82).toString('base64');
   } catch {
     return null;
   }

@@ -1137,6 +1137,13 @@ export interface NextTokenAPI {
   modelsDownload(id: string): Promise<void>;
   modelsCancelDownload(id: string): Promise<void>;
   modelsRemove(id: string): Promise<void>;
+  /** Running llama-server state per slot — powers the "Running now" card. */
+  modelsServerStatus(): Promise<{
+    chat: { running: boolean; modelId: string | null };
+    vision: { running: boolean; modelId: string | null };
+  }>;
+  /** Stop a running local-model server immediately (user-triggered). */
+  modelsStopServer(slot: 'chat' | 'vision'): Promise<void>;
   modelsGetAssignment(): Promise<ModelAssignment>;
   modelsSetAssignment(task: 'chat' | 'vision', ref: ModelRef): Promise<void>;
   /** The four task slots (transcription / agent / speech / vision) and what serves each. */

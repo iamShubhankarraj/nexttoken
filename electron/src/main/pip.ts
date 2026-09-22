@@ -74,7 +74,9 @@ function startFrames(tabs: TabManager, onRetire: () => void): void {
         return;
       }
       try {
-        const dataUrl = await captureMediaThumb(tabs, tabId);
+        // 480px frames: crisp in the PiP window (the old 160px thumbs were
+        // visibly blurry when upscaled).
+        const dataUrl = await captureMediaThumb(tabs, tabId, 480);
         if (!dataUrl) {
           emptyFrames += 1;
           // ~3s with no capturable video: retire to the native path so the

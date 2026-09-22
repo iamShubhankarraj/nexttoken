@@ -134,7 +134,9 @@ function parseFeed(yml: string): { version: string; url: string; sha512: string;
   let sha512 = '';
   let size = 0;
   if (filesBlock) {
-    url = /^[ \t]+url:\s*['"]?([^\s'"]+)['"]?/m.exec(filesBlock)?.[1] ?? '';
+    // The url line carries the YAML list marker ("  - url: ..."), so allow
+    // an optional "- " between the indentation and the key.
+    url = /^[ \t]+(?:-\s+)?url:\s*['"]?([^\s'"]+)['"]?/m.exec(filesBlock)?.[1] ?? '';
     sha512 = /^[ \t]+sha512:\s*['"]?([^\s'"]+)['"]?/m.exec(filesBlock)?.[1] ?? '';
     size = parseInt(/^[ \t]+size:\s*(\d+)/m.exec(filesBlock)?.[1] ?? '0', 10);
   }

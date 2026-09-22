@@ -58,13 +58,18 @@ function formatTime(sec: number): string {
 
 /** pathLength normalisation: progress is 0..100 along the curve. */
 const ARC_UNITS = 100;
-/** Film strip: width in px; offsets are measured leftwards from the curve. */
-const FILM_NEAR = 69;
-const FILM_FAR = 105;
-/** Button row: center offset leftwards from the curve at notch height. */
-const BTN_OFFSET = 34;
-/** Curve samples for the film strip polygon. */
-const FILM_SAMPLES = 48;
+/**
+ * Video band: the COMPLETE curve filled with live video — a wide band from
+ * just inside the seam to deep in the sidebar. Offsets are measured
+ * leftwards from the curve. The video IS the viewfinder now, not a thin
+ * strip beside buttons.
+ */
+const FILM_NEAR = 10;
+const FILM_FAR = 132;
+/** PiP button: floats over the video band's inner edge at notch height. */
+const BTN_OFFSET = 118;
+/** Curve samples for the video band polygon. */
+const FILM_SAMPLES = 64;
 
 export function MediaViewfinder({ media }: { media: MediaState | null }) {
   // Only for background media — never while the media tab is active.
@@ -442,11 +447,14 @@ export function MediaViewfinder({ media }: { media: MediaState | null }) {
             />
           </g>
         )}
-        {/* Thumbnail film: a thin strip hugging the curve, both edges
-            curved. Renders ONLY when a live frame has arrived — no
-            placeholder, no card, no bubble. */}
+        {/* Video band: the complete curve filled with live ~8fps video.
+            Renders ONLY when a live frame has arrived — no placeholder, no
+            card, no bubble. Click toggles play/pause. */}
         {on && thumb && (
-          <g>
+          <g
+            onClick={() => void nt().mediaToggle(tabId).catch(() => {})}
+            style={{ cursor: "pointer" }}
+          >
             <defs>
               <clipPath id="nt-vf-film-clip">
                 <polygon ref={filmPolyRef} points="" />
@@ -464,22 +472,10 @@ export function MediaViewfinder({ media }: { media: MediaState | null }) {
         )}
       </svg>
 
-      {/* Transport: play/pause + PiP, seated between the timeline and the
-          film — inside the curve, never outside or below. */}
+      {/* PiP: a single small button floating over the video band's inner
+          edge — the video itself is the play/pause control (click it). */}
       {on && (
         <div ref={btnsRef} className="nt-vf-btns">
-          <button
-            className="nt-vf-btn nt-vf-play"
-            title={paused ? "Play" : "Pause"}
-            aria-label={paused ? "Play video" : "Pause video"}
-            onClick={() => void nt().mediaToggle(tabId).catch(() => {})}
-          >
-            {paused ? (
-              <Play size={13} strokeWidth={0} fill="currentColor" />
-            ) : (
-              <Pause size={13} strokeWidth={0} fill="currentColor" />
-            )}
-          </button>
           <button
             className="nt-vf-btn"
             title="Picture in Picture"
@@ -488,6 +484,13 @@ export function MediaViewfinder({ media }: { media: MediaState | null }) {
           >
             <PictureInPicture2 size={14} strokeWidth={1.75} />
           </button>
+        </div>
+      )}
+
+      {/* Paused indicator: a play glyph centered on the video band. */}
+      {on && paused && thumb && (
+        <div className="nt-vf-paused">
+          <Play size={20} strokeWidth={0} fill="currentColor" />
         </div>
       )}
 

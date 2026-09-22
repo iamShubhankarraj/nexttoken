@@ -19,6 +19,7 @@ import {
   Mic,
   RefreshCw,
   Sparkles,
+  Square,
   Stethoscope,
   Trash2,
   Volume2,
@@ -106,6 +107,13 @@ interface NtModels {  modelsList(): Promise<ModelEntryPublic[]>;
   modelsDownload(id: string): Promise<void>;
   modelsCancelDownload(id: string): Promise<void>;
   modelsRemove(id: string): Promise<void>;
+  /** Running llama-server state per slot (newer builds). */
+  modelsServerStatus?(): Promise<{
+    chat: { running: boolean; modelId: string | null };
+    vision: { running: boolean; modelId: string | null };
+  }>;
+  /** Stop a running local-model server immediately (newer builds). */
+  modelsStopServer?(slot: "chat" | "vision"): Promise<void>;
   modelsGetAssignment(): Promise<{ chat: string; vision: string }>;
   modelsSetAssignment(task: "chat" | "vision", ref: string): Promise<void>;
   /** Task-model registry (newer builds): the four task slots and what serves each. */
@@ -201,6 +209,13 @@ export function ModelsPanel({ focusTask }: { focusTask?: string }) {
   const [hfTokenError, setHfTokenError] = useState<string | null>(null);
   const [gatedIds, setGatedIds] = useState<string[]>([]);
   const [metrics, setMetrics] = useState<LocalModelMetrics | null>(null);
+  // Running local-model servers (llama-server): null = preload doesn't
+  // support it yet (older build) → hide the "Running now" card.
+  const [serverStatus, setServerStatus] = useState<{
+    chat: { running: boolean; modelId: string | null };
+    vision: { running: boolean; modelId: string | null };
+  } | null>(null);
+  const [stoppingSlot, setStoppingSlot] = useState<"" | "chat" | "vision">("");
   // Apple FM diagnostics: null = not run yet.
   const [diag, setDiag] = useState<AppleFmDiagnosis | null>(null);
   const [diagRunning, setDiagRunning] = useState(false);
@@ -270,6 +285,19 @@ export function ModelsPanel({ focusTask }: { focusTask?: string }) {
   useEffect(() => {
     void load();
     void loadActiveModelLabel();
+    // Running local-model servers: poll while the panel is open so the
+    // "Running now" card (and its Stop buttons) stays truthful.
+    const pollServers = () => {
+      try {
+        const api = modelsApi();
+        if (!api.modelsServerStatus) return;
+        void api.modelsServerStatus().then(setServerStatus).catch(() => {});
+      } catch {
+        /* bridge unavailable — card stays hidden */
+      }
+    };
+    pollServers();
+    const serverTimer = setInterval(pollServers, 5000);
     // HF token state lives behind new preload methods; a missing bridge
     // (older build) hides the token card instead of breaking the panel.
     void (async () => {
@@ -307,7 +335,10 @@ export function ModelsPanel({ focusTask }: { focusTask?: string }) {
         setAdvisorLoading(false);
       }
     })();
-    return () => off?.();
+    return () => {
+      clearInterval(serverTimer);
+      off?.();
+    };
   }, [load, loadActiveModelLabel]);
 
   // Live updates: progress ticks update the row in place; done/error do a
@@ -427,6 +458,23 @@ export function ModelsPanel({ focusTask }: { focusTask?: string }) {
       }));
     } finally {
       void load();
+    }
+  };
+
+  /** Stop a running local-model server immediately (user-triggered). */
+  const stopServer = async (slot: "chat" | "vision") => {
+    const api = modelsApi();
+    if (!api.modelsStopServer) return;
+    setStoppingSlot(slot);
+    try {
+      await api.modelsStopServer(slot);
+      // Refresh immediately — don't wait for the 5s poll.
+      const s = await api.modelsServerStatus?.();
+      if (s) setServerStatus(s);
+    } catch (err) {
+      setLoadError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setStoppingSlot("");
     }
   };
 
@@ -573,6 +621,80 @@ export function ModelsPanel({ focusTask }: { focusTask?: string }) {
 
   return (
     <div>
+      {/* --------------------------- Running now --------------------------- */}
+      {serverStatus && (serverStatus.chat.running || serverStatus.vision.running) && (
+        <div
+          className="nt-r-md mb-4 border p-4"
+          style={{
+            borderColor: "var(--nt-accent)",
+            background: "var(--nt-bg-raised)",
+          }}
+        >
+          <div className="mb-1 flex items-center gap-2">
+            <span
+              className="inline-block h-2 w-2 rounded-full"
+              style={{ background: "#7fc97f" }}
+            />
+            <h3
+              className="text-[13px] font-semibold"
+              style={{ color: "var(--nt-text-1)" }}
+            >
+              Running now
+            </h3>
+          </div>
+          <p className="mb-3 text-[12px]" style={{ color: "var(--nt-text-3)" }}>
+            A local model is loaded and using CPU/GPU — that's what makes the
+            computer run hot. Stop it any time; it restarts automatically the
+            next time the agent needs it.
+          </p>
+          <div className="space-y-2">
+            {(["chat", "vision"] as const).map((slot) => {
+              const s = serverStatus[slot];
+              if (!s.running) return null;
+              const entry = entries?.find((e) => e.id === s.modelId);
+              const name = entry?.name ?? s.modelId ?? slot;
+              const busy = stoppingSlot === slot;
+              return (
+                <div
+                  key={slot}
+                  className="flex items-center justify-between gap-3"
+                >
+                  <div className="min-w-0">
+                    <p
+                      className="truncate text-[13px] font-medium"
+                      style={{ color: "var(--nt-text-1)" }}
+                    >
+                      {name}
+                    </p>
+                    <p
+                      className="text-[12px]"
+                      style={{ color: "var(--nt-text-3)" }}
+                    >
+                      {slot === "chat" ? "Agent chat" : "Vision"} server · running
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => void stopServer(slot)}
+                    disabled={busy}
+                    className="nt-r-sm flex shrink-0 items-center gap-1.5 border px-3 py-1.5 text-[12.5px] font-semibold transition-colors hover:bg-[var(--nt-bg-hover)] disabled:opacity-60"
+                    style={{
+                      borderColor: "var(--nt-border)",
+                      color: "var(--nt-text-1)",
+                    }}
+                  >
+                    {busy ? (
+                      <Loader2 size={13} strokeWidth={2} className="animate-spin" />
+                    ) : (
+                      <Square size={12} strokeWidth={0} fill="currentColor" />
+                    )}
+                    {busy ? "Stopping…" : "Stop"}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
       {/* --------------------------- Model Advisor --------------------------- */}
       {(advisorLoading || advisor) && (
         <div
