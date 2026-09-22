@@ -27,6 +27,10 @@ export interface TabState {
   favicon?: string;
   /** Folder this tab is filed into; null = ungrouped. */
   folderId: string | null;
+  /** Reader mode: the page looks like an article (readability probe passed). */
+  readerAvailable?: boolean;
+  /** Reader mode: the clean article overlay is currently shown. */
+  readerActive?: boolean;
 }
 
 /** A tab folder inside one Bit (user-facing name for spaces is "Bits"). */
@@ -136,7 +140,7 @@ export interface SiteBoost {
 /** Live per-tab updates pushed from main. */
 export interface TabDelta {
   tabId: string;
-  type: 'title' | 'url' | 'loading' | 'nav-state' | 'favicon' | 'folder' | 'muted' | 'audible';
+  type: 'title' | 'url' | 'loading' | 'nav-state' | 'favicon' | 'folder' | 'muted' | 'audible' | 'reader-available' | 'reader-active';
   value: string | boolean | null;
   canGoBack?: boolean;
   canGoForward?: boolean;
@@ -772,6 +776,8 @@ export interface PrivacySnapshot {
   popups: Record<string, 'allow' | 'block' | 'ask'>;
   autoplay: Record<string, 'allow' | 'block'>;
   muted: Record<string, boolean>;
+  /** origin -> auto-reader (open Reader mode automatically on article pages) */
+  autoReader: Record<string, boolean>;
   historyCount: number;
 }
 
@@ -944,6 +950,27 @@ export interface NextTokenAPI {
   privacyHistory(): Promise<HistoryEntry[]>;
   /** Brave-style HTTPS-Strict upgrade (off by default). Returns the snapshot. */
   privacySetHttpsUpgrade(enabled: boolean): Promise<PrivacySnapshot>;
+  // -- Reader mode ----------------------------------------------------------
+  /** Enter the clean article view for a tab (default: active tab). */
+  readerEnter(tabId?: string): Promise<{ ok: boolean; error?: string }>;
+  /** Leave the article view. */
+  readerExit(tabId?: string): Promise<void>;
+  /** Reader availability/active state for a tab. */
+  readerStatus(tabId?: string): Promise<{ available: boolean; active: boolean }>;
+  /** Per-site auto-reader toggle (persisted like mute/autoplay). */
+  readerSetAuto(origin: string, enabled: boolean): Promise<PrivacySnapshot>;
+  /** Is auto-reader on for this origin? */
+  readerAutoState(origin: string): Promise<boolean>;
+  // -- Print & screenshot ----------------------------------------------------
+  /** System print dialog for the tab's page. */
+  printDialog(tabId?: string): Promise<{ ok: boolean; error?: string }>;
+  /** Render the page to PDF, routed through the downloads pill. */
+  printPdf(tabId?: string): Promise<{ ok: boolean; error?: string; path?: string }>;
+  /** Screenshot: copy to clipboard and/or save a PNG via the downloads pill. */
+  captureScreenshot(opts?: {
+    dest?: 'clipboard' | 'file' | 'both';
+    tabId?: string;
+  }): Promise<{ ok: boolean; copied?: boolean; path?: string; error?: string }>;
   /** Per-origin zoom memory (v0.6.3): list remembered zooms. */
   zoomList(): Promise<Array<{ origin: string; percent: number }>>;
   /** Forget one origin's zoom (live tabs reset to 100%). Returns the list. */
