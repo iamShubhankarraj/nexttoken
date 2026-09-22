@@ -226,6 +226,24 @@ export function setupGuestSession(deps: WebEngineDeps): void {
       callback(false);
       return;
     }
+    // Sensitive permissions with no attributable http(s) origin (opaque
+    // origin, data:/file: oddities, empty requestingUrl): deny outright
+    // instead of prompting. There is nothing meaningful for the user to
+    // decide about, and a dialog would only train click-through.
+    // (Explicit per-site/default allow decisions above are still honored.)
+    if (
+      !/^https?:\/\//i.test(origin) &&
+      (p === 'media' ||
+        p === 'geolocation' ||
+        p === 'notifications' ||
+        p === 'clipboard-read' ||
+        p === 'display-capture' ||
+        p === 'openExternal')
+    ) {
+      console.log(`[permissions] ${origin || '(unknown origin)'} ${p} -> denied (non-web origin)`);
+      callback(false);
+      return;
+    }
     // Sensitive (camera/mic, location, notifications, screen share,
     // external apps, …): ask the user. WebAuthn never reaches this
     // handler — Chromium drives the authenticator UI natively.
