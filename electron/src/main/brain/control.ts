@@ -159,8 +159,20 @@ export async function executeControl(
       const pinned = intent === 'browser.tab.pin';
       t.pinned = pinned;
       tabs.persistPinned();
+      // Pin state IS App Store membership — keep the global grid in step.
+      if (pinned) {
+        store.addPinnedApp(t.url, t.title || t.url);
+        tabs.ensureFavicon(t.url);
+      } else {
+        store.removePinnedAppForUrl(t.url);
+      }
       env.refreshSnapshot();
-      return { summary: `${pinned ? 'pinned' : 'unpinned'} "${tabLabel(t)}"` };
+      return {
+        summary: pinned
+          ? `added "${tabLabel(t)}" to the App Store`
+          : `removed "${tabLabel(t)}" from the App Store`,
+        speak: pinned ? 'Added to the App Store.' : 'Removed from the App Store.',
+      };
     }
     case 'browser.tab.mute':
     case 'browser.tab.unmute': {

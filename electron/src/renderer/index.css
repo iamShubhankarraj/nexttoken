@@ -500,8 +500,25 @@ input[type="color"].nt-color::-webkit-color-swatch {
   pointer-events: none;
   z-index: 0;
 }
+/* The seam path IS the sidebar's paint (it covers the whole sidebar shape,
+   including the scoops that bulge past the div). Filling it with the gradient
+   means a 3-colour wash follows the organic edge exactly. When the Bit has no
+   gradient, all three stops equal sidebarBg and this renders flat. If the
+   reference ever fails to resolve the path goes transparent and the div's own
+   flat `background: var(--nt-sidebar-bg)` shows through — a safe fallback. */
 .nt-seam-fill {
-  fill: var(--nt-sidebar-bg, #101013);
+  /* NOTE: a single declaration. A second `fill` here would simply win and
+     pin the sidebar flat — the fallback is the div's own flat background,
+     not a duplicate rule. */
+  fill: url(#nt-seam-grad);
+}
+
+/* Paper grain over the sidebar paint, clipped to the same organic shape via
+   the shared fill path. `soft-light` keeps it a texture rather than a haze. */
+.nt-seam-grain {
+  fill: url(#nt-seam-paper);
+  opacity: var(--nt-sidebar-texture, 0);
+  mix-blend-mode: soft-light;
 }
 .nt-seam-hi {
   fill: none;
@@ -561,15 +578,21 @@ input[type="color"].nt-color::-webkit-color-swatch {
   stroke: var(--nt-accent);
   stroke-width: 3.5;
   filter: drop-shadow(0 0 6px rgba(232, 163, 61, 0.75));
-  transition: stroke-dashoffset 1s linear;
+  /* NO transition here. The line is advanced every frame by a local rAF clock
+     (main only polls playback at ~1Hz). A transition on this property made
+     the timeline lag a full second behind the video AND behind a drag, which
+     is what made seeking feel imprecise. `data-drag` remains as a belt-and-
+     braces override for the first frame of a drag. */
+  transition: none;
 }
 .nt-vf-seam-progress[data-drag="true"] {
   transition: none;
 }
-/* Wide invisible hit lane so drag-seek is easy along the curve. */
+/* Wide invisible hit lane so drag-seek is easy along the curve. 44px: at
+   22px a drag that started slightly off the line did nothing at all. */
 .nt-vf-seam-hit {
   stroke: rgba(0, 0, 0, 0);
-  stroke-width: 22;
+  stroke-width: 44;
   pointer-events: stroke;
   cursor: pointer;
   touch-action: none;
@@ -590,13 +613,20 @@ input[type="color"].nt-color::-webkit-color-swatch {
 .nt-media-viewfinder[data-on="true"] .nt-vf-btns {
   pointer-events: auto;
 }
-/* Thin curved video line hugging the timeline. The image is clipped to
-   the strip polygon; the edge is a hairline ember stroke. Nothing renders
-   until a live frame arrives. */
+/* Thin curved film line hugging the timeline. The frame image is clipped to
+   the strip polygon and given a glassy wash; the edge is a hairline ember
+   stroke. Nothing renders until a live frame arrives, so a media tab that
+   yields no frames shows no film line (rather than an empty rail). */
 .nt-vf-film-edge {
   fill: none;
-  stroke: rgba(232, 163, 61, 0.4);
+  stroke: rgba(232, 163, 61, 0.45);
   stroke-width: 1;
+}
+/* Glassy sheen over the film strip, clipped to the same polygon by the
+   markup: a soft top-left highlight so the moving frame reads as glass. */
+.nt-vf-film-sheen {
+  fill: url(#nt-vf-film-glass);
+  pointer-events: none;
 }
 /* Paused indicator: a small play glyph on the video line at notch height.
    Positioned per frame by the geometry loop (left/top via transform). */
@@ -654,6 +684,34 @@ input[type="color"].nt-color::-webkit-color-swatch {
   border-color: color-mix(in srgb, var(--nt-accent) 55%, transparent);
   color: var(--nt-accent);
 }
+/* ---- viewfinder entrance: leaving the media tab ----------------------- */
+/* When the user switches away from the tab that is playing, the media is
+   still running and this curve becomes the only place it is visible. The
+   transport blurs in and the timeline gives one ember pulse.
+
+   IMPORTANT: these animate opacity / filter ONLY, never transform. The
+   transport row and the paused glyph get their position written every frame
+   as an inline `transform` by the geometry loop, and a CSS animation on
+   transform would override that and tear the controls off the curve. */
+@keyframes nt-vf-transport-in {
+  from { opacity: 0; filter: blur(4px); }
+  to { opacity: 1; filter: blur(0); }
+}
+@keyframes nt-vf-timeline-pulse {
+  0% { filter: drop-shadow(0 0 0 rgba(232, 163, 61, 0)); }
+  45% { filter: drop-shadow(0 0 11px rgba(232, 163, 61, 0.95)); }
+  100% { filter: drop-shadow(0 0 6px rgba(232, 163, 61, 0.75)); }
+}
+.nt-vf-enter .nt-vf-btns {
+  animation: nt-vf-transport-in 420ms cubic-bezier(0.32, 0.72, 0, 1) both;
+}
+.nt-vf-enter .nt-vf-paused {
+  animation: nt-vf-transport-in 420ms cubic-bezier(0.32, 0.72, 0, 1) both;
+}
+.nt-vf-enter .nt-vf-seam-progress {
+  animation: nt-vf-timeline-pulse 640ms ease-out both;
+}
+
 /* Seek tooltip riding the curve at the pointer. */
 .nt-vf-tip {
   position: absolute;
@@ -668,6 +726,213 @@ input[type="color"].nt-color::-webkit-color-swatch {
   padding: 3px 8px;
   box-shadow: var(--nt-shadow-pop);
   pointer-events: none;
+}
+
+/* ---- App Store: the App Store box (pinned tabs live here) -------------- */
+/* A self-contained, bordered container ABOVE the tab list. Fixed (outside
+   the sidebar's scroll container), resizable via its bottom edge, and it
+   owns its horizontal gesture so paging never switches Bits. */
+.nt-appstore-wrap {
+  flex-shrink: 0;
+  padding: 0 8px 4px;
+}
+.nt-appstore {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  min-height: 96px;
+  max-height: 480px;
+  border: 1px solid var(--nt-border);
+  border-radius: var(--nt-r-md);
+  background: var(--nt-bg-raised);
+  overflow: hidden;
+}
+.nt-appstore-head {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  padding: 3px 6px 1px 8px;
+}
+.nt-appstore-dots {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: 6px;
+}
+.nt-appstore-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--nt-text-faint);
+  transition: background-color 160ms ease, transform 160ms ease;
+}
+.nt-appstore-dot[data-on="true"] {
+  background: var(--nt-accent);
+  transform: scale(1.35);
+}
+.nt-appstore-viewport {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  /* Gives the page turn real depth instead of looking like a flat slide. */
+  perspective: 1100px;
+}
+.nt-appstore-track {
+  display: flex;
+  /* Compositor-only: a page turn must never lay out the sidebar. */
+  transition: transform 420ms cubic-bezier(0.32, 0.72, 0, 1);
+  will-change: transform;
+  transform-style: preserve-3d;
+}
+.nt-appstore-page {
+  flex: 0 0 100%;
+  display: grid;
+  /* 4 columns; rows fill the box height (set inline from the resize). */
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  align-content: start;
+  gap: 4px 6px;
+  padding: 2px 6px 10px;
+  /* The turn itself: transform + opacity only, so the sidebar never lays out
+     redundantly mid-animation. */
+  transition: transform 420ms cubic-bezier(0.32, 0.72, 0, 1),
+    opacity 380ms ease;
+  backface-visibility: hidden;
+  will-change: transform, opacity;
+}
+
+/* ---- Bits as a deck of pages ------------------------------------------ */
+/* The active Bit is the top page; the Bits after it peek out beneath, so the
+   next page is visibly just below this one. Clicking a peeking edge brings
+   that Bit to the front. */
+.nt-bit-deck {
+  position: relative;
+}
+.nt-bit-page {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  border-radius: var(--nt-r-md);
+  background: var(--nt-bg-raised);
+  box-shadow: inset 0 0 0 1px var(--nt-border);
+  /* Compositor-only: the page coming forward never re-lays out the deck. */
+  transition: transform 420ms cubic-bezier(0.32, 0.72, 0, 1);
+  will-change: transform;
+  overflow: hidden;
+}
+.nt-bit-page[data-active="true"] {
+  background: color-mix(in srgb, var(--nt-space) 16%, var(--nt-bg-raised));
+  box-shadow: inset 0 0 0 1px
+      color-mix(in srgb, var(--nt-space) 42%, transparent),
+    var(--nt-shadow-pop);
+}
+.nt-bit-page-initial {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  background: color-mix(in srgb, var(--nt-space) 18%, transparent);
+  color: var(--nt-space);
+}
+.nt-bit-page-name {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--nt-text-1);
+}
+.nt-bit-page-count {
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+  color: var(--nt-text-faint);
+}
+.nt-appstore-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 2px;
+  border-radius: var(--nt-r-md);
+  transition: background-color 150ms ease, transform 150ms ease;
+}
+.nt-appstore-tile:hover {
+  background: var(--nt-bg-hover);
+}
+.nt-appstore-tile:active {
+  transform: scale(0.94);
+}
+.nt-appstore-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--nt-bg-raised) 88%, transparent);
+  box-shadow: inset 0 0 0 1px var(--nt-border), 0 2px 6px rgba(0, 0, 0, 0.14);
+}
+/* Names, never URLs — a grid of full URLs is unreadable at this width. */
+.nt-appstore-label {
+  max-width: 100%;
+  font-size: 9.5px;
+  line-height: 1.15;
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--nt-text-3);
+}
+.nt-appstore-empty {
+  grid-column: 1 / -1;
+  padding: 6px 4px;
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--nt-text-3);
+}
+/* Bottom drag edge: resize the App Store box vertically. */
+.nt-appstore-resize {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 8px;
+  cursor: ns-resize;
+  touch-action: none;
+  z-index: 5;
+}
+.nt-appstore-resize::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: 3px;
+  width: 36px;
+  height: 3px;
+  transform: translateX(-50%);
+  border-radius: 999px;
+  background: var(--nt-text-faint);
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.nt-appstore-resize:hover::after,
+.nt-appstore-resize:active::after,
+.nt-appstore-resize:focus-visible::after {
+  opacity: 1;
+}
+.nt-appstore-resize:focus-visible {
+  outline: none;
 }
 
 /* Window drag region (traffic lights are native, hiddenInset, at 14,14). */
@@ -1151,6 +1416,40 @@ input[type="color"].nt-color::-webkit-color-swatch {
 }
 .nt-resize-handle:focus-visible {
   outline: none;
+}
+
+/* ---- curved resize affordance (the sidebar's grab line) ---------------- */
+/* The sidebar's resize line is the seam's own edge path, so it follows the
+   curve instead of being a straight rule. The straight ::after line is
+   suppressed for this handle (the agent panel keeps it — that divider really
+   is straight, between two rectangular panels). */
+.nt-resize-handle-curved::after {
+  display: none;
+}
+.nt-resize-affordance-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+  z-index: 25;
+}
+.nt-resize-affordance {
+  fill: none;
+  stroke: var(--nt-accent);
+  stroke-width: 2;
+  stroke-linecap: round;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  filter: drop-shadow(0 0 6px rgba(232, 163, 61, 0.45));
+}
+/* Revealed while the handle is hovered, being dragged, or focused. `:has()`
+   is available in this Chromium, so no JS state is needed. */
+.nt-liquid-sidebar:has(.nt-resize-handle:hover) .nt-resize-affordance,
+.nt-liquid-sidebar:has(.nt-resize-handle.nt-dragging) .nt-resize-affordance,
+.nt-liquid-sidebar:has(.nt-resize-handle:focus-visible) .nt-resize-affordance {
+  opacity: 1;
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -76,10 +76,12 @@ export const VOICE_COMMANDS: VoiceCommandDef[] = [
   cmd('browser.tab.switch', 'Tabs', 'Switch to another tab by number or by page name', [
     'go to tab 3', 'switch to the third tab', 'go to the GitHub tab'
   ], { slots: [{ name: 'target', type: 'text', description: 'Tab number or title fragment to switch to' }] }),
-  cmd('browser.tab.pin', 'Tabs', 'Pin the current tab so it stays put', [
-    'pin this tab', 'pin the current tab'
+  cmd('browser.tab.pin', 'Tabs', 'Add the current tab to the App Store', [
+    'add to app store', 'add this tab to the app store', 'pin this tab'
   ]),
-  cmd('browser.tab.unpin', 'Tabs', 'Unpin the current tab', ['unpin this tab']),
+  cmd('browser.tab.unpin', 'Tabs', 'Remove the current tab from the App Store', [
+    'remove from app store', 'remove this tab from the app store', 'unpin this tab'
+  ]),
   cmd('browser.tab.mute', 'Tabs', 'Mute the current tab', ['mute this tab', 'mute the tab']),
   cmd('browser.tab.unmute', 'Tabs', 'Unmute the current tab', ['unmute this tab']),
   cmd('browser.tab.reload', 'Tabs', 'Reload the current tab', ['reload this tab', 'refresh the page']),

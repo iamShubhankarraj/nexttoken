@@ -1018,10 +1018,10 @@ function ImportSection() {
           <Import size={14} strokeWidth={1.75} /> Import from another browser
         </h3>
         <p className="mb-3 text-[12px]" style={{ color: "var(--nt-text-3)" }}>
-          Bring bookmarks, open &amp; pinned tabs, and saved passwords from Arc,
-          Chrome, Brave, Edge, Safari, or Firefox into the current Bit. Nothing
-          is read until you choose to import — duplicates are skipped, never
-          overwritten.
+          Bring bookmarks, open tabs &amp; App Store entries, and saved passwords
+          from Arc, Chrome, Brave, Edge, Safari, or Firefox into the current Bit.
+          Nothing is read until you choose to import — duplicates are skipped,
+          never overwritten.
         </p>
         <button
           onClick={openImportDialog}

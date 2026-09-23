@@ -99,8 +99,25 @@ export interface ImportRunResult {
   error?: string;
 }
 
+/**
+ * An App Store entry — the sidebar's global pinned grid.
+ *
+ * Deliberately NOT part of SpaceState: the grid is fixed and identical in
+ * every Bit (that is the point of it), so it cannot live in per-Bit storage.
+ * Clicking an entry opens or focuses a normal tab in the current Bit.
+ */
+export interface PinnedApp {
+  id: string;
+  url: string;
+  title: string;
+  /** Cached favicon (data: URL) from the host icon cache, when known. */
+  favicon?: string;
+}
+
 export interface BrowserSnapshot {
   spaces: SpaceState[];
+  /** The global App Store grid, shared by every Bit. */
+  pinnedApps: PinnedApp[];
   activeSpaceId: string;
   archived: ArchivedTab[];
   sidebarCollapsed: boolean;
@@ -109,6 +126,8 @@ export interface BrowserSnapshot {
   /** Explicit sidebar widths (px), null = automatic. */
   sidebarWidth: number | null;
   agentPanelWidth: number | null;
+  /** App Store box height in the sidebar (px), null = 2-row default. */
+  appStoreHeight: number | null;
   /** v0.6.3 (impl-5): bookmarks bar visibility + scope. */
   bookmarksBar: { visible: boolean; scope: 'bit' | 'all' };
 }
@@ -121,6 +140,8 @@ export interface ArchivedTab {
   url: string;
   title: string;
   archivedAt: number;
+  /** Cached favicon (data: URL) from the host icon cache, when known. */
+  favicon?: string;
 }
 
 /**
@@ -220,7 +241,39 @@ export interface ThemeTokens {
   spaceColor: string;
   // Corner roundness 0..1 → multiplier 0.25x–1.25x over the 6/10/14px scale.
   radiusScale: number;
+  /**
+   * Paper-grain strength over the sidebar paint, 0..1. 0 = perfectly flat.
+   * Composited as a tiled fractal-noise pattern, so the cost is one rasterised
+   * tile — it does not re-run per frame while the sidebar breathes.
+   */
+  sidebarTexture: number;
+  /**
+   * Optional 3-stop gradient painted across the sidebar INSTEAD of the flat
+   * `sidebarBg`: [from, via, to]. `null` = flat paint. When unset the renderer
+   * still emits all three stops as `sidebarBg`, so the gradient layer is always
+   * present and simply renders flat — no conditional CSS, and the flat base
+   * path underneath always guarantees a sane paint if anything fails.
+   */
+  sidebarGrad: [string, string, string] | null;
+  /** Same 3-stop gradient, for the agent panel. `null` = its flat default. */
+  agentGrad: [string, string, string] | null;
   mode: 'dark' | 'light';
+}
+
+/** Coerce anything into a #rrggbb string, or null when it isn't one. */
+export function asHex(v: unknown): string | null {
+  return typeof v === 'string' && /^#[0-9a-f]{6}$/i.test(v) ? v.toLowerCase() : null;
+}
+
+/**
+ * Normalise a stored 3-colour gradient. Returns null unless all three stops
+ * are valid hex — a half-filled gradient would render as a broken wash.
+ */
+export function asTriple(v: unknown): [string, string, string] | null {
+  if (!Array.isArray(v) || v.length !== 3) return null;
+  const hexes = v.map(asHex);
+  if (hexes.some((h) => h === null)) return null;
+  return hexes as [string, string, string];
 }
 
 /** Curated desaturated per-Space hues — no neon. */
@@ -269,6 +322,11 @@ export const DEFAULT_DARK_TOKENS: ThemeTokens = {
   accentText: '#0B0B0D',
   spaceColor: '#7FA6A3',
   radiusScale: 0.6,
+  // Off by default: turning this on by default would silently re-skin every
+  // existing Bit. The user dials it up in Appearance → Sidebar.
+  sidebarTexture: 0,
+  sidebarGrad: null,
+  agentGrad: null,
   mode: 'dark'
 };
 
@@ -293,6 +351,9 @@ export const DEFAULT_LIGHT_TOKENS: ThemeTokens = {
   accentText: '#1C1503',
   spaceColor: '#5F7F7C',
   radiusScale: 0.6,
+  sidebarTexture: 0,
+  sidebarGrad: null,
+  agentGrad: null,
   mode: 'light'
 };
 
@@ -323,6 +384,23 @@ export function tokensToCssVars(t: ThemeTokens): Record<string, string> {
     ['spaceColor', '--nt-space']
   ];
   for (const [k, css] of map) v[css] = t[k] as string;
+
+  // --- sidebar paint: grain + 3-stop gradient ----------------------------
+  // The gradient stops are ALWAYS emitted. With no gradient configured all
+  // three collapse to sidebarBg, so the gradient layer renders flat and the
+  // renderer needs no conditional markup.
+  const flat = t.sidebarBg;
+  const [ga, gb, gc] = t.sidebarGrad ?? [flat, flat, flat];
+  v['--nt-sidebar-grad-a'] = ga;
+  v['--nt-sidebar-grad-b'] = gb;
+  v['--nt-sidebar-grad-c'] = gc;
+  v['--nt-sidebar-texture'] = String(Math.min(1, Math.max(0, t.sidebarTexture ?? 0)));
+  // Agent panel: its own gradient, falling back to the panel's flat surface.
+  const [aa, ab, ac] = t.agentGrad ?? [t.bgSubtle, t.bgSubtle, t.bgSubtle];
+  v['--nt-agent-grad-a'] = aa;
+  v['--nt-agent-grad-b'] = ab;
+  v['--nt-agent-grad-c'] = ac;
+
   const m = 0.25 + (t.radiusScale ?? 0.6); // 0.25x–1.25x over the 6/10/14 scale
   v['--nt-r-sm'] = `${Math.round(RADII.sm * m)}px`;
   v['--nt-r-md'] = `${Math.round(RADII.md * m)}px`;
@@ -750,13 +828,15 @@ export interface AdBlockStats {
 }
 
 /**
- * Playback state of the background media tab's best video, pushed from
- * main ~1Hz while a video plays in a NON-active tab. Drives the sidebar's
- * curved media viewfinder, which renders only while `background` is true.
+ * Playback state of the best video on the media tab, pushed from main ~1Hz
+ * while a video plays — in the active tab or a background one. Drives the
+ * sidebar's curved media viewfinder.
  */
 export interface MediaState {
   hasVideo: boolean;
   tabId?: string;
+  /** The media tab is NOT the active tab. Emphasis only — frames are
+   *  requested for the media tab either way. */
   background?: boolean;
   paused: boolean;
   position: number;
@@ -994,6 +1074,11 @@ export interface NextTokenAPI {
   historyDelete(at: number, url: string): Promise<void>;
   historyClearRange(range: 'hour' | 'day' | 'week' | 'all'): Promise<void>;
   tabsPin(tabId: string, pinned: boolean): Promise<void>;
+  /** App Store: add the current page (or any URL) to the global pinned grid. */
+  pinnedAppsAdd(url: string, title: string): Promise<void>;
+  pinnedAppsRemove(id: string): Promise<void>;
+  /** Move a pinned app before `beforeId` (null = end of the grid). */
+  pinnedAppsReorder(id: string, beforeId: string | null): Promise<void>;
   tabsMove(tabId: string, spaceId: string): Promise<void>;
   /** Reorder a tab: move it before `beforeTabId` (null = end of its folder/section). */
   tabsReorder(tabId: string, beforeTabId: string | null, folderId: string | null): Promise<void>;
@@ -1097,6 +1182,8 @@ export interface NextTokenAPI {
   uiSetSidebarWidth(width: number | null): Promise<void>;
   /** Persist an explicit agent-panel width (px); null clears it back to default. */
   uiSetAgentPanelWidth(width: number | null): Promise<void>;
+  /** Persist the App Store box height in the sidebar (px); null = default. */
+  uiSetAppStoreHeight(height: number | null): Promise<void>;
   // agent
   agentChat(message: string, opts?: { voice?: boolean }): Promise<string>;
   agentCancel(runId: string): Promise<void>;

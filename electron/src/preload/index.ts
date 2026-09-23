@@ -109,6 +109,9 @@ const api: NextTokenAPI = {
   historyDelete: (at, url) => ipcRenderer.invoke('nt.history.delete', at, url),
   historyClearRange: (range) => ipcRenderer.invoke('nt.history.clear-range', range),
   tabsPin: (tabId, pinned) => ipcRenderer.invoke('nt.tabs.pin', tabId, pinned),
+  pinnedAppsAdd: (url, title) => ipcRenderer.invoke('nt.pinned.add', url, title),
+  pinnedAppsRemove: (id) => ipcRenderer.invoke('nt.pinned.remove', id),
+  pinnedAppsReorder: (id, beforeId) => ipcRenderer.invoke('nt.pinned.reorder', id, beforeId),
   tabsMove: (tabId, spaceId) => ipcRenderer.invoke('nt.tabs.move', tabId, spaceId),
   tabsReorder: (tabId, beforeTabId, folderId) => ipcRenderer.invoke('nt.tabs.reorder', tabId, beforeTabId, folderId),
   tabsSetFolder: (tabId, folderId) => ipcRenderer.invoke('nt.tabs.set-folder', tabId, folderId),
@@ -197,6 +200,7 @@ const api: NextTokenAPI = {
   uiSetSettingsOpen: (o) => ipcRenderer.invoke('nt.ui.settings-open', o),
   uiSetSidebarWidth: (w) => ipcRenderer.invoke('nt.ui.sidebar-width', w),
   uiSetAgentPanelWidth: (w) => ipcRenderer.invoke('nt.ui.agent-panel-width', w),
+  uiSetAppStoreHeight: (h) => ipcRenderer.invoke('nt.ui.app-store-height', h),
   // agent
   agentChat: (message, opts) => ipcRenderer.invoke('nt.agent.chat', message, opts),
   agentCancel: (runId) => ipcRenderer.invoke('nt.agent.cancel', runId),

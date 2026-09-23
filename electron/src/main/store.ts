@@ -114,14 +114,38 @@ export interface BookmarksBarPersist {
   scope: 'bit' | 'all';
 }
 
+/**
+ * One entry in the sidebar's App Store grid.
+ *
+ * Pinned apps deliberately live OUTSIDE the per-Bit tab model. The per-Bit
+ * `SpacePersist.pinned` list belongs to a Bit and restores that Bit's pinned
+ * tabs; this list is global and fixed — the same apps in every Bit, paged the
+ * way the App Store home screen is. Clicking an entry opens or focuses an
+ * ordinary tab in whichever Bit the user is currently in.
+ */
+export interface PinnedAppPersist {
+  id: string;
+  url: string;
+  title: string;
+  /** Optional cached favicon (data: URL), refreshed from the icon cache. */
+  favicon?: string;
+}
+
 interface Persisted {
   spaces: SpacePersist[];
+  /**
+   * The global App Store grid, shared by every Bit (see PinnedAppPersist).
+   * Absent in stores written before it existed; backfilled to [] on read.
+   */
+  pinnedApps: PinnedAppPersist[];
   activeSpaceId: string;
   sidebarCollapsed: boolean;
   agentPanelOpen: boolean;
   /** Explicit user-set widths (px), or null for the automatic behavior. */
   sidebarWidth: number | null;
   agentPanelWidth: number | null;
+  /** App Store box height in the sidebar (px), or null for the 2-row default. */
+  appStoreHeight: number | null;
   /** spaceId -> tokens. Seeded from DEFAULT_LIGHT_TOKENS (Dia-inspired calm light) + palette. */
   themes: Record<string, ThemeTokens>;
   voice: {
@@ -219,6 +243,20 @@ function defaultSkills(): SkillPersist[] {
   }));
 }
 
+/**
+ * Normalised key for App Store de-duplication: origin + path, minus trailing
+ * slashes. A query string is kept, since `?v=2` can genuinely be a different
+ * page from the same path.
+ */
+function pinnedKey(url: string): string {
+  try {
+    const u = new URL(url);
+    return `${u.host}${u.pathname}`.replace(/\/+$/, '').toLowerCase() + u.search;
+  } catch {
+    return url.trim().toLowerCase();
+  }
+}
+
 function defaultSpaces(): SpacePersist[] {
   // One default Bit ships with the app ("Bits" is the user-facing name for spaces).
   const s: SpacePersist = {
@@ -242,11 +280,13 @@ function defaults(): Persisted {
   });
   return {
     spaces,
+    pinnedApps: [],
     activeSpaceId: spaces[0].id,
     sidebarCollapsed: false,
     agentPanelOpen: false,
     sidebarWidth: null,
     agentPanelWidth: null,
+    appStoreHeight: null,
     themes,
     voice: {
       enabled: true,
@@ -365,6 +405,33 @@ export class Store {
         if (parsed.privacy.popupTarget !== 'split') parsed.privacy.popupTarget = 'tab';
       }
       if (!Array.isArray(parsed.history)) parsed.history = [];
+      // App Store grid (additive). Installs that predate it get an empty grid;
+      // malformed entries are dropped rather than poisoning the grid render.
+      if (!Array.isArray(parsed.pinnedApps)) {
+        parsed.pinnedApps = [];
+      } else {
+        parsed.pinnedApps = parsed.pinnedApps
+          .filter(
+            (a: unknown): a is PinnedAppPersist =>
+              !!a &&
+              typeof (a as PinnedAppPersist).id === 'string' &&
+              typeof (a as PinnedAppPersist).url === 'string' &&
+              !!(a as PinnedAppPersist).url,
+          )
+          .map((a: PinnedAppPersist) => ({
+            id: a.id,
+            url: a.url,
+            title: typeof a.title === 'string' && a.title ? a.title : a.url,
+            ...(typeof a.favicon === 'string' && a.favicon.startsWith('data:image')
+              ? { favicon: a.favicon }
+              : {}),
+          }));
+      }
+      if (typeof parsed.appStoreHeight !== 'number' || !Number.isFinite(parsed.appStoreHeight)) {
+        parsed.appStoreHeight = null;
+      } else {
+        parsed.appStoreHeight = Math.min(480, Math.max(96, Math.round(parsed.appStoreHeight)));
+      }
       // v0.6.3 (impl-5): startup behavior + download manager + bookmarks bar.
       if (!parsed.startup || typeof parsed.startup !== 'object') {
         parsed.startup = defaults().startup;
@@ -468,6 +535,59 @@ export class Store {
   }
 
   get d(): Persisted { return this.data; }
+
+  // -- App Store (the global pinned grid) -----------------------------------
+
+  /**
+   * Add an app to the global grid, de-duped by normalised URL — pinning the
+   * same site twice would otherwise stack two identical icons. Returns the
+   * existing entry when it was already pinned (refreshing its title).
+   */
+  addPinnedApp(url: string, title: string): PinnedAppPersist {
+    const key = pinnedKey(url);
+    const existing = this.data.pinnedApps.find((a) => pinnedKey(a.url) === key);
+    if (existing) {
+      if (title && title !== existing.title) existing.title = title;
+      this.saveSoon();
+      return existing;
+    }
+    const entry: PinnedAppPersist = {
+      id: randomUUID(),
+      url,
+      title: title || url,
+    };
+    this.data.pinnedApps.push(entry);
+    this.saveSoon();
+    return entry;
+  }
+
+  removePinnedApp(id: string): void {
+    const i = this.data.pinnedApps.findIndex((a) => a.id === id);
+    if (i < 0) return;
+    this.data.pinnedApps.splice(i, 1);
+    this.saveSoon();
+  }
+
+  /** Remove whichever grid entry matches this URL (pin = App Store membership). */
+  removePinnedAppForUrl(url: string): void {
+    const key = pinnedKey(url);
+    const i = this.data.pinnedApps.findIndex((a) => pinnedKey(a.url) === key);
+    if (i < 0) return;
+    this.data.pinnedApps.splice(i, 1);
+    this.saveSoon();
+  }
+
+  /** Move a pinned app so it sits before `beforeId` (null = end of the grid). */
+  reorderPinnedApp(id: string, beforeId: string | null): void {
+    const list = this.data.pinnedApps;
+    const from = list.findIndex((a) => a.id === id);
+    if (from < 0) return;
+    const [moved] = list.splice(from, 1);
+    const to = beforeId ? list.findIndex((a) => a.id === beforeId) : -1;
+    if (to < 0) list.push(moved);
+    else list.splice(to, 0, moved);
+    this.saveSoon();
+  }
 
   // -- spaces ---------------------------------------------------------------
   addSpace(name: string): SpacePersist {

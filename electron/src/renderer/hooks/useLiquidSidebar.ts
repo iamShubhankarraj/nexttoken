@@ -39,6 +39,20 @@ export interface LiquidSidebarRefs {
   seamFillRef: React.RefObject<SVGPathElement | null>;
   /** Soft highlight along the liquid edge (stroke). */
   seamHiRef: React.RefObject<SVGPathElement | null>;
+  /**
+   * Curved resize-handle affordance: the hover/drag line on the sidebar's
+   * right edge. It is given the SAME path as the seam edge each frame, so the
+   * grab line bends with the sidebar's curve (including both scoops) instead
+   * of being a straight vertical rule that cuts across the curve.
+   */
+  resizeAffRef: React.RefObject<SVGPathElement | null>;
+  /**
+   * Paper-grain layer. Shares the fill path, so the grain is clipped to the
+   * sidebar's organic shape (scoops included) and follows the breathing width
+   * for free. Always mounted; its strength is the --nt-sidebar-texture
+   * opacity, which is what lets the settings slider preview live.
+   */
+  seamGrainRef: React.RefObject<SVGPathElement | null>;
   /** The gliding active-tab pill. */
   glideRef: React.RefObject<HTMLDivElement | null>;
   /** The scroll viewport containing the tab lists. */
@@ -246,6 +260,10 @@ export function useLiquidSidebar(
         const p = buildSeamPaths(s.w, s.h, s.mt);
         r.seamFillRef.current?.setAttribute("d", p.fill);
         r.seamHiRef.current?.setAttribute("d", p.edge);
+        // The resize affordance traces the very same edge.
+        r.resizeAffRef.current?.setAttribute("d", p.edge);
+        // Grain reuses the fill outline (null ref when texture is off).
+        r.seamGrainRef.current?.setAttribute("d", p.fill);
         // Publish the live morph param too: the viewfinder reads --sbw and
         // --media-t and rebuilds the EXACT scoop curve itself (same function,
         // same params), so its timeline can never drift from the seam.

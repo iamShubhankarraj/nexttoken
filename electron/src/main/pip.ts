@@ -1,18 +1,24 @@
 /**
- * pip.ts — the custom Next Token Picture-in-Picture window.
+ * pip.ts — Picture-in-Picture.
  *
- * A small frameless, transparent, always-on-top window with real rounded
- * corners (~14px), warm-charcoal chrome and ember accents. It shows the
- * same live low-fps frame stream captured for the sidebar's curved media
- * viewfinder (webContents.capturePage, cropped to the video), with working
- * play/pause + close transport buttons. The body drags the window;
- * buttons are no-drag. It never steals focus: it appears with
- * showInactive() and frame updates never touch focus.
+ * NATIVE FIRST. `togglePipWindow` hands the video to the page's own
+ * requestPictureInPicture() so it goes to the OS compositor and plays at
+ * display refresh rate — behaving exactly like PiP in Safari or Chrome.
  *
- * Toggle semantics: opening while the window is already up closes it.
- * If the custom window can't attach (no video element / capture fails),
- * the native requestPictureInPicture path (with userGesture) is the
- * fallback.
+ * The custom window below is the FALLBACK, for pages that refuse native PiP
+ * (DRM-gated players, sites that gate it behind an account). It is a small
+ * frameless, transparent, always-on-top window with real rounded corners
+ * (~14px), warm-charcoal chrome and ember accents, showing a live low-fps
+ * frame stream (webContents.capturePage, cropped to the video) with working
+ * play/pause + close transport buttons; the body drags the window and the
+ * buttons are no-drag. It appears with showInactive() so it never steals
+ * focus.
+ *
+ * WHY IT IS ONLY A FALLBACK: a screenshot stream is not video. It is capped
+ * at ~3fps, and `capturePage()` on a tab that isn't painting (a background
+ * tab's <webview> is `display: none`) returns an empty image entirely — so
+ * the window looks jittery, then stutters, then appears frozen. No amount of
+ * tuning the capture rate fixes that; only the native path is real video.
  */
 import { BrowserWindow, screen } from 'electron';
 import path from 'node:path';
@@ -97,9 +103,10 @@ function startFrames(tabs: TabManager, onRetire: () => void): void {
 }
 
 /**
- * Toggle the custom PiP window for a tab (defaults to the active tab).
- * Returns {ok:false, error} when nothing could be shown — the renderer
- * surfaces the error in a toast.
+ * Toggle Picture-in-Picture for a tab (defaults to the active tab): native
+ * PiP first, the custom branded window as the fallback. Returns
+ * {ok:false, error} when neither could show anything — the renderer surfaces
+ * the error in a toast.
  */
 export async function togglePipWindow(
   tabs: TabManager,
@@ -108,16 +115,27 @@ export async function togglePipWindow(
   onAsyncError?: (message: string) => void
 ): Promise<{ ok: boolean; error?: string }> {
   const targetId = tabId ?? tabs.activeTabId ?? undefined;
-  // Toggle off when it's already up (same tab), or switch tabs.
+  // Toggle off when it's already up (same tab), or switch tabs. Must be read
+  // before closePipWindow(), which clears pipTabId.
   if (isPipOpen()) {
-    if (pipTabId === targetId) {
-      closePipWindow();
-      return { ok: true };
-    }
+    const wasTab = pipTabId;
     closePipWindow();
+    if (wasTab === targetId) return { ok: true };
   }
   const wc = targetId ? tabs.webContentsFor(targetId) : tabs.activeWebContents();
   if (!wc) return { ok: false, error: 'No video tab open.' };
+
+  // 1) NATIVE PiP. Real video on the OS compositor: display refresh rate,
+  //    smooth window drag/resize, correct behaviour on full-screen apps and
+  //    Spaces. It also self-toggles (exits when a PiP element already
+  //    exists), which is what makes the button a true toggle here too.
+  const native = await enterNativePictureInPicture(tabs, targetId);
+  if (native.ok) return native;
+
+  // 2) Fallback: the branded Next Token window (screenshot stream). Only
+  //    worth building when the page really has a video element — otherwise
+  //    native already told us there is nothing here, and it reuses the same
+  //    "best video" heuristic.
   let playable = false;
   try {
     playable = await hasPlayableVideo(wc);
@@ -125,7 +143,6 @@ export async function togglePipWindow(
     playable = false;
   }
   if (!playable) {
-    // No video element to attach to — the native path can't help either.
     return { ok: false, error: 'No playable video found on this page.' };
   }
 
@@ -200,16 +217,13 @@ export async function togglePipWindow(
     });
     return { ok: true };
   } catch (e) {
+    // Native PiP was already attempted above and refused, so there is no
+    // second fallback left — report why the custom window couldn't attach.
     closePipWindow();
-    // Fallback: the page's own native PiP (userGesture grants activation).
-    try {
-      return await enterNativePictureInPicture(tabs, targetId);
-    } catch {
-      return {
-        ok: false,
-        error: e instanceof Error ? e.message : 'Picture in Picture failed.',
-      };
-    }
+    return {
+      ok: false,
+      error: e instanceof Error ? e.message : 'Picture in Picture failed.',
+    };
   }
 }
 

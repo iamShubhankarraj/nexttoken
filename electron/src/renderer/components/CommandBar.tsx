@@ -73,7 +73,7 @@ export function CommandBar({ onClose }: { onClose: () => void }) {
             id: `tab-${t.id}`,
             group: "Tabs",
             title: t.title || "New tab",
-            subtitle: `${space.name} · ${domainOf(t.url)}${t.pinned ? " · pinned" : ""}`,
+            subtitle: `${space.name} · ${domainOf(t.url)}${t.pinned ? " · App Store" : ""}`,
             icon: Icon,
             run: run(async () => {
               if (space.id !== s.activeSpaceId) await api.spacesSwitch(space.id);

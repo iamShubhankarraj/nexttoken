@@ -29,8 +29,8 @@ const KIND_LABELS: Record<Kind, { label: string; hint: string }> = {
     hint: "Folder structure preserved, added to this Bit",
   },
   tabs: {
-    label: "Open & pinned tabs",
-    hint: "Pinned tabs arrive pinned, opened in this Bit",
+    label: "Open tabs & App Store",
+    hint: "Pinned sites arrive in the App Store, opened in this Bit",
   },
   passwords: {
     label: "Saved passwords",
@@ -331,7 +331,7 @@ function ImportResult({
     ["Bookmarks added", r.bookmarksAdded],
     ["Bookmarks skipped (duplicates)", r.bookmarksSkippedDupes],
     ["Tabs opened", r.tabsOpened],
-    ["Tabs pinned", r.tabsPinned],
+    ["Added to App Store", r.tabsPinned],
   ];
   return (
     <div>

@@ -15,7 +15,7 @@ const MODES: Array<{ id: Mode; title: string; hint: string }> = [
   {
     id: "restore",
     title: "Restore the last session",
-    hint: "Reopen the tabs you had open, per Bit. Pinned tabs always come back.",
+    hint: "Reopen the tabs you had open, per Bit. App Store apps always come back.",
   },
   {
     id: "newtab",

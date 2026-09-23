@@ -9,7 +9,10 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-const electronBin = path.join(root, 'node_modules', 'electron', 'dist', 'electron');
+// Linux/CI ships dist/electron; macOS ships dist/Electron.app/Contents/MacOS/Electron.
+const electronBin = process.platform === 'darwin'
+  ? path.join(root, 'node_modules', 'electron', 'dist', 'Electron.app', 'Contents', 'MacOS', 'Electron')
+  : path.join(root, 'node_modules', 'electron', 'dist', 'electron');
 const extraArgs = (process.env.SMOKE_EXTRA_ARGS || '').split(/\s+/).filter(Boolean);
 
 function launch() {

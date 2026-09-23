@@ -1,7 +1,10 @@
 /**
  * Tab content: every tab is a real <webview> guest owned by the main
  * process. ALL tabs' webviews stay mounted at all times (all spaces) —
- * unmounting destroys the guest. Inactive ones are display:none.
+ * unmounting destroys the guest. Inactive ones are display:none, EXCEPT the
+ * one tab currently producing playable media, which is kept transparent and
+ * laid out so it keeps painting (the sidebar's film line captures frames
+ * from it — see TabWebview.paintHidden).
  *
  * Rules:
  * - Each tab's FIRST-SEEN url is captured in a ref map and used as `src`
@@ -34,6 +37,7 @@ import {
   type LoginReport,
 } from "../loginDetectScript";
 import type { WebviewElement, WebviewNewWindowEvent } from "../webview";
+import { useMediaState } from "./MediaViewfinder";
 
 /** First-seen URL per tab id — captured once, used as webview `src` once. */
 const firstSeenUrl = new Map<string, string>();
@@ -133,6 +137,11 @@ function attachWebview(el: WebviewElement, tabId: string): void {
 export function TabViews() {
   const { snapshot, split, setSplit } = useBrowser();
 
+  // The one tab whose guest must keep producing frames even while hidden, so
+  // the sidebar film line can show media playing in a tab the user left.
+  const media = useMediaState();
+  const mediaTabId = media?.hasVideo ? media.tabId ?? null : null;
+
   const allTabs = useMemo(() => {
     if (!snapshot) return [];
     return snapshot.spaces.flatMap((space) =>
@@ -166,6 +175,7 @@ export function TabViews() {
         right={right?.tab ?? null}
         split={split}
         allTabs={allTabs}
+        mediaTabId={mediaTabId}
       />
     );
   }
@@ -182,6 +192,7 @@ export function TabViews() {
           tabId={tab.id}
           url={tab.url}
           visible={tab.id === activeTabId}
+          paintHidden={tab.id === mediaTabId}
           absolute
         />
       ))}
@@ -196,11 +207,14 @@ function SplitPanes({
   right,
   split,
   allTabs,
+  mediaTabId,
 }: {
   left: { id: string; url: string } | null;
   right: { id: string; url: string } | null;
   split: SplitState;
   allTabs: Array<{ tab: { id: string; url: string }; spaceId: string }>;
+  /** Tab whose guest must keep producing frames (see TabWebview). */
+  mediaTabId: string | null;
 }) {
   const { setSplit } = useBrowser();
   const containerRef = useRef<HTMLDivElement>(null);
@@ -271,6 +285,7 @@ function SplitPanes({
               tabId={tab.id}
               url={tab.url}
               visible={false}
+              paintHidden={tab.id === mediaTabId}
               absolute={false}
             />
           ),
@@ -298,11 +313,27 @@ function TabWebview({
   tabId,
   url,
   visible,
+  paintHidden = false,
   absolute,
 }: {
   tabId: string;
   url: string;
   visible: boolean;
+  /**
+   * Keep this hidden guest PAINTING instead of `display: none`.
+   *
+   * This is what makes the sidebar's film line work for media playing in a
+   * tab the user is not looking at. A `display: none` guest has no layout box,
+   * so Chromium stops producing frames for it and `capturePage()` comes back
+   * empty — there is literally nothing to draw, which is why the film strip
+   * used to appear only on the media tab itself.
+   *
+   * `opacity: 0` still has a full-size layout box, so the guest keeps
+   * rendering and capture works. It is inert (pointer-events none, fully
+   * transparent) and only ever set for the ONE tab currently producing
+   * playable media, so no other background tab pays for this.
+   */
+  paintHidden?: boolean;
   absolute: boolean;
 }) {
   const src = srcFor(tabId, url);
@@ -315,7 +346,8 @@ function TabWebview({
   );
 
   if (!visible) {
-    // Kept mounted so the guest survives; hidden from layout.
+    // Kept mounted so the guest survives; normally hidden from layout — but
+    // the media tab is kept transparent-and-laid-out so it keeps painting.
     // v0.6.6 — allowpopups MUST be emitted as a string *attribute*:
     // React 19's setValueForAttribute() actively REMOVES boolean-valued
     // attributes (except data-/aria-), because <webview> has no hyphen it
@@ -327,13 +359,28 @@ function TabWebview({
     // `boolean` typing; at runtime React sees a string and calls
     // setAttribute('allowpopups', '') during initial mount, before the
     // element is inserted and the guest is created.
+    //
+    // NOTE: no transform/filter here. Anything that promotes this to its own
+    // composited layer with a transform can make Chromium skip rasterising the
+    // guest, which is the very thing we are trying to avoid.
     return (
       <webview
         ref={ref}
         src={src}
         partition="persist:nexttoken"
         allowpopups={"" as unknown as boolean}
-        style={{ display: "none" }}
+        style={
+          paintHidden
+            ? {
+                position: "absolute",
+                inset: 0,
+                width: "100%",
+                height: "100%",
+                opacity: 0,
+                pointerEvents: "none",
+              }
+            : { display: "none" }
+        }
       />
     );
   }

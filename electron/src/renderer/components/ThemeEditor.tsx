@@ -252,6 +252,123 @@ export function ThemeEditor({ spaceId }: { spaceId: string }) {
         </div>
       </FieldBlock>
 
+      {/* Paper grain — Arc-like texture over the sidebar paint. */}
+      <FieldBlock
+        label="Paper texture"
+        hint="Grain over the sidebar. 0% is perfectly flat; a light touch reads as paper."
+      >
+        <span className="flex w-64 items-center gap-2.5">
+          <input
+            type="range"
+            min={0}
+            max={1}
+            step={0.01}
+            value={tokens.sidebarTexture ?? 0}
+            onChange={(e) => update("sidebarTexture", Number(e.target.value))}
+            className="nt-range w-full"
+            aria-label="Paper texture strength"
+          />
+          <span
+            className="nt-num w-10 text-right text-[12px]"
+            style={{ color: "var(--nt-text-2)" }}
+          >
+            {Math.round((tokens.sidebarTexture ?? 0) * 100)}%
+          </span>
+          <button
+            onClick={() => update("sidebarTexture", 0)}
+            title="Back to a flat sidebar"
+            className="nt-r-sm border px-2.5 py-1.5 text-[12px] transition-colors hover:bg-[var(--nt-bg-hover)]"
+            style={{ borderColor: "var(--nt-border)", color: "var(--nt-text-2)" }}
+          >
+            Flat
+          </button>
+        </span>
+      </FieldBlock>
+
+      {/* Sidebar gradient — three colours blended across the whole sidebar. */}
+      <FieldBlock
+        label="Sidebar gradient"
+        hint="Blend three colours across the sidebar instead of one flat paint."
+      >
+        <div className="flex flex-wrap items-center gap-3">
+          <GradientTriple
+            value={
+              tokens.sidebarGrad ?? [
+                tokens.sidebarBg,
+                tokens.sidebarBg,
+                tokens.sidebarBg,
+              ]
+            }
+            onChange={(v) => update("sidebarGrad", v)}
+          />
+          <button
+            onClick={() =>
+              update(
+                "sidebarGrad",
+                tokens.sidebarGrad
+                  ? null
+                  : [
+                      tokens.sidebarBg,
+                      mixHex(tokens.sidebarBg, tokens.spaceColor, 0.5),
+                      mixHex(tokens.sidebarBg, tokens.accent, 0.28),
+                    ],
+              )
+            }
+            title={
+              tokens.sidebarGrad
+                ? "Go back to one flat sidebar colour"
+                : "Start from a gradient seeded off this Bit's colour"
+            }
+            className="nt-r-sm border px-2.5 py-1.5 text-[12px] transition-colors hover:bg-[var(--nt-bg-hover)]"
+            style={{ borderColor: "var(--nt-border)", color: "var(--nt-text-2)" }}
+          >
+            {tokens.sidebarGrad ? "Turn off" : "Turn on"}
+          </button>
+        </div>
+      </FieldBlock>
+
+      {/* Agent panel gradient — its own wash, independent of the sidebar. */}
+      <FieldBlock
+        label="Agent panel gradient"
+        hint="Three colours for the agent panel, separate from the sidebar."
+      >
+        <div className="flex flex-wrap items-center gap-3">
+          <GradientTriple
+            value={
+              tokens.agentGrad ?? [
+                tokens.bgSubtle,
+                tokens.bgSubtle,
+                tokens.bgSubtle,
+              ]
+            }
+            onChange={(v) => update("agentGrad", v)}
+          />
+          <button
+            onClick={() =>
+              update(
+                "agentGrad",
+                tokens.agentGrad
+                  ? null
+                  : [
+                      tokens.bgSubtle,
+                      mixHex(tokens.bgSubtle, tokens.spaceColor, 0.35),
+                      mixHex(tokens.bgSubtle, tokens.accent, 0.2),
+                    ],
+              )
+            }
+            title={
+              tokens.agentGrad
+                ? "Go back to the agent panel's flat surface"
+                : "Start from a gradient seeded off this Bit's colour"
+            }
+            className="nt-r-sm border px-2.5 py-1.5 text-[12px] transition-colors hover:bg-[var(--nt-bg-hover)]"
+            style={{ borderColor: "var(--nt-border)", color: "var(--nt-text-2)" }}
+          >
+            {tokens.agentGrad ? "Turn off" : "Turn on"}
+          </button>
+        </div>
+      </FieldBlock>
+
       {/* Corner roundness */}
       <FieldBlock label="Corner roundness" hint="Multiplier over the 6 / 10 / 14px scale">
         <span className="flex w-56 items-center gap-2.5">
@@ -406,6 +523,42 @@ function FieldBlock({
       </p>
       {children}
     </div>
+  );
+}
+
+/**
+ * Three colour pickers editing a [from, via, to] gradient triple. Labels are
+ * rendered inside each <label> so the swatch is the accessible target.
+ */
+function GradientTriple({
+  value,
+  onChange,
+}: {
+  value: [string, string, string];
+  onChange: (v: [string, string, string]) => void;
+}) {
+  const labels = ["From", "Via", "To"];
+  return (
+    <span className="flex items-end gap-2.5">
+      {value.map((c, i) => (
+        <label key={labels[i]} className="flex flex-col gap-1">
+          <span className="text-[11px]" style={{ color: "var(--nt-text-3)" }}>
+            {labels[i]}
+          </span>
+          <input
+            type="color"
+            value={/^#[0-9a-f]{6}$/i.test(c) ? c : "#808080"}
+            onChange={(e) => {
+              const next = [...value] as [string, string, string];
+              next[i] = e.target.value;
+              onChange(next);
+            }}
+            className="nt-color h-9 w-12"
+            aria-label={`${labels[i]} colour`}
+          />
+        </label>
+      ))}
+    </span>
   );
 }
 

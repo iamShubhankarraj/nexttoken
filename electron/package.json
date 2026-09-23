@@ -9,7 +9,7 @@
     "react": "^19.2.8",
     "react-dom": "^19.2.8"
   },
-  "description": "Next Token v0.1 \u2014 a real Chromium-based browser with a BYOK AI agent, voice control, and agent terminal access.",
+  "description": "Next Token v0.1 — a real Chromium-based browser with a BYOK AI agent, voice control, and agent terminal access.",
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.3",
     "@types/node": "^24.13.3",
@@ -39,5 +39,5 @@
     "test:adblock": "node scripts/adblock-test.mjs",
     "bench:adblock": "node scripts/adblock-bench.mjs"
   },
-  "version": "0.6.6"
+  "version": "0.6.9"
 }

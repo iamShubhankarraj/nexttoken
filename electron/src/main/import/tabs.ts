@@ -262,7 +262,7 @@ export function parseArcSidebarJson(text: string): ImportedTab[] {
 async function readArcTabs(browser: DetectedBrowser): Promise<TabImport> {
   const warnings: string[] = [];
   if (!browser.sidebarFile) {
-    warnings.push('No Arc sidebar file (StorableSidebar*.json) found; no pinned tabs imported.');
+    warnings.push('No Arc sidebar file (StorableSidebar*.json) found; no App Store sites imported.');
     return { tabs: [], approximate: false, warnings };
   }
   let text: string;

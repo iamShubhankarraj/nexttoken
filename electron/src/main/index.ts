@@ -519,12 +519,18 @@ function snapshot(): BrowserSnapshot {
   });
   return {
     spaces,
+    // Global App Store grid — the same entries in every Bit. Favicons are
+    // joined from the host cache so tiles show real icons (kept fresh by
+    // onFaviconCacheChange → sendSnapshot).
+    pinnedApps: d.pinnedApps.map((a) => ({ ...a, favicon: tabs.faviconFor(a.url) })),
     activeSpaceId: d.activeSpaceId,
-    archived: d.archived,
+    // Refresh archived rows from the favicon cache so they show real icons.
+    archived: d.archived.map((a) => ({ ...a, favicon: tabs.faviconFor(a.url) })),
     sidebarCollapsed: d.sidebarCollapsed,
     agentPanelOpen: d.agentPanelOpen,
     sidebarWidth: d.sidebarWidth ?? null,
     agentPanelWidth: d.agentPanelWidth ?? null,
+    appStoreHeight: d.appStoreHeight ?? null,
     // v0.6.3 (impl-5): bookmarks bar visibility + scope.
     bookmarksBar: { visible: d.bookmarksBar.visible, scope: d.bookmarksBar.scope },
     settingsOpen
@@ -875,6 +881,27 @@ function registerIpc() {
     const t = tabs.tabs.get(tabId);
     if (t) { t.pinned = pinned; tabs.persistPinned(); sendSnapshot(); }
   });
+  // App Store: the global pinned grid. Separate from nt.tabs.pin above, which
+  // pins a TAB inside one Bit. These entries belong to no Bit — they are the
+  // same grid in all of them, and clicking one opens an ordinary tab in the
+  // Bit the user is currently in (the renderer does that part).
+  guardedHandle('nt.pinned.add', (_e, url: string, title: string) => {
+    if (typeof url !== 'string' || !url) return;
+    store.addPinnedApp(url, typeof title === 'string' ? title : '');
+    // Warm the icon cache so the tile shows a real favicon immediately.
+    tabs.ensureFavicon(url);
+    sendSnapshot();
+  });
+  guardedHandle('nt.pinned.remove', (_e, id: string) => {
+    if (typeof id !== 'string') return;
+    store.removePinnedApp(id);
+    sendSnapshot();
+  });
+  guardedHandle('nt.pinned.reorder', (_e, id: string, beforeId: string | null) => {
+    if (typeof id !== 'string') return;
+    store.reorderPinnedApp(id, typeof beforeId === 'string' ? beforeId : null);
+    sendSnapshot();
+  });
   guardedHandle('nt.tabs.reorder', (_e, tabId: string, beforeTabId: string | null, folderId: string | null) => {
     tabs.reorder(tabId, beforeTabId, folderId);
   });
@@ -1074,6 +1101,10 @@ function registerIpc() {
             if (t) {
               t.pinned = true;
               tabs.persistPinned();
+              // "Pinned" IS App Store membership — seed the global grid too,
+              // so imported pinned sites show up as App Store tiles.
+              store.addPinnedApp(t.url, t.title || t.url);
+              tabs.ensureFavicon(t.url);
             }
           },
           existingBookmarkUrls: (sid) =>
@@ -1195,6 +1226,13 @@ function registerIpc() {
     store.d.agentPanelWidth =
       typeof w === 'number' && Number.isFinite(w)
         ? Math.min(560, Math.max(300, Math.round(w)))
+        : null;
+    store.saveSoon(); sendSnapshot();
+  });
+  guardedHandle('nt.ui.app-store-height', (_e, h: unknown) => {
+    store.d.appStoreHeight =
+      typeof h === 'number' && Number.isFinite(h)
+        ? Math.min(480, Math.max(96, Math.round(h)))
         : null;
     store.saveSoon(); sendSnapshot();
   });
@@ -2048,6 +2086,14 @@ app.whenReady().then(() => {
       }
     }
   );
+  // When a host's cached favicon lands (page report, origin fetch, or Google
+  // s2 fallback), re-push the snapshot so App Store tiles + bookmarks update.
+  tabs.onFaviconCacheChange = () => sendSnapshot();
+  // Warm missing favicons at launch (App Store entries + bookmarks) so tiles
+  // show real icons on first paint instead of placeholder glyphs. ensureFavicon
+  // is a no-op for hosts already in the cache; each host fetches at most once.
+  for (const a of store.d.pinnedApps) tabs.ensureFavicon(a.url);
+  for (const s of store.d.spaces) for (const b of s.bookmarks) tabs.ensureFavicon(b.url);
   // v0.6.3 (impl-4): reader mode + print/PDF/screenshot IPC.
   registerReaderIpc({
     store,
@@ -2069,15 +2115,17 @@ app.whenReady().then(() => {
   closedTabStack = new ClosedTabStack();
   initModelTier();
   registerIpc();
-  // Curved media viewfinder: sweep all tabs ~1Hz for the background media
-  // tab (a video in a NON-active tab) and push its state to the renderer.
-  // The viewfinder appears only when the user is not on the media tab.
-  // A ~4fps frame stream feeds the viewfinder's thin curved video line.
-  // The line is only ~16px wide, so 200px frames are plenty — cheap enough
-  // to never regress whole-Mac responsiveness.
+  // Curved media viewfinder: sweep all tabs ~1Hz for the media tab whose
+  // video is actually playing (foreground or background) and push its state
+  // to the renderer. A ~4fps frame stream feeds the viewfinder's thin curved
+  // video line. The line is only ~20px wide, so 200px frames are plenty —
+  // cheap enough to never regress whole-Mac responsiveness. Note that a
+  // background tab's webview is `display: none` and does not paint, so
+  // capturePage yields nothing for it: the strip then stays hidden and only
+  // the timeline/transport render.
   startMediaPolling(tabs, {
     send: (s) => {
-      currentMediaTabId = s.hasVideo && s.background ? (s.tabId ?? null) : null;
+      currentMediaTabId = s.hasVideo ? (s.tabId ?? null) : null;
       if (win && !win.isDestroyed()) win.webContents.send('nt.media.state', s);
     },
     isHidden: () => !win || win.isDestroyed() || !win.isVisible(),

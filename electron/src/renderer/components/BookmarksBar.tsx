@@ -75,7 +75,7 @@ export function BookmarksBar() {
     >
       {items.length === 0 && (
         <span className="px-2 text-[11.5px]" style={{ color: "var(--nt-text-3)" }}>
-          No bookmarks yet — star a page to pin it here.
+          No bookmarks yet — star a page to keep it here.
         </span>
       )}
       {[...folders.entries()].map(([name, list]) => (

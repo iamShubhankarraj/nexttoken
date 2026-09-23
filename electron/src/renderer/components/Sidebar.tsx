@@ -1,15 +1,18 @@
 /**
- * Arc-style sidebar: Bits (the user-facing name for spaces), favorites
- * dock, pinned tabs, per-Bit folders, open tabs, bookmarks, auto-archive.
+ * Arc-style sidebar: Bits (the user-facing name for spaces), the App Store
+ * (pinned apps), per-Bit folders, open tabs, bookmarks, auto-archive.
  *
  * - Every tab row shows its real site favicon (Favicon component).
- * - Tabs are draggable: reorder within a list, drop onto a folder to file,
- *   drop onto Pinned to pin.
- * - Each Bit keeps its own tabs, pinned tabs, folders, and bookmarks;
- *   switching Bits swaps the whole workspace. Bit state persists per Bit
- *   (open tabs restore on launch; see TabManager.persistSession).
+ * - Tabs are draggable: reorder within a list, drop onto a folder to file.
+ * - Each Bit keeps its own tabs, folders, and bookmarks; switching Bits
+ *   swaps the whole workspace. Bit state persists per Bit (open tabs
+ *   restore on launch; see TabManager.persistSession).
  * - "Tidy tabs" asks a LOCAL model to propose folder groupings + closures
  *   and opens a review dialog — nothing is applied without confirmation.
+ *
+ * Pinned tabs ARE the App Store: right-click → "Add to App Store" puts the
+ * site in the global App Store grid (same tiles in every Bit). There is no
+ * separate per-Bit "Pinned" rows section anymore.
  */
 
 import {
@@ -25,17 +28,16 @@ import {
   Folder,
   FolderPlus,
   Globe,
+  LayoutGrid,
   Link,
+  Minus,
   MoreHorizontal,
   Pencil,
-  Pin,
-  PinOff,
   Plus,
   RotateCw,
   Settings,
   SlidersHorizontal,
   Sparkles,
-  Star,
   Trash2,
   Volume2,
   VolumeX,
@@ -52,14 +54,20 @@ import type {
 } from "../../shared/ipc";
 import { useBrowser } from "../BrowserContext";
 import { domainOf, nt } from "../nt";
+import { AppStore } from "./AppStore";
 import { Favicon } from "./Favicon";
 import { TidyDialog } from "./TidyDialog";
 import { VirtualList } from "./VirtualList";
 import { useLiquidSidebar, type LiquidSidebarRefs } from "../hooks/useLiquidSidebar";
+import { useBitScroll } from "../hooks/useBitScroll";
 import { MediaViewfinder, useMediaState } from "./MediaViewfinder";
 
 const ROW_H = 36;
 const MAX_LIST_H = 440;
+/** Height of one Bit page card in the switcher deck. */
+const BIT_CARD_H = 40;
+/** How much of each lower page stays visible beneath the top one (px). */
+const BIT_PEEK = 7;
 const DRAG_MIME = "text/nt-tab-id";
 
 /**
@@ -82,6 +90,9 @@ function tabIdFromDataTransfer(e: React.DragEvent): string | null {
 
 export function Sidebar() {
   const { snapshot, activeSpace } = useBrowser();
+  /** Latest snapshot readable inside the stable (memoized) drag callbacks. */
+  const snapshotRef = useRef(snapshot);
+  snapshotRef.current = snapshot;
   const [tidyOpen, setTidyOpen] = useState(false);
   const [dragId, setDragIdState] = useState<string | null>(null);
   /** Insertion indicator: the tab id to insert before (null = end of list). */
@@ -90,7 +101,6 @@ export function Sidebar() {
   /** Folder currently highlighted as a drop target (folder id, "pinned", "ungrouped"). */
   const [dropTarget, setDropTarget] = useState<string | null>(null);
   const [collapsedFolders, setCollapsedFolders] = useState<Set<string>>(new Set());
-  const [pinnedCollapsed, setPinnedCollapsed] = useState(false);
   const [bookmarksOpen, setBookmarksOpen] = useState(true);
   const [archiveOpen, setArchiveOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
@@ -103,6 +113,8 @@ export function Sidebar() {
   const asideRef = useRef<HTMLElement | null>(null);
   const seamFillRef = useRef<SVGPathElement | null>(null);
   const seamHiRef = useRef<SVGPathElement | null>(null);
+  const seamGrainRef = useRef<SVGPathElement | null>(null);
+  const resizeAffRef = useRef<SVGPathElement | null>(null);
   const glideRef = useRef<HTMLDivElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const tabContentRef = useRef<HTMLDivElement | null>(null);
@@ -111,6 +123,8 @@ export function Sidebar() {
       asideRef,
       seamFillRef,
       seamHiRef,
+      seamGrainRef,
+      resizeAffRef,
       glideRef,
       scrollRef,
       contentRef: tabContentRef,
@@ -124,6 +138,15 @@ export function Sidebar() {
     !!media?.hasVideo,
     snapshot?.sidebarWidth ?? null,
   );
+
+  // Two-finger horizontal scroll over the sidebar switches Bits. Declared up
+  // here because every hook must sit above the early return below.
+  useBitScroll({
+    targetRef: asideRef,
+    spaceIds: snapshot?.spaces.map((s) => s.id) ?? [],
+    activeSpaceId: activeSpace?.id,
+    enabled: !!snapshot && !!activeSpace,
+  });
 
   // Drag-resize the sidebar from its right edge. The engine is driven
   // imperatively (no React re-render per pixel); the liquid seam re-morphs
@@ -254,12 +277,10 @@ export function Sidebar() {
         e.preventDefault();
         e.stopPropagation();
         clearDnd();
-        // Pin state follows the target section: dropping a pinned tab into an
-        // unpinned section unpins it (and vice versa).
+        // Pin state follows App Store membership only — row drops never flip it.
         const folderId = listKey.startsWith("folder:") ? listKey.slice("folder:".length) : null;
-        const wantPinned = listKey === "pinned";
         const api = nt();
-        void api.tabsPin(id, wantPinned).then(() => api.tabsReorder(id, tab.id, wantPinned ? null : folderId));
+        void api.tabsReorder(id, tab.id, folderId);
       },
       /** End-of-list zone: append to this folder/section. */
       onEndDragOver: (e: React.DragEvent, listKey: string) => {
@@ -277,9 +298,7 @@ export function Sidebar() {
         e.preventDefault();
         e.stopPropagation();
         clearDnd();
-        const wantPinned = listKey === "pinned";
-        const api = nt();
-        void api.tabsPin(id, wantPinned).then(() => api.tabsReorder(id, null, wantPinned ? null : folderId));
+        void nt().tabsReorder(id, null, folderId);
       },
       /** Folder header: highlight + file on drop. */
       onFolderDragOver: (e: React.DragEvent, folderId: string) => {
@@ -297,8 +316,17 @@ export function Sidebar() {
         e.preventDefault();
         e.stopPropagation();
         clearDnd();
-        // Folders are unpinned sections — unpin first so the filing sticks.
+        // Filing into a folder also takes the tab out of the App Store
+        // so the list stays consistent (pin = App Store membership).
         const api = nt();
+        const snap = snapshotRef.current;
+        const dropped = snap?.spaces.flatMap((s) => s.tabs).find((t) => t.id === id);
+        if (dropped) {
+          const hit = (snap?.pinnedApps ?? []).find(
+            (a) => a.url === dropped.url || a.url === dropped.url.replace(/\/$/, ""),
+          );
+          if (hit) void api.pinnedAppsRemove(hit.id);
+        }
         void api.tabsPin(id, false).then(() => api.tabsSetFolder(id, folderId));
       },
     }),
@@ -308,10 +336,10 @@ export function Sidebar() {
   // Every hook above this line — the early return must come after all hooks.
   if (!snapshot || !activeSpace) return null;
 
-  const pinned = activeSpace.tabs.filter((t) => t.pinned);
-  const unpinned = activeSpace.tabs.filter((t) => !t.pinned);
-  const ungrouped = unpinned.filter((t) => !t.folderId);
-  const folderTabs = (f: BitFolder) => unpinned.filter((t) => t.folderId === f.id);
+  // All tabs live in the normal lists; "pinned" only means "in the App Store"
+  // (restore-on-launch + the global tile grid) — there is no Pinned section.
+  const ungrouped = activeSpace.tabs.filter((t) => !t.folderId);
+  const folderTabs = (f: BitFolder) => activeSpace.tabs.filter((t) => t.folderId === f.id);
 
   const toggleFolder = (id: string) =>
     setCollapsedFolders((prev) => {
@@ -333,8 +361,64 @@ export function Sidebar() {
           The path is rebuilt per frame by the breathing spring — see
           useLiquidSidebar. pointer-events none; it never blocks content. */}
       <svg className="nt-seam-svg" aria-hidden="true">
+        <defs>
+          {/* Sidebar paint. The three stops are ALWAYS emitted by
+              tokensToCssVars — with no user gradient they all collapse to
+              sidebarBg, so this renders flat and no conditional markup is
+              needed. The div's flat background underneath is the safety net
+              if the reference ever fails to resolve. */}
+          <linearGradient id="nt-seam-grad" x1="0%" y1="0%" x2="72%" y2="100%">
+            <stop offset="0%" stopColor="var(--nt-sidebar-grad-a)" />
+            <stop offset="50%" stopColor="var(--nt-sidebar-grad-b)" />
+            <stop offset="100%" stopColor="var(--nt-sidebar-grad-c)" />
+          </linearGradient>
+          {/* Paper grain. The fractal noise is rasterised ONCE into a 96px
+              tile and then repeated by the pattern — deliberately NOT a
+              filter applied to the live seam path, which re-tessellates every
+              frame while the sidebar breathes. Re-running feTurbulence per
+              frame would be ruinous; this costs one tile. */}
+          <pattern
+            id="nt-seam-paper"
+            width="96"
+            height="96"
+            patternUnits="userSpaceOnUse"
+          >
+            <filter
+              id="nt-seam-paper-f"
+              primitiveUnits="userSpaceOnUse"
+              x="0"
+              y="0"
+              width="96"
+              height="96"
+            >
+              <feTurbulence
+                type="fractalNoise"
+                baseFrequency="0.9"
+                numOctaves="4"
+                stitchTiles="stitch"
+              />
+              <feColorMatrix type="saturate" values="0" />
+            </filter>
+            <rect width="96" height="96" filter="url(#nt-seam-paper-f)" />
+          </pattern>
+        </defs>
         <path ref={seamFillRef} className="nt-seam-fill" d="" />
+        {/* Always mounted, so dragging the texture slider previews live: the
+            grain's visibility is the --nt-sidebar-texture opacity, which the
+            Appearance editor paints onto :root on every input. Gating this on
+            a React render would make the preview lag the slider by a save
+            round-trip. At opacity 0 it costs only the per-frame `d`. */}
+        <path ref={seamGrainRef} className="nt-seam-grain" d="" />
         <path ref={seamHiRef} className="nt-seam-hi" d="" />
+      </svg>
+
+      {/* Curved resize affordance: the hover/drag line on the sidebar's right
+          edge is the seam's own edge path, so it bends with the sidebar curve
+          (both scoops included) instead of being a straight vertical rule.
+          Written per frame by the liquid engine; revealed from CSS while the
+          handle is hovered, dragged or focused. Never takes pointer events. */}
+      <svg className="nt-resize-affordance-svg" aria-hidden="true">
+        <path ref={resizeAffRef} className="nt-resize-affordance" d="" />
       </svg>
 
       {/* Media viewfinder: the lower scoop itself becomes a curved video
@@ -348,7 +432,7 @@ export function Sidebar() {
           to return to auto-breathing. */}
       <div
         ref={resizeHandleRef}
-        className="nt-resize-handle"
+        className="nt-resize-handle nt-resize-handle-curved"
         style={{ right: -4 }}
         role="separator"
         aria-orientation="vertical"
@@ -359,11 +443,12 @@ export function Sidebar() {
       />
 
       <div className="relative z-[1] flex h-full min-h-0 flex-col">
-        {/* Traffic-light / drag zone (lights are native: hiddenInset @14,14). */}
-        <div className="nt-drag h-[50px] shrink-0" />
+        {/* Traffic-light / drag zone (lights are native: hiddenInset @14,14).
+            42px clears the lights (14+12=26) with headroom — no extra slack. */}
+        <div className="nt-drag h-[42px] shrink-0" />
 
         {/* Control pills: back, reload | tune, layout. */}
-        <div className="nt-no-drag flex shrink-0 items-center gap-1 px-3">
+        <div className="nt-no-drag flex shrink-0 items-center gap-0.5 px-2.5">
           <button
             title="Back"
             onClick={() => void nt().navBack()}
@@ -400,7 +485,7 @@ export function Sidebar() {
         </div>
 
         {/* URL pill: globe + domain, opens the command bar. */}
-        <div className="nt-no-drag shrink-0 px-3 pt-2.5">
+        <div className="nt-no-drag shrink-0 px-2.5 pt-1">
           <button
             className="nt-url-pill w-full"
             title={
@@ -430,7 +515,7 @@ export function Sidebar() {
         </div>
 
         {/* 2px bit-identity wash on the top edge */}
-        <div className="nt-space-wash mt-2.5 shrink-0" />
+        <div className="nt-space-wash mt-1 shrink-0" />
 
         <BitSwitcher
           spaces={snapshot.spaces}
@@ -439,7 +524,11 @@ export function Sidebar() {
           dragId={dragId}
         />
 
-        <FavoritesDock space={activeSpace} />
+        {/* App Store: the global pinned grid (pinned tabs live HERE). A
+            self-contained, resizable box OUTSIDE the scroll container below —
+            fixed while tabs scroll, same apps in every Bit, and it owns its
+            own horizontal gesture (never switches Bits). */}
+        <AppStore />
 
         <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto pb-2">
           <div ref={tabContentRef} className="relative">
@@ -450,69 +539,6 @@ export function Sidebar() {
               style={{ opacity: 0 }}
               aria-hidden
             />
-        {/* Pinned section doubles as the pin drop zone — visible while
-            dragging even when there are no pinned tabs yet. */}
-        {(pinned.length > 0 || dragId) && (
-          <section
-            className="mt-2"
-            onDragOver={(e) => {
-              if (!(dragId ?? tabIdFromDataTransfer(e))) return;
-              e.preventDefault();
-              setDropTarget("pinned");
-            }}
-            onDragLeave={() => setDropTarget((t) => (t === "pinned" ? null : t))}
-            onDrop={(e) => {
-              const id = dragId ?? tabIdFromDataTransfer(e);
-              if (!id) return;
-              e.preventDefault();
-              clearDnd();
-              void nt().tabsPin(id, true);
-            }}
-          >
-            <button
-              onClick={() => setPinnedCollapsed((c) => !c)}
-              aria-expanded={!pinnedCollapsed}
-              className="nt-r-sm flex w-full items-center gap-1.5 px-1 py-1 text-left transition-colors hover:bg-[var(--nt-bg-hover)]"
-            >
-              {pinnedCollapsed ? (
-                <ChevronRight size={13} strokeWidth={1.75} style={{ color: "var(--nt-text-3)" }} />
-              ) : (
-                <ChevronDown size={13} strokeWidth={1.75} style={{ color: "var(--nt-text-3)" }} />
-              )}
-              <Pin size={13} strokeWidth={1.75} style={{ color: "var(--nt-text-3)" }} />
-              <span className="nt-micro">Pinned</span>
-              <span
-                className="nt-num ml-auto pr-1 text-[11px]"
-                style={{ color: "var(--nt-text-faint)" }}
-              >
-                {pinned.length}
-              </span>
-            </button>
-            {!pinnedCollapsed && (
-            <div
-              className="nt-r-sm space-y-1 p-0.5 transition-colors"
-              style={
-                dropTarget === "pinned"
-                  ? { background: "var(--nt-accent-soft)", outline: "1px dashed var(--nt-accent)" }
-                  : undefined
-              }
-            >
-              {pinned.map((t) => (
-                <TabRow
-                  key={t.id}
-                  tab={t}
-                  active={t.id === activeSpace.activeTabId}
-                  dnd={dnd}
-                  listKey="pinned"
-                  dragId={dragId}
-                  dropBefore={dropBefore}
-                  dropBeforeKey={dropBeforeKey}
-                />
-              ))}
-            </div>
-            )}
-          </section>
-        )}
 
         {activeSpace.folders.map((f) => {
           const tabs = folderTabs(f);
@@ -815,6 +841,22 @@ function BitSwitcher({
   const deleteTarget = menuBit ? spaces.find((s) => s.id === menuBit.id) : undefined;
   const tabCount = deleteTarget?.tabs.length ?? 0;
 
+  //
+  // The deck order: the active Bit first, then the rest in rotation.
+  //
+  // This is what makes the switcher read as a stack of pages — the page you
+  // are on sits on top and the next one peeks out just beneath it. Switching
+  // Bits brings a different page to the front, and because the cards are
+  // absolutely positioned and animated with `transform`, that promotion is
+  // compositor-only: the sidebar never re-lays out during the turn.
+  //
+  const ordered = useMemo(() => {
+    const i = spaces.findIndex((s) => s.id === activeId);
+    if (i <= 0) return spaces;
+    return [...spaces.slice(i), ...spaces.slice(0, i)];
+  }, [spaces, activeId]);
+  const deckHeight = BIT_CARD_H + Math.max(0, ordered.length - 1) * BIT_PEEK;
+
   const submitCreate = () => {
     const clean = name.trim();
     if (clean) void nt().spacesCreate(clean);
@@ -830,16 +872,27 @@ function BitSwitcher({
   };
 
   return (
-    <div className="px-3 pb-2 pt-3">
-      <div className="flex items-center gap-1">
-        {spaces.map((s, i) => {
+    <div className="px-3 pb-1 pt-1.5">
+      {/* The page deck. Only the top card is fully visible; every card below
+          contributes a BIT_PEEK-tall edge, so the stack reads as pages. */}
+      <div className="nt-bit-deck" style={{ height: deckHeight }}>
+        {ordered.map((s, idx) => {
           const active = s.id === activeId;
+          // Shortcut hint uses the ORIGINAL index (Ctrl/⌘+N), not the deck
+          // position, which rotates as Bits are switched.
+          const shortcut = spaces.indexOf(s) + 1;
           const initial = (s.name.trim()[0] ?? "·").toUpperCase();
           return (
             <button
               key={s.id}
-              title={`${s.name} (Ctrl/⌘+${i + 1}) — right-click for options · drop a tab here to move it`}
-              onClick={() => void nt().spacesSwitch(s.id)}
+              title={`${s.name}${
+                shortcut > 0 && shortcut <= 9 ? ` (Ctrl/⌘+${shortcut})` : ""
+              } — click to bring forward · right-click for options · drop a tab here to move it`}
+              onClick={() => {
+                // The top card is already current — a click there is a no-op
+                // rather than a pointless switch round-trip.
+                if (!active) void nt().spacesSwitch(s.id);
+              }}
               onContextMenu={(e) => {
                 e.preventDefault();
                 setMenuBit({ x: e.clientX, y: e.clientY, id: s.id, name: s.name });
@@ -866,24 +919,31 @@ function BitSwitcher({
                     }
                   : undefined
               }
-              className="nt-r-sm flex h-8 w-8 shrink-0 items-center justify-center transition-colors hover:bg-[var(--nt-bg-hover)]"
-              style={
-                dropBit === s.id
-                  ? { background: "var(--nt-accent-soft)", outline: "1px dashed var(--nt-accent)" }
-                  : active
-                    ? { background: "color-mix(in srgb, var(--nt-space) 16%, transparent)" }
-                    : undefined
-              }
+              className="nt-bit-page"
+              data-active={active ? "true" : "false"}
+              style={{
+                height: BIT_CARD_H,
+                transform: `translateY(${idx * BIT_PEEK}px)`,
+                // The top card must paint over every card below it, which is
+                // what leaves each lower page showing only its edge.
+                zIndex: 100 - idx,
+                ...(dropBit === s.id
+                  ? {
+                      outline: "1px dashed var(--nt-accent)",
+                      background: "var(--nt-accent-soft)",
+                    }
+                  : null),
+              }}
             >
-              <span
-                className="text-[12px] font-semibold"
-                style={{ color: active ? "var(--nt-space)" : "var(--nt-text-3)" }}
-              >
-                {initial}
-              </span>
+              <span className="nt-bit-page-initial">{initial}</span>
+              <span className="nt-bit-page-name">{s.name}</span>
+              <span className="nt-bit-page-count">{s.tabs.length}</span>
             </button>
           );
         })}
+      </div>
+
+      <div className="mt-2 flex items-center gap-1">
         <button
           title="New Bit"
           onClick={() => {
@@ -1097,59 +1157,6 @@ function BitMenu({
       >
         <Trash2 size={15} strokeWidth={1.75} /> Delete Bit
       </button>
-    </div>
-  );
-}
-
-/* ----------------------------- favorites dock ---------------------------- */
-
-function FavoritesDock({ space }: { space: SpaceState }) {
-  const { activeTab } = useBrowser();
-
-  const addCurrent = () => {
-    if (!activeTab) return;
-    void nt().spacesAddFavorite(
-      space.id,
-      activeTab.title || domainOf(activeTab.url),
-      activeTab.url,
-    );
-  };
-
-  return (
-    <div className="px-3 pb-1">
-      <div
-        className="nt-r-md flex flex-wrap gap-1 border p-1.5"
-        style={{ borderColor: "var(--nt-border)", background: "var(--nt-bg-raised)" }}
-      >
-        {space.favorites.map((f) => (
-          <button
-            key={f.id}
-            title={`${f.name}\n${f.url} — right-click to remove`}
-            onClick={() => void nt().tabsCreate({ url: f.url })}
-            onContextMenu={(e) => {
-              e.preventDefault();
-              void nt().spacesRemoveFavorite(space.id, f.id);
-            }}
-            className="nt-r-sm group relative flex h-8 w-8 items-center justify-center transition-colors hover:bg-[var(--nt-bg-hover)]"
-            style={{ color: "var(--nt-text-2)" }}
-          >
-            <Favicon url={f.url} size={16} />
-          </button>
-        ))}
-        <button
-          title={
-            activeTab
-              ? `Add current page to favorites\n${activeTab.title}`
-              : "Open a tab first, then add it as a favorite"
-          }
-          onClick={addCurrent}
-          disabled={!activeTab}
-          className="nt-r-sm flex h-8 w-8 items-center justify-center transition-colors hover:bg-[var(--nt-bg-hover)] disabled:opacity-30"
-          style={{ color: "var(--nt-text-3)" }}
-        >
-          <Star size={14} strokeWidth={1.75} />
-        </button>
-      </div>
     </div>
   );
 }
@@ -1406,6 +1413,7 @@ function TabContextMenu({
   spaces: SpaceState[];
 }) {
   const ref = useRef<HTMLDivElement>(null);
+  const { snapshot } = useBrowser();
 
   useEffect(() => {
     const onDown = (e: MouseEvent) => {
@@ -1505,15 +1513,45 @@ function TabContextMenu({
       <button
         className={itemCls}
         style={{ color: "var(--nt-text-1)" }}
-        onClick={act(() => void nt().tabsPin(menu.tab.id, !menu.tab.pinned))}
+        onClick={act(() => {
+          const api = nt();
+          const apps = snapshot?.pinnedApps ?? [];
+          const hit = apps.find(
+            (a) => a.url === menu.tab.url || a.url === menu.tab.url.replace(/\/$/, ""),
+          );
+          if (hit) {
+            // Already in the App Store → take it out (and unpin for restore).
+            void api.pinnedAppsRemove(hit.id);
+            if (menu.tab.pinned) void api.tabsPin(menu.tab.id, false);
+          } else {
+            // Pin = add to the App Store (global tiles + restore-on-launch).
+            void api.pinnedAppsAdd(
+              menu.tab.url,
+              menu.tab.title?.trim() || domainOf(menu.tab.url),
+            );
+            if (!menu.tab.pinned) void api.tabsPin(menu.tab.id, true);
+          }
+        })}
         role="menuitem"
       >
-        {menu.tab.pinned ? (
-          <PinOff size={16} strokeWidth={1.75} style={{ color: "var(--nt-text-3)" }} />
-        ) : (
-          <Pin size={16} strokeWidth={1.75} style={{ color: "var(--nt-text-3)" }} />
-        )}
-        {menu.tab.pinned ? "Unpin" : "Pin"}
+        {(() => {
+          const apps = snapshot?.pinnedApps ?? [];
+          const inStore = apps.some(
+            (a) => a.url === menu.tab.url || a.url === menu.tab.url.replace(/\/$/, ""),
+          );
+          return inStore ? (
+            <Minus size={16} strokeWidth={1.75} style={{ color: "var(--nt-text-3)" }} />
+          ) : (
+            <LayoutGrid size={16} strokeWidth={1.75} style={{ color: "var(--nt-text-3)" }} />
+          );
+        })()}
+        {(() => {
+          const apps = snapshot?.pinnedApps ?? [];
+          const inStore = apps.some(
+            (a) => a.url === menu.tab.url || a.url === menu.tab.url.replace(/\/$/, ""),
+          );
+          return inStore ? "Remove from App Store" : "Add to App Store";
+        })()}
       </button>
       <div className="my-1 border-t" style={{ borderColor: "var(--nt-border)" }} />
       <button
@@ -1625,7 +1663,7 @@ interface RowProps {
   tab: TabState;
   active: boolean;
   dnd: DndApi;
-  /** Identifies the list this row lives in ("pinned" | "ungrouped" | "folder:<id>"). */
+  /** Identifies the list this row lives in ("ungrouped" | "folder:<id>"). */
   listKey: string;
   dragId: string | null;
   dropBefore: string | null;
@@ -1740,19 +1778,42 @@ const TabRow = memo(function TabRow({
           )}
           <span className="hidden shrink-0 items-center gap-0.5 group-hover:flex">
             <button
-              title={tab.pinned ? "Unpin" : "Pin"}
+              title={(() => {
+                const apps = snapshot?.pinnedApps ?? [];
+                const inStore = apps.some(
+                  (a) => a.url === tab.url || a.url === tab.url.replace(/\/$/, ""),
+                );
+                return inStore ? "Remove from App Store" : "Add to App Store";
+              })()}
               onClick={(e) => {
                 e.stopPropagation();
-                void nt().tabsPin(tab.id, !tab.pinned);
+                const api = nt();
+                const apps = snapshot?.pinnedApps ?? [];
+                const hit = apps.find(
+                  (a) => a.url === tab.url || a.url === tab.url.replace(/\/$/, ""),
+                );
+                if (hit) {
+                  void api.pinnedAppsRemove(hit.id);
+                  if (tab.pinned) void api.tabsPin(tab.id, false);
+                } else {
+                  void api.pinnedAppsAdd(tab.url, tab.title?.trim() || domainOf(tab.url));
+                  if (!tab.pinned) void api.tabsPin(tab.id, true);
+                }
               }}
               className="nt-r-sm p-1 transition-colors hover:bg-[var(--nt-bg-hover)]"
               style={{ color: "var(--nt-text-3)" }}
             >
-              {tab.pinned ? (
-                <PinOff size={13} strokeWidth={1.75} />
-              ) : (
-                <Pin size={13} strokeWidth={1.75} />
-              )}
+              {(() => {
+                const apps = snapshot?.pinnedApps ?? [];
+                const inStore = apps.some(
+                  (a) => a.url === tab.url || a.url === tab.url.replace(/\/$/, ""),
+                );
+                return inStore ? (
+                  <Minus size={13} strokeWidth={1.75} />
+                ) : (
+                  <LayoutGrid size={13} strokeWidth={1.75} />
+                );
+              })()}
             </button>
             <button
               title="Close tab"
@@ -2044,7 +2105,7 @@ function ArchiveSection({
               className="nt-tab-pill group"
               style={{ height: 32 }}
             >
-              <Favicon url={a.url} size={14} />
+              <Favicon url={a.url} favicon={a.favicon} size={14} />
               <div className="min-w-0 flex-1 leading-tight">
                 <p
                   className="nt-tab-title text-[12px]"

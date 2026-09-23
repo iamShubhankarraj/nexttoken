@@ -1,5 +1,10 @@
 appId: com.nexttoken.app
 productName: Next Token
+# Artifact names are URLs in the update feed, so they must be space-free and
+# stable. Without this, `${productName}` puts a space in the filename
+# ("Next Token-0.6.7-arm64-mac.zip") which then needs percent-encoding in
+# latest-mac.yml. Matches the convention in RELEASE.md.
+artifactName: Next-Token-${version}-${arch}-mac.${ext}
 # Update-in-place: the app is ALWAYS "Next Token.app" with this ONE stable
 # CFBundleIdentifier. Replacing the old .app in /Applications IS the update —
 # macOS never sees a second app identity. Keep this ID forever.

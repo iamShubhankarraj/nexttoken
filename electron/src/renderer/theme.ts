@@ -17,6 +17,7 @@
 import {
   DEFAULT_DARK_TOKENS,
   DEFAULT_LIGHT_TOKENS,
+  asTriple,
   tokensToCssVars,
   type ThemeTokens,
 } from "../shared/ipc";
@@ -81,7 +82,7 @@ function luminance(hex: string): number {
  * and geometry (radiusScale). Returns the input unchanged when healthy.
  */
 export function repairLegacyTokens(t: ThemeTokens): ThemeTokens {
-  const filled = fillMissingSidebarBg(t);
+  const filled = fillSidebarPaint(fillMissingSidebarBg(t));
   const healed = healSidebarVsMode(filled);
   const bgLum = luminance(healed.bgBase);
   const surfaceMatchesMode =
@@ -123,6 +124,23 @@ function fillMissingSidebarBg(t: ThemeTokens): ThemeTokens {
   if (/^#[0-9a-f]{6}$/i.test(t.sidebarBg ?? "")) return t;
   const base = t.mode === "light" ? DEFAULT_LIGHT_TOKENS : DEFAULT_DARK_TOKENS;
   return { ...t, sidebarBg: base.sidebarBg };
+}
+
+/**
+ * Backfill the sidebar paint fields added later (grain strength + the two
+ * 3-stop gradients). Themes saved before these existed have none of them, so
+ * they normalise to explicit defaults — flat, untextured — which is exactly
+ * how those themes already rendered. Also drops a partially-filled gradient
+ * (a half-valid triple would paint a broken wash).
+ */
+function fillSidebarPaint(t: ThemeTokens): ThemeTokens {
+  const tex = typeof t.sidebarTexture === "number" ? t.sidebarTexture : 0;
+  return {
+    ...t,
+    sidebarTexture: Math.min(1, Math.max(0, tex)),
+    sidebarGrad: asTriple(t.sidebarGrad),
+    agentGrad: asTriple(t.agentGrad),
+  };
 }
 
 /** Mix two #rrggbb colors: t=0 → a, t=1 → b. */

@@ -73,8 +73,8 @@ export async function importBookmarks(browserId: string, deps: ImportDeps): Prom
 
 /**
  * Import open tabs from a detected browser into a space.
- * Pinned source tabs arrive pinned. Dupes are counted and warned about.
- * Throws FILE_ACCESS_DENIED on TCC denial.
+ * Pinned source tabs arrive as App Store entries. Dupes are counted and
+ * warned about. Throws FILE_ACCESS_DENIED on TCC denial.
  */
 export async function importTabs(browserId: string, deps: ImportDeps): Promise<ImportReport> {
   const report = newReport();

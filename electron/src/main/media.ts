@@ -1,10 +1,16 @@
 /**
  * Media controller — drives the best video element across tabs.
  *
- * The sidebar's curved viewfinder (not the page) controls media that is
- * playing in a *background* tab: the viewfinder appears only when the user
- * is NOT on the tab where the media plays. When the media tab is active,
- * the curve stays clean and the page itself shows the video.
+ * The sidebar's curved viewfinder follows the media that is actually being
+ * played, whichever tab it lives in: the tab the user is watching, or one
+ * playing in the background. It renders the live film strip only while real
+ * frames are arriving, so a media tab that produces no frames shows the
+ * timeline and transport but no film (see the note on capture below).
+ *
+ * NOTE on frames: `capturePage()` returns an empty image for a tab whose
+ * <webview> is `display: none`, because a display:none guest does not paint.
+ * Live film frames therefore only arrive for the media tab while it is the
+ * visible one; a background media tab yields state + seeking but no frames.
  *
  * Used by the viewfinder (`nt.media.*` IPC), the PiP engine, and the
  * agent's picture_in_picture / media_toggle tools (those target the active
@@ -140,6 +146,7 @@ interface GuestMedia {
   duration?: number;
   live?: boolean;
   paused?: boolean;
+  muted?: boolean;
 }
 
 /** Read one tab's media state. */
@@ -153,6 +160,7 @@ async function queryTabMedia(wc: WebContents): Promise<GuestMedia> {
       duration: Number.isFinite(v.duration) ? v.duration : 0,
       live: !Number.isFinite(v.duration),
       paused: !!v.paused,
+      muted: !!v.muted || v.volume === 0,
     } : { hasVideo: false })(${BEST_VIDEO_JS})`
   );
   return s ?? { hasVideo: false };
@@ -265,10 +273,21 @@ const EMPTY_MEDIA: MediaState = {
 
 /**
  * Start the ~1Hz media sweep. Every tick scans live tabs for videos and
- * picks the background media tab: a playing video in a non-active tab
- * first, else a paused video in a non-active tab (most recently playing
- * wins). A video in the ACTIVE tab never surfaces — the curve stays clean
- * while the user watches it directly.
+ * picks the media tab the viewfinder should follow, in priority order:
+ *
+ *   1. a PLAYING video in a non-active tab (most recently playing wins)
+ *   2. a PLAYING, UNMUTED video in the ACTIVE tab
+ *   3. a paused video in a non-active tab
+ *   4. a paused video in the ACTIVE tab that the user actually engaged with
+ *
+ * Rule 2 deliberately requires `!muted`: nearly every muted autoplay is a
+ * background ad or a hover-preview, and surfacing the sidebar viewfinder for
+ * one of those would make the curve appear on pages the user never asked to
+ * watch. `currentTime > 0` plays the same role for a paused active video.
+ *
+ * `background` on the emitted state records whether the pick is a non-active
+ * tab — the viewfinder uses it only for emphasis; frames are now requested
+ * for the media tab either way.
  */
 export function startMediaPolling(
   tabs: TabManager,
@@ -295,6 +314,7 @@ export function startMediaPolling(
         hooks.send(EMPTY_MEDIA);
       }
       let best: { tabId: string; url: string; s: GuestMedia } | null = null;
+      let bestActive: { tabId: string; url: string; s: GuestMedia } | null = null;
       let bestPaused: { tabId: string; url: string; s: GuestMedia } | null = null;
       const seen = new Set<string>();
       const jobs: Promise<void>[] = [];
@@ -310,16 +330,23 @@ export function startMediaPolling(
         jobs.push(
           queryTabMedia(wc).then((s) => {
             if (!s.hasVideo) return;
+            const isActive = tab.id === activeId;
             if (!s.paused) {
               lastPlayingAt.set(tab.id, Date.now());
-              if (tab.id !== activeId) {
+              if (!isActive) {
                 const prev = best ? lastPlayingAt.get(best.tabId) ?? 0 : 0;
                 if (!best || (lastPlayingAt.get(tab.id) ?? 0) >= prev) {
                   best = { tabId: tab.id, url, s };
                 }
+              } else if (!s.muted && !bestActive) {
+                // Active tab: only unmuted playback — see the note above.
+                bestActive = { tabId: tab.id, url, s };
               }
-            } else if (tab.id !== activeId && !bestPaused) {
+            } else if (!isActive && !bestPaused) {
               bestPaused = { tabId: tab.id, url, s };
+            } else if (isActive && !bestActive && !bestPaused && (s.currentTime ?? 0) > 0) {
+              // Active tab, paused, but genuinely engaged with (playhead moved).
+              bestActive = { tabId: tab.id, url, s };
             }
           })
         );
@@ -329,17 +356,18 @@ export function startMediaPolling(
       for (const id of [...lastPlayingAt.keys()]) {
         if (!seen.has(id)) lastPlayingAt.delete(id);
       }
-      // NB: `best`/`bestPaused` are assigned inside promise callbacks, which
-      // TS excludes from control-flow analysis (they stay narrowed to the
-      // `= null` initializer), so read them through .find() instead.
+      // NB: these are assigned inside promise callbacks, which TS excludes
+      // from control-flow analysis (they stay narrowed to the `= null`
+      // initializer), so read them through .find() instead.
       type Pick = { tabId: string; url: string; s: GuestMedia };
       const pick: Pick | null =
-        ([best, bestPaused] as (Pick | null)[]).find((x) => x !== null) ?? null;
+        ([best, bestActive, bestPaused] as (Pick | null)[]).find((x) => x !== null) ?? null;
       const state: MediaState = pick
         ? {
             hasVideo: true,
             tabId: pick.tabId,
-            background: true,
+            // Non-active tabs are "background"; frames are requested either way.
+            background: pick.tabId !== activeId,
             paused: !!pick.s.paused,
             position: pick.s.currentTime ?? 0,
             duration: pick.s.duration ?? 0,

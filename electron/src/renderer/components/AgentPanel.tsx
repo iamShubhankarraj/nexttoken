@@ -637,7 +637,11 @@ export function AgentPanel() {
       className="nt-fade-slide-in relative flex h-full shrink-0 flex-col border-l"
       style={{
         width: snapshot?.agentPanelWidth ?? AGENT_DEFAULT_W,
-        background: "var(--nt-bg-subtle)",
+        /* Its own 3-stop gradient (Appearance → Agent panel). With no gradient
+           configured all three stops fall back to bgSubtle, so this renders as
+           the previous flat surface. */
+        background:
+          "linear-gradient(160deg, var(--nt-agent-grad-a, var(--nt-bg-subtle)) 0%, var(--nt-agent-grad-b, var(--nt-bg-subtle)) 50%, var(--nt-agent-grad-c, var(--nt-bg-subtle)) 100%)",
         borderColor: "var(--nt-border)",
       }}
     >

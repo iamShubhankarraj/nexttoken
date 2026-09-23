@@ -380,10 +380,30 @@ export class TabManager {
     try { return new URL(url).hostname.toLowerCase(); } catch { return ''; }
   }
 
-  /** Cached favicon for any URL (tabs, bookmarks), or undefined. */
+  /** Cached favicon for any URL (tabs, bookmarks, App Store), or undefined. */
   faviconFor(url: string): string | undefined {
     const host = this.hostOf(url);
     return host ? this.faviconCache.get(host) : undefined;
+  }
+
+  /** Fired when a host's cached favicon changes — lets the UI refresh snapshot-backed icons. */
+  onFaviconCacheChange: (() => void) | null = null;
+
+  /**
+   * Warm the favicon cache for an arbitrary URL (App Store adds, bookmarks).
+   * Tries the site's own /favicon.ico first; on failure falls back to
+   * Google's public s2 service so tiles never show a bare placeholder.
+   */
+  ensureFavicon(url: string): void {
+    const host = this.hostOf(url);
+    if (!host || this.faviconCache.has(host) || this.faviconFetching.has(host)) return;
+    let origin: string;
+    try {
+      const u = new URL(url);
+      if (u.protocol !== 'http:' && u.protocol !== 'https:') return;
+      origin = u.origin;
+    } catch { return; }
+    this.downloadFavicon(host, `${origin}/favicon.ico`, () => this.fetchGoogleIcon(host));
   }
 
   private onFavicon(tab: TabRec, favicons: string[]) {
@@ -396,38 +416,41 @@ export class TabManager {
       if (host) {
         this.faviconCache.set(host, dataUrl);
         this.saveFaviconCacheSoon();
+        this.onFaviconCacheChange?.();
       }
       this.onDelta({ tabId: tab.id, type: 'favicon', value: dataUrl });
       return;
     }
-    // Sites often hand us an http(s) favicon URL instead of a data URL.
-    // Download it ourselves (first-party origin only, no cookies, no
-    // third-party icon services) and cache it as a data URL.
+    // Sites often hand us an http(s) favicon URL. Download it ourselves
+    // (first-party preferred; Google s2 as quiet fallback) and cache it.
     const remote = favicons.find((f) => /^https?:\/\//i.test(f));
-    if (remote) this.downloadFavicon(this.hostOf(tab.url), remote);
+    const host = this.hostOf(tab.url);
+    if (remote) this.downloadFavicon(host, remote, () => this.fetchGoogleIcon(host));
     else this.fetchOriginIcon(tab);
   }
 
   /** Hosts with an in-flight favicon download — one attempt per host. */
   private faviconFetching = new Set<string>();
 
-  /** Download a first-party favicon URL (no cookies) and cache it as a data URL. */
-  private downloadFavicon(host: string, iconUrl: string) {
-    if (!host || this.faviconCache.has(host) || this.faviconFetching.has(host)) return;
+  /** Download a first-party favicon URL (no cookies); on failure try Google s2. */
+  private downloadFavicon(host: string, iconUrl: string, onFail?: () => void) {
+    if (!host) return;
+    if (this.faviconCache.has(host) || this.faviconFetching.has(host)) return;
     let target: URL;
     try {
       target = new URL(iconUrl);
-      if (target.protocol !== 'http:' && target.protocol !== 'https:') return;
-      // Only ever fetch the site's own origin — never a third-party icon service.
-      if (target.hostname.toLowerCase() !== host) return;
-    } catch { return; }
+      if (target.protocol !== 'http:' && target.protocol !== 'https:') { onFail?.(); return; }
+      // Prefer the site's own origin; anything else falls through to s2.
+      if (target.hostname.toLowerCase() !== host) { onFail?.(); return; }
+    } catch { onFail?.(); return; }
     this.faviconFetching.add(host);
+    const fail = () => { this.faviconFetching.delete(host); onFail?.(); };
     const get = target.protocol === 'https:' ? httpsGet : httpGet;
     const req = get(target, { timeout: 8000 }, (res) => {
       const type = String(res.headers['content-type'] ?? '');
       if (res.statusCode !== 200 || !type.startsWith('image/')) {
         res.resume();
-        this.faviconFetching.delete(host);
+        fail();
         return;
       }
       const chunks: Buffer[] = [];
@@ -443,29 +466,59 @@ export class TabManager {
         const dataUrl = `data:${type.split(';')[0]};base64,${Buffer.concat(chunks).toString('base64')}`;
         this.applyFavicon(host, dataUrl);
       });
-      res.on('error', () => this.faviconFetching.delete(host));
+      res.on('error', fail);
     });
-    req.on('timeout', () => { req.destroy(); this.faviconFetching.delete(host); });
-    req.on('error', () => this.faviconFetching.delete(host));
+    req.on('timeout', () => { req.destroy(); fail(); });
+    req.on('error', fail);
   }
 
-  /** Last-resort: try the site origin's own /favicon.ico (no cookies). */
-  private fetchOriginIcon(tab: TabRec) {
-    const host = this.hostOf(tab.url);
+  /**
+   * Quiet last resort: Google's public s2 favicon service. Used only when
+   * the site's own icon could not be fetched, so App Store tiles and sidebar
+   * rows still show a real icon instead of a generic glyph.
+   */
+  private fetchGoogleIcon(host: string): void {
     if (!host || this.faviconCache.has(host) || this.faviconFetching.has(host)) return;
-    let origin: string;
+    this.faviconFetching.add(host);
+    let target: URL;
     try {
-      const u = new URL(tab.url);
-      if (u.protocol !== 'http:' && u.protocol !== 'https:') return;
-      origin = u.origin;
-    } catch { return; }
-    this.downloadFavicon(host, `${origin}/favicon.ico`);
+      target = new URL(`https://www.google.com/s2/favicons?domain=${encodeURIComponent(host)}&sz=64`);
+    } catch { this.faviconFetching.delete(host); return; }
+    const done = (dataUrl: string | null) => {
+      this.faviconFetching.delete(host);
+      if (dataUrl) this.applyFavicon(host, dataUrl);
+    };
+    const req = httpsGet(target, { timeout: 8000 }, (res) => {
+      const type = String(res.headers['content-type'] ?? 'image/png');
+      if (res.statusCode !== 200) { res.resume(); done(null); return; }
+      const chunks: Buffer[] = [];
+      let size = 0;
+      res.on('data', (c: Buffer) => {
+        size += c.length;
+        if (size > 200_000) { res.destroy(); done(null); return; }
+        chunks.push(c);
+      });
+      res.on('end', () => {
+        if (size === 0) { done(null); return; }
+        const mime = type.startsWith('image/') ? type.split(';')[0] : 'image/png';
+        done(`data:${mime};base64,${Buffer.concat(chunks).toString('base64')}`);
+      });
+      res.on('error', () => done(null));
+    });
+    req.on('timeout', () => { req.destroy(); done(null); });
+    req.on('error', () => done(null));
+  }
+
+  /** Last-resort first-party: the site origin's own /favicon.ico. */
+  private fetchOriginIcon(tab: TabRec) {
+    this.ensureFavicon(tab.url);
   }
 
   /** Cache a fetched icon and push it to every tab currently on that host. */
   private applyFavicon(host: string, dataUrl: string) {
     this.faviconCache.set(host, dataUrl);
     this.saveFaviconCacheSoon();
+    this.onFaviconCacheChange?.();
     for (const tab of this.tabs.values()) {
       if (this.hostOf(tab.url) === host && tab.favicon !== dataUrl) {
         tab.favicon = dataUrl;
