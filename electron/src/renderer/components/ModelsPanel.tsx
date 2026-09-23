@@ -17,6 +17,8 @@ import {
   HardDrive,
   Loader2,
   Mic,
+  Pause,
+  Play,
   RefreshCw,
   Sparkles,
   Square,
@@ -109,11 +111,16 @@ interface NtModels {  modelsList(): Promise<ModelEntryPublic[]>;
   modelsRemove(id: string): Promise<void>;
   /** Running llama-server state per slot (newer builds). */
   modelsServerStatus?(): Promise<{
-    chat: { running: boolean; modelId: string | null };
-    vision: { running: boolean; modelId: string | null };
+    chat: { running: boolean; modelId: string | null; downReason?: string; lastLoadMs?: number };
+    vision: { running: boolean; modelId: string | null; downReason?: string; lastLoadMs?: number };
+    /** Model ids the user explicitly paused (newest builds). */
+    paused?: string[];
   }>;
   /** Stop a running local-model server immediately (newer builds). */
   modelsStopServer?(slot: "chat" | "vision"): Promise<void>;
+  /** Pause (unload to free RAM) / resume a downloaded model (newest builds). */
+  modelsPause?(modelId: string): Promise<{ ok: boolean; freedMs?: number }>;
+  modelsResume?(modelId: string): Promise<{ ok: boolean; loadMs: number }>;
   modelsGetAssignment(): Promise<{ chat: string; vision: string }>;
   modelsSetAssignment(task: "chat" | "vision", ref: string): Promise<void>;
   /** Task-model registry (newer builds): the four task slots and what serves each. */
@@ -178,6 +185,8 @@ function progressPct(e: ModelEntryPublic): number {
 /* -------------------------------- component ------------------------------- */
 
 export function ModelsPanel({ focusTask }: { focusTask?: string }) {
+  /** Pause/resume needs the newest preload bridge; hidden gracefully otherwise. */
+  const apiHasPause = typeof nt()?.modelsPause === "function";
   const [entries, setEntries] = useState<ModelEntryPublic[] | null>(null);
   const [apple, setApple] = useState<{
     available: boolean;
@@ -212,10 +221,14 @@ export function ModelsPanel({ focusTask }: { focusTask?: string }) {
   // Running local-model servers (llama-server): null = preload doesn't
   // support it yet (older build) → hide the "Running now" card.
   const [serverStatus, setServerStatus] = useState<{
-    chat: { running: boolean; modelId: string | null };
-    vision: { running: boolean; modelId: string | null };
+    chat: { running: boolean; modelId: string | null; downReason?: string; lastLoadMs?: number };
+    vision: { running: boolean; modelId: string | null; downReason?: string; lastLoadMs?: number };
+    paused?: string[];
   } | null>(null);
   const [stoppingSlot, setStoppingSlot] = useState<"" | "chat" | "vision">("");
+  const [pauseBusy, setPauseBusy] = useState<string | null>(null);
+  /** Measured resume/load time, shown once ("resumed in 2.3 s"). */
+  const [resumeNotice, setResumeNotice] = useState<string | null>(null);
   // Apple FM diagnostics: null = not run yet.
   const [diag, setDiag] = useState<AppleFmDiagnosis | null>(null);
   const [diagRunning, setDiagRunning] = useState(false);
@@ -478,6 +491,43 @@ export function ModelsPanel({ focusTask }: { focusTask?: string }) {
     }
   };
 
+  /** Pause: unload the model from RAM; it stays downloaded and shows a Paused pill. */
+  const pauseModel = async (modelId: string) => {
+    const api = modelsApi();
+    if (!api.modelsPause) return;
+    setPauseBusy(modelId);
+    try {
+      await api.modelsPause(modelId);
+      const s = await api.modelsServerStatus?.();
+      if (s) setServerStatus(s);
+    } catch (err) {
+      setLoadError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPauseBusy(null);
+    }
+  };
+
+  /** Resume a user-paused model; the UI reports the real load time. */
+  const resumeModel = async (modelId: string) => {
+    const api = modelsApi();
+    if (!api.modelsResume) return;
+    setPauseBusy(modelId);
+    try {
+      const r = await api.modelsResume(modelId);
+      const s = await api.modelsServerStatus?.();
+      if (s) setServerStatus(s);
+      if (r?.loadMs > 0) {
+        setLoadError(null);
+        setResumeNotice(`Resumed in ${(r.loadMs / 1000).toFixed(1)} s.`);
+        setTimeout(() => setResumeNotice(null), 6000);
+      }
+    } catch (err) {
+      setLoadError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPauseBusy(null);
+    }
+  };
+
   const setAssign = async (task: "chat" | "vision", ref: string) => {
     setAssignBusy(task);
     setAssignError(null);
@@ -621,7 +671,12 @@ export function ModelsPanel({ focusTask }: { focusTask?: string }) {
 
   return (
     <div>
-      {/* --------------------------- Running now --------------------------- */}
+      {/* --------------------------- Running / Paused --------------------------- */}
+      {resumeNotice && (
+        <p className="mb-3 text-[12px]" style={{ color: "var(--nt-accent)" }}>
+          {resumeNotice}
+        </p>
+      )}
       {serverStatus && (serverStatus.chat.running || serverStatus.vision.running) && (
         <div
           className="nt-r-md mb-4 border p-4"
@@ -653,7 +708,7 @@ export function ModelsPanel({ focusTask }: { focusTask?: string }) {
               if (!s.running) return null;
               const entry = entries?.find((e) => e.id === s.modelId);
               const name = entry?.name ?? s.modelId ?? slot;
-              const busy = stoppingSlot === slot;
+              const busy = stoppingSlot === slot || pauseBusy === s.modelId;
               return (
                 <div
                   key={slot}
@@ -673,21 +728,87 @@ export function ModelsPanel({ focusTask }: { focusTask?: string }) {
                       {slot === "chat" ? "Agent chat" : "Vision"} server · running
                     </p>
                   </div>
+                  <div className="flex shrink-0 items-center gap-1.5">
+                    {s.modelId && apiHasPause && (
+                      <button
+                        onClick={() => void pauseModel(s.modelId!)}
+                        disabled={busy}
+                        title="Unload the model from RAM to free memory. It stays downloaded and resumes only when you ask."
+                        className="nt-r-sm flex items-center gap-1.5 border px-3 py-1.5 text-[12.5px] font-semibold transition-colors hover:bg-[var(--nt-bg-hover)] disabled:opacity-60"
+                        style={{
+                          borderColor: "var(--nt-border)",
+                          color: "var(--nt-text-1)",
+                        }}
+                      >
+                        {pauseBusy === s.modelId ? (
+                          <Loader2 size={13} strokeWidth={2} className="animate-spin" />
+                        ) : (
+                          <Pause size={12} strokeWidth={2} />
+                        )}
+                        Pause
+                      </button>
+                    )}
+                    <button
+                      onClick={() => void stopServer(slot)}
+                      disabled={busy}
+                      className="nt-r-sm flex items-center gap-1.5 border px-3 py-1.5 text-[12.5px] font-semibold transition-colors hover:bg-[var(--nt-bg-hover)] disabled:opacity-60"
+                      style={{
+                        borderColor: "var(--nt-border)",
+                        color: "var(--nt-text-1)",
+                      }}
+                    >
+                      {busy ? (
+                        <Loader2 size={13} strokeWidth={2} className="animate-spin" />
+                      ) : (
+                        <Square size={12} strokeWidth={0} fill="currentColor" />
+                      )}
+                      {stoppingSlot === slot ? "Stopping…" : "Stop"}
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+      {/* Paused models: downloaded, not in RAM, never auto-resumed. */}
+      {serverStatus && (serverStatus.paused?.length ?? 0) > 0 && (
+        <div
+          className="nt-r-md mb-4 border p-4"
+          style={{ borderColor: "var(--nt-border)", background: "var(--nt-bg-raised)" }}
+        >
+          <div className="mb-1 flex items-center gap-2">
+            <Pause size={13} strokeWidth={2} style={{ color: "var(--nt-accent)" }} />
+            <h3 className="text-[13px] font-semibold" style={{ color: "var(--nt-text-1)" }}>
+              Paused
+            </h3>
+          </div>
+          <p className="mb-3 text-[12px]" style={{ color: "var(--nt-text-3)" }}>
+            Unloaded from memory — nothing is using RAM. The agent can't use a
+            paused model until you resume it.
+          </p>
+          <div className="space-y-2">
+            {serverStatus.paused!.map((id) => {
+              const entry = entries?.find((e) => e.id === id);
+              const busy = pauseBusy === id;
+              return (
+                <div key={id} className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="truncate text-[13px] font-medium" style={{ color: "var(--nt-text-1)" }}>
+                      {entry?.name ?? id}
+                    </p>
+                    <p className="text-[12px]" style={{ color: "var(--nt-text-3)" }}>
+                      Paused · still downloaded
+                    </p>
+                  </div>
                   <button
-                    onClick={() => void stopServer(slot)}
+                    onClick={() => void resumeModel(id)}
                     disabled={busy}
                     className="nt-r-sm flex shrink-0 items-center gap-1.5 border px-3 py-1.5 text-[12.5px] font-semibold transition-colors hover:bg-[var(--nt-bg-hover)] disabled:opacity-60"
-                    style={{
-                      borderColor: "var(--nt-border)",
-                      color: "var(--nt-text-1)",
-                    }}
+                    style={{ borderColor: "var(--nt-accent)", color: "var(--nt-accent)" }}
                   >
-                    {busy ? (
-                      <Loader2 size={13} strokeWidth={2} className="animate-spin" />
-                    ) : (
-                      <Square size={12} strokeWidth={0} fill="currentColor" />
-                    )}
-                    {busy ? "Stopping…" : "Stop"}
+                    {busy ? <Loader2 size={13} strokeWidth={2} className="animate-spin" /> : <Play size={12} strokeWidth={2} />}
+                    {busy ? "Loading…" : "Resume"}
                   </button>
                 </div>
               );

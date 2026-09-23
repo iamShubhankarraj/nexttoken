@@ -877,6 +877,9 @@ export interface SiteDataSummary {
   cookies: number;
 }
 
+/** Web search suggestions for the omnibox (fetched main-side). */
+export type SuggestResult = string[];
+
 /** Effective search-engine configuration (preset or custom template). */
 export interface SearchEngineConfig {
   /** Preset id, or 'custom' for a freeform template. */
@@ -1167,8 +1170,14 @@ export interface NextTokenAPI {
   passwordsBlocked(): Promise<string[]>;
   /** Remove an origin from the never-ask blocklist. */
   passwordsUnblock(origin: string): Promise<{ ok: boolean }>;
-  /** Main pushes this when a login submission needs the save decision. */
-  onPasswordsSavePrompt(cb: (p: { token: string; origin: string; username: string }) => void): () => void;
+  /** Manually add/update a login. Main validates and encrypts; no plaintext list ever comes back. Pass originalUsername when renaming an entry; a blank password then keeps the stored one. */
+  passwordsAdd(origin: string, username: string, password: string, originalUsername?: string): Promise<{ ok: boolean; error?: string }>;
+  /** Pick + import a CSV of logins. Runs entirely in main; returns count added. */
+  passwordsCsvImport(): Promise<{ ok: boolean; added: number; error?: string }>;
+  /** Export the vault to a user-chosen CSV. Written in main; the renderer never sees passwords. */
+  passwordsCsvExport(): Promise<{ ok: boolean; path?: string; canceled?: boolean; error?: string }>;
+  /** Main pushes this when a login submission needs the save decision. update=true means an existing login's password changed. */
+  onPasswordsSavePrompt(cb: (p: { token: string; origin: string; username: string; update?: boolean }) => void): () => void;
   // AI tidy — local models only; tab URLs never leave the device
   /** Produce a reviewable tidy plan. Nothing is applied until tidyApply is called. */
   tidyPlan(spaceId: string): Promise<TidyPlan>;
@@ -1203,6 +1212,12 @@ export interface NextTokenAPI {
   settingsSetVoice(v: Partial<VoiceSettings>): Promise<void>;
   settingsGetSearchEngine(): Promise<SearchEngineConfig>;
   settingsSetSearchEngine(id: string, template: string): Promise<SearchEngineConfig>;
+  /**
+   * Web suggestions for the omnibox, fetched via the main-process net.fetch
+   * proxy (the shell CSP blocks direct renderer fetches, and page cookies
+   * must never ride along). Resolves [] when offline/blocked/unsupported.
+   */
+  suggestQuery(engineId: string, query: string): Promise<SuggestResult>;
   // BYOK providers — the provider manager (multiple API gateway providers)
   providersList(): Promise<ProviderPublic[]>;
   providersSave(input: ProviderInput): Promise<ProviderPublic[]>;
@@ -1226,11 +1241,17 @@ export interface NextTokenAPI {
   modelsRemove(id: string): Promise<void>;
   /** Running llama-server state per slot — powers the "Running now" card. */
   modelsServerStatus(): Promise<{
-    chat: { running: boolean; modelId: string | null };
-    vision: { running: boolean; modelId: string | null };
+    chat: { running: boolean; modelId: string | null; downReason?: string; lastLoadMs?: number };
+    vision: { running: boolean; modelId: string | null; downReason?: string; lastLoadMs?: number };
+    /** Model ids the user explicitly paused (newer builds). */
+    paused?: string[];
   }>;
   /** Stop a running local-model server immediately (user-triggered). */
   modelsStopServer(slot: 'chat' | 'vision'): Promise<void>;
+  /** User pause: unload a downloaded model from RAM (stays on disk); never auto-resumes. */
+  modelsPause(modelId: string): Promise<{ ok: boolean; freedMs?: number }>;
+  /** Resume a user-paused model; returns the measured load time in ms. */
+  modelsResume(modelId: string): Promise<{ ok: boolean; loadMs: number }>;
   modelsGetAssignment(): Promise<ModelAssignment>;
   modelsSetAssignment(task: 'chat' | 'vision', ref: ModelRef): Promise<void>;
   /** The four task slots (transcription / agent / speech / vision) and what serves each. */

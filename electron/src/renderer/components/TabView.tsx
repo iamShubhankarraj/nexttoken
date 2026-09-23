@@ -81,6 +81,27 @@ function attachWebview(el: WebviewElement, tabId: string): void {
     }
   });
 
+  // Re-inject the guest scripts on EVERY main-frame navigation. dom-ready
+  // fires only once per guest, so without this the caret watcher and the
+  // login detector are absent on any page reached by a later navigation in
+  // the same tab — exactly when the password manager must offer autofill
+  // (2nd visit to a login page). Both scripts self-guard, so double-install
+  // is impossible; failures are non-fatal by design.
+  el.addEventListener("did-navigate", () => {
+    try {
+      void (el as unknown as { executeJavaScript(code: string): Promise<unknown> })
+        .executeJavaScript(LOGIN_DETECT_SCRIPT);
+    } catch {
+      /* non-essential */
+    }
+    try {
+      void (el as unknown as { executeJavaScript(code: string): Promise<unknown> })
+        .executeJavaScript(CARET_SCRIPT);
+    } catch {
+      /* non-essential */
+    }
+  });
+
   // The caret script reports via prefixed console messages — no guest
   // preload file required.
   el.addEventListener("console-message", (e: Event) => {

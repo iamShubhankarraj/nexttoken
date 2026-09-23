@@ -1584,19 +1584,36 @@ function registerIpc() {
    * with one click instead of waiting for the 15-minute idle sweep.
    */
   guardedHandle('nt.models.server-status', (): {
-    chat: { running: boolean; modelId: string | null };
-    vision: { running: boolean; modelId: string | null };
+    chat: { running: boolean; modelId: string | null; downReason: string; lastLoadMs: number };
+    vision: { running: boolean; modelId: string | null; downReason: string; lastLoadMs: number };
+    paused: string[];
   } => {
     const snap = (slot: 'chat' | 'vision') => {
       const st = llama.status(slot);
-      return { running: !!st.running, modelId: st.modelId ?? null };
+      return { running: !!st.running, modelId: st.modelId ?? null, downReason: st.downReason, lastLoadMs: st.lastLoadMs };
     };
-    return { chat: snap('chat'), vision: snap('vision') };
+    return { chat: snap('chat'), vision: snap('vision'), paused: llama.listUserPaused() };
   });
   /** Stop a running local model server immediately (user-triggered). */
   guardedHandle('nt.models.stop-server', async (_e, slot: 'chat' | 'vision') => {
     if (slot !== 'chat' && slot !== 'vision') throw new Error(`Unknown slot "${slot}"`);
     await llama.stop(slot);
+  });
+  /**
+   * User pause/resume (LM Phase 5): pause unloads the model from RAM (the
+   * OS reclaims everything, Metal buffers included) while keeping it
+   * downloaded; a user-paused model never auto-resumes. Resume reloads it
+   * and returns the measured load time for honest UI copy.
+   */
+  guardedHandle('nt.models.pause', async (_e, modelId: string) => {
+    if (typeof modelId !== 'string' || !modelId) throw new Error('modelId required');
+    return llama.pauseModel(modelId);
+  });
+  guardedHandle('nt.models.resume', async (_e, modelId: string) => {
+    const entry = catalogEntry(modelId);
+    if (!entry) throw new Error(`Unknown model "${modelId}"`);
+    const slot = entry.task === 'vision' ? 'vision' : 'chat';
+    return llama.resumeModel(entry, slot);
   });
   guardedHandle('nt.models.assignment.get', (): ModelAssignment => {
     const a = store.d.models.assignment;
@@ -1861,6 +1878,10 @@ app.on('web-contents-created', (_event, contents) => {
     const prefs = webPreferences as unknown as Record<string, unknown>;
     delete prefs.preload;
     delete prefs.preloadURL;
+    // Bundled Chromium PDF viewer: PDF URLs render in-tab instead of only
+    // downloading (parity Phase 5). Plugins here means ONLY the built-in
+    // PDF/HTML media plugins — no NaCl/PPAPI, and guests stay sandboxed.
+    prefs.plugins = true;
     webPreferences.nodeIntegration = false;
     prefs.nodeIntegrationInWorker = false;
     prefs.nodeIntegrationInSubFrames = false;

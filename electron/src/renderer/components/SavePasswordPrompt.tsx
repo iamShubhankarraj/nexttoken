@@ -28,6 +28,8 @@ interface SavePrompt {
   token: string;
   origin: string;
   username: string;
+  /** True when this login already exists with a changed password. */
+  update?: boolean;
 }
 
 interface Offer {
@@ -147,7 +149,15 @@ function SavePasswordPrompt({
       label={`Save password for ${domainOf(prompt.origin)}`}
     >
       <span className="nt-toast-text">
-        Save password for <strong>{domainOf(prompt.origin)}</strong>
+        {prompt.update ? (
+          <>
+            Update password for <strong>{domainOf(prompt.origin)}</strong>
+          </>
+        ) : (
+          <>
+            Save password for <strong>{domainOf(prompt.origin)}</strong>
+          </>
+        )}
         {prompt.username ? (
           <>
             {" "}as <strong>{prompt.username}</strong>
@@ -162,7 +172,7 @@ function SavePasswordPrompt({
           disabled={busy}
           onClick={() => decide("save")}
         >
-          {busy ? "Saving…" : "Save"}
+          {busy ? (prompt.update ? "Updating…" : "Saving…") : prompt.update ? "Update" : "Save"}
         </button>
         <button
           type="button"

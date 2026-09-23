@@ -186,6 +186,10 @@ const api: NextTokenAPI = {
   passwordsDelete: (origin, username) => ipcRenderer.invoke('nt.passwords.delete', origin, username),
   passwordsBlocked: () => ipcRenderer.invoke('nt.passwords.blocked'),
   passwordsUnblock: (origin) => ipcRenderer.invoke('nt.passwords.unblock', origin),
+  passwordsAdd: (origin, username, password, originalUsername) =>
+    ipcRenderer.invoke('nt.passwords.add', origin, username, password, originalUsername),
+  passwordsCsvImport: () => ipcRenderer.invoke('nt.passwords.csv-import'),
+  passwordsCsvExport: () => ipcRenderer.invoke('nt.passwords.csv-export'),
   onPasswordsSavePrompt: (cb) => {
     const l = (_e: unknown, p: Parameters<Parameters<NextTokenAPI['onPasswordsSavePrompt']>[0]>[0]) => cb(p);
     ipcRenderer.on('nt.passwords.save-prompt', l);
@@ -233,6 +237,8 @@ const api: NextTokenAPI = {
   settingsSetVoice: (v) => ipcRenderer.invoke('nt.settings.voice.set', v),
   settingsGetSearchEngine: () => ipcRenderer.invoke('nt.settings.search-engine.get'),
   settingsSetSearchEngine: (id, template) => ipcRenderer.invoke('nt.settings.search-engine.set', id, template),
+  /** Omnibox web suggestions — fetched main-side, no page cookies. */
+  suggestQuery: (engineId, query) => ipcRenderer.invoke('nt.suggest.query', engineId, query),
   // themes
   themesGet: (spaceId) => ipcRenderer.invoke('nt.themes.get', spaceId),
   themesSet: (spaceId, tokens) => ipcRenderer.invoke('nt.themes.set', spaceId, tokens),
@@ -243,6 +249,8 @@ const api: NextTokenAPI = {
   modelsCancelDownload: (id) => ipcRenderer.invoke('nt.models.cancel-download', id),
   modelsRemove: (id) => ipcRenderer.invoke('nt.models.remove', id),
   modelsServerStatus: () => ipcRenderer.invoke('nt.models.server-status'),
+  modelsPause: (modelId: string) => ipcRenderer.invoke('nt.models.pause', modelId),
+  modelsResume: (modelId: string) => ipcRenderer.invoke('nt.models.resume', modelId),
   modelsStopServer: (slot: 'chat' | 'vision') => ipcRenderer.invoke('nt.models.stop-server', slot),
   modelsGetAssignment: () => ipcRenderer.invoke('nt.models.assignment.get'),
   modelsSetAssignment: (task, ref) => ipcRenderer.invoke('nt.models.assignment.set', task, ref),

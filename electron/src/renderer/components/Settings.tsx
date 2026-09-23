@@ -775,6 +775,67 @@ function JevSection() {
 
 /* ---------------------------- voice & search ---------------------------- */
 
+/* ------------------------------- Test voice ------------------------------ */
+/**
+ * Synthesize a fixed sentence with the LOCAL Kokoro engine and play it.
+ * Success/failure is reported inline — this is the "Kokoro actually speaks"
+ * acceptance check, reachable without running a full voice turn.
+ */
+function TestVoiceRow() {
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<"ok" | "fail" | null>(null);
+  const [detail, setDetail] = useState<string>("");
+
+  const run = async () => {
+    setBusy(true);
+    setResult(null);
+    setDetail("");
+    try {
+      const wav = await nt().voiceSpeak("This is Next Token's test voice. Local speech is working.");
+      if (!wav || wav.length === 0) throw new Error("empty audio");
+      const bytes = new Uint8Array(wav);
+      const url = URL.createObjectURL(new Blob([bytes], { type: "audio/wav" }));
+      await new Promise<void>((resolve, reject) => {
+        const el = new Audio(url);
+        el.onended = () => resolve();
+        el.onerror = () => reject(new Error("playback failed"));
+        void el.play().catch(reject);
+      });
+      URL.revokeObjectURL(url);
+      setResult("ok");
+    } catch (e) {
+      setResult("fail");
+      setDetail(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="mt-3 flex items-center gap-3">
+      <button
+        type="button"
+        onClick={() => void run()}
+        disabled={busy}
+        className="nt-r-sm border px-3 py-1.5 text-[12.5px] font-semibold transition-colors hover:bg-[var(--nt-bg-hover)] disabled:opacity-60"
+        style={{ borderColor: "var(--nt-accent)", color: "var(--nt-accent)" }}
+      >
+        {busy ? "Speaking…" : "Test voice"}
+      </button>
+      {result === "ok" && (
+        <span className="text-[12px]" style={{ color: "var(--nt-text-2)" }}>
+          Local voice is working (Kokoro, on-device).
+        </span>
+      )}
+      {result === "fail" && (
+        <span className="text-[12px]" style={{ color: "#d97362" }}>
+          {detail || "Voice test failed."}
+        </span>
+      )}
+    </div>
+  );
+}
+
 function VoiceSearchSection() {
   const [voice, setVoice] = useState<VoiceSettings>({
     enabled: false,
@@ -923,6 +984,10 @@ function VoiceSearchSection() {
             </span>
           </label>
         </div>
+
+        {/* Test voice: synthesises a fixed sentence with local Kokoro and plays
+            it, so the user can verify the TTS engine without a full turn. */}
+        <TestVoiceRow />
       </div>
 
       <div>

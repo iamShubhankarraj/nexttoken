@@ -328,6 +328,60 @@ input[type="color"].nt-color::-webkit-color-swatch {
 /* Toolbar voice chip (temporary, only while voice is active) */
 .voice-chip { position: relative; animation: voice-pill-in 0.22s ease-out; }
 
+/* --------------------------------------------------------------------- */
+/* Agentic-state treatments (LM Phase 6) — driven by data-agentic-state   */
+/* on <html>, set by VoiceSession. All in-chrome, no floating overlay:    */
+/* the ember is a learned "AI is working" signal, never decoration, so    */
+/* idle shows nothing at all.                                             */
+/* --------------------------------------------------------------------- */
+
+/* listening / speaking: ember glow breathes along the agentic sidebar rail */
+html[data-agentic-state="listening"] body::before,
+html[data-agentic-state="speaking"] body::before {
+  content: "";
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 3px;
+  z-index: 60;
+  pointer-events: none;
+  background: linear-gradient(180deg, rgba(232,163,61,0.85), rgba(232,163,61,0.25) 55%, rgba(232,163,61,0.7));
+  animation: nt-agentic-rail 2.2s ease-in-out infinite;
+}
+html[data-agentic-state="thinking"] body::before,
+html[data-agentic-state="transcribing"] body::before {
+  content: "";
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 3px;
+  z-index: 60;
+  pointer-events: none;
+  background: linear-gradient(180deg, rgba(232,163,61,0.55), rgba(232,163,61,0.18) 55%, rgba(232,163,61,0.5));
+  animation: nt-agentic-rail 1.1s ease-in-out infinite;
+}
+@keyframes nt-agentic-rail {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 1; }
+}
+
+/* acting: dialed-down whole-window perimeter pulse (Astra precedent) */
+html[data-agentic-state="acting"] body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 59;
+  pointer-events: none;
+  box-shadow: inset 0 0 0 2px rgba(232, 163, 61, 0.22), inset 0 0 26px rgba(232, 163, 61, 0.05);
+  animation: nt-agentic-perimeter 1.8s ease-in-out infinite;
+}
+@keyframes nt-agentic-perimeter {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 1; }
+}
+
 /* Viewport acting overlay (above the webview) */
 .acting-overlay {
   position: absolute;

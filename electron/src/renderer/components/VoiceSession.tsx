@@ -244,5 +244,24 @@ export function VoiceSession({ children }: { children: ReactNode }) {
     ],
   );
 
+  // LM Phase 6: publish the turn state on the window root. CSS in index.css
+  // turns these into the learned "AI is working" ember treatments — rail
+  // glow while listening/speaking, favicon pulse while speaking, a dialed-
+  // down perimeter pulse while acting. Nothing renders: it's an attribute.
+  useEffect(() => {
+    const root = document.documentElement;
+    const state =
+      engine !== "idle"
+        ? engine
+        : playbackSpeaking
+          ? "speaking"
+          : "idle";
+    if (root.dataset.agenticState !== state) root.dataset.agenticState = state;
+    return () => {
+      // On unmount, never leave a stale working state behind.
+      root.dataset.agenticState = "idle";
+    };
+  }, [engine, playbackSpeaking]);
+
   return <VoiceSessionContext.Provider value={value}>{children}</VoiceSessionContext.Provider>;
 }

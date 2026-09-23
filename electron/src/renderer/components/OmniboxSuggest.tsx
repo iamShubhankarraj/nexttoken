@@ -27,7 +27,6 @@ import { domainOf, fuzzy, iconForUrl, looksLikeUrl, nt } from "../nt";
 import {
   parseEngineKeyword,
   presetById,
-  suggestUrl,
 } from "../../shared/searchEngines";
 import type { SmartTab } from "./SmartInput";
 
@@ -74,31 +73,6 @@ const KIND_LABEL: Record<SuggestKind, string> = {
   history: "History",
   web: "Search",
 };
-
-/** Tolerant parser: OpenSearch [q,[s…]], DDG ac [{phrase}], or {suggestions:[…]}. */
-function parseSuggestResponse(data: unknown): string[] {
-  const str = (v: unknown): string => {
-    if (typeof v === "string") return v;
-    if (v && typeof v === "object") {
-      const p = (v as Record<string, unknown>).phrase;
-      if (typeof p === "string") return p;
-    }
-    return "";
-  };
-  if (Array.isArray(data)) {
-    if (data.length >= 2 && Array.isArray(data[1])) {
-      return data[1].map(str).filter(Boolean);
-    }
-    return data.map(str).filter(Boolean);
-  }
-  if (data && typeof data === "object") {
-    const o = data as Record<string, unknown>;
-    for (const k of ["suggestions", "results"]) {
-      if (Array.isArray(o[k])) return (o[k] as unknown[]).map(str).filter(Boolean);
-    }
-  }
-  return [];
-}
 
 function normUrl(u: string): string {
   return u.replace(/\/$/, "").toLowerCase();
@@ -208,7 +182,9 @@ export const OmniboxSuggest = forwardRef<OmniboxSuggestApi, OmniboxSuggestProps>
       ].filter((s) => s.items.length > 0);
     }, [q, suppressed, tabs, bookmarks, history]);
 
-    // Web suggestions: debounced ~200ms, cancellable, never for URLs.
+    // Web suggestions: debounced ~200ms, fetched main-side (the shell CSP
+    // blocks direct renderer fetches to suggest endpoints), cancellable via
+    // the AbortController-bounded main handler, never for URLs.
     useEffect(() => {
       setWeb([]);
       if (!q || suppressed || looksLikeUrl(q)) return;
@@ -216,26 +192,21 @@ export const OmniboxSuggest = forwardRef<OmniboxSuggestApi, OmniboxSuggestProps>
       const preset = kw ? kw.preset : presetById(defaultEngineId);
       const effQuery = kw ? kw.query : q;
       if (!preset || effQuery.length < 2) return;
-      const url = suggestUrl(preset, effQuery);
-      if (!url) return; // engine has no suggest API (e.g. Ecosia)
       const engineId = preset.id;
-      const ctrl = new AbortController();
-      const timer = window.setTimeout(async () => {
-        try {
-          const res = await fetch(url, { signal: ctrl.signal });
-          if (!res.ok) return;
-          const data = await res.json();
-          const list = parseSuggestResponse(data)
-            .filter((s) => s.trim().length > 0)
-            .slice(0, 6);
-          setWeb(list.map((text) => ({ text, engineId })));
-        } catch {
-          /* aborted, offline, or CORS — local matches still work */
-        }
+      let alive = true;
+      const timer = window.setTimeout(() => {
+        nt()
+          .suggestQuery(engineId, effQuery)
+          .then((list) => {
+            if (alive) setWeb(list.map((text) => ({ text, engineId })));
+          })
+          .catch(() => {
+            /* offline or blocked — local matches still work */
+          });
       }, 200);
       return () => {
+        alive = false;
         window.clearTimeout(timer);
-        ctrl.abort();
       };
     }, [q, suppressed, defaultEngineId]);
 

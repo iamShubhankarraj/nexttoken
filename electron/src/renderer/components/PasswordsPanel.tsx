@@ -16,7 +16,7 @@
  * reveal channel returns one, behind approval.
  */
 
-import { Copy, Eye, EyeOff, KeyRound, Trash2 } from "lucide-react";
+import { Copy, Download, Eye, EyeOff, KeyRound, Plus, Trash2, Upload } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { domainOf, nt } from "../nt";
 
@@ -130,6 +130,95 @@ export function PasswordsPanel() {
       .catch(() => flash("Could not update the list."));
   };
 
+  // -- manual add / edit --------------------------------------------------
+  const [editing, setEditing] = useState<
+    { mode: "add" } | { mode: "edit"; original: StoredEntry } | null
+  >(null);
+  const [form, setForm] = useState({ origin: "", username: "", password: "" });
+
+  const startAdd = () => {
+    setForm({ origin: "https://", username: "", password: "" });
+    setEditing({ mode: "add" });
+  };
+
+  const startEdit = (e: StoredEntry) => {
+    // Editing never needs the stored password: the field is blank and an
+    // empty password field means "keep the current one" in main.
+    setForm({ origin: e.origin, username: e.username, password: "" });
+    setEditing({ mode: "edit", original: e });
+  };
+
+  const submitForm = () => {
+    if (!editing) return;
+    const origin = form.origin.trim();
+    const username = form.username.trim();
+    if (!origin || !username || (editing.mode === "add" && !form.password)) {
+      flash("Website, username, and a password are required.");
+      return;
+    }
+    setBusy("form");
+    nt()
+      .passwordsAdd(
+        origin,
+        username,
+        form.password,
+        editing.mode === "edit" ? editing.original.username : undefined,
+      )
+      .then((r) => {
+        setBusy(null);
+        if (r.ok) {
+          setEditing(null);
+          refresh();
+          flash(editing.mode === "add" ? "Login added." : "Login updated.");
+        } else {
+          flash(r.error ?? "Could not save the login.");
+        }
+      })
+      .catch(() => {
+        setBusy(null);
+        flash("Could not save the login.");
+      });
+  };
+
+  const onCsvImport = () => {
+    setBusy("csv");
+    nt()
+      .passwordsCsvImport()
+      .then((r) => {
+        setBusy(null);
+        if (r.ok) {
+          refresh();
+          flash(r.added > 0 ? `Imported ${r.added} login${r.added === 1 ? "" : "s"}.` : "Import canceled.");
+        } else {
+          flash(r.error ?? "Import failed.");
+        }
+      })
+      .catch(() => {
+        setBusy(null);
+        flash("Import failed.");
+      });
+  };
+
+  const onCsvExport = () => {
+    setBusy("csv");
+    nt()
+      .passwordsCsvExport()
+      .then((r) => {
+        setBusy(null);
+        if (r.ok && r.path) {
+          flash("Passwords exported. Keep the file somewhere safe.");
+        } else if (r.ok) {
+          flash("Export canceled.");
+        } else {
+          flash(r.error ?? "Export failed.");
+        }
+      })
+      .catch(() => {
+        setBusy(null);
+        flash("Export failed.");
+      });
+  };
+
   return (
     <div className="space-y-6">
       <div>
@@ -148,6 +237,89 @@ export function PasswordsPanel() {
             {notice}
           </p>
         )}
+        {editing && (
+          <div
+            className="nt-r-md mb-3 space-y-2 border p-3"
+            style={{ borderColor: "var(--nt-border)" }}
+          >
+            <div className="text-[12px] font-semibold" style={{ color: "var(--nt-text-1)" }}>
+              {editing.mode === "add" ? "Add login" : `Edit ${domainOf(editing.original.origin)}`}
+            </div>
+            <input
+              type="url"
+              className="nt-r-sm w-full border px-2 py-1.5 text-[12px]"
+              style={{ borderColor: "var(--nt-border)", background: "var(--nt-surface-2)", color: "var(--nt-text-1)" }}
+              placeholder="https://example.com"
+              value={form.origin}
+              readOnly={editing.mode === "edit"}
+              onChange={(e) => setForm({ ...form, origin: e.target.value })}
+            />
+            <input
+              type="text"
+              className="nt-r-sm w-full border px-2 py-1.5 text-[12px]"
+              style={{ borderColor: "var(--nt-border)", background: "var(--nt-surface-2)", color: "var(--nt-text-1)" }}
+              placeholder="Username"
+              value={form.username}
+              onChange={(e) => setForm({ ...form, username: e.target.value })}
+            />
+            <input
+              type="password"
+              className="nt-r-sm w-full border px-2 py-1.5 text-[12px]"
+              style={{ borderColor: "var(--nt-border)", background: "var(--nt-surface-2)", color: "var(--nt-text-1)" }}
+              placeholder={editing.mode === "edit" ? "New password (blank = keep current)" : "Password"}
+              value={form.password}
+              autoComplete="off"
+              onChange={(e) => setForm({ ...form, password: e.target.value })}
+            />
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                className="nt-r-sm px-2.5 py-1 text-[12px] font-medium"
+                style={{ background: "var(--nt-accent)", color: "#1a1208" }}
+                disabled={busy === "form"}
+                onClick={submitForm}
+              >
+                {busy === "form" ? "Saving…" : editing.mode === "add" ? "Add login" : "Save changes"}
+              </button>
+              <button
+                type="button"
+                className="nt-r-sm px-2.5 py-1 text-[12px]"
+                style={{ color: "var(--nt-text-2)" }}
+                onClick={() => setEditing(null)}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+        <div className="mb-3 flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            className="nt-r-sm flex items-center gap-1 px-2 py-1 text-[12px]"
+            style={{ color: "var(--nt-accent)" }}
+            onClick={startAdd}
+          >
+            <Plus size={13} /> Add login
+          </button>
+          <button
+            type="button"
+            className="nt-r-sm flex items-center gap-1 px-2 py-1 text-[12px]"
+            style={{ color: "var(--nt-text-2)" }}
+            disabled={busy === "csv"}
+            onClick={onCsvImport}
+          >
+            <Upload size={13} /> {busy === "csv" ? "Working…" : "Import CSV"}
+          </button>
+          <button
+            type="button"
+            className="nt-r-sm flex items-center gap-1 px-2 py-1 text-[12px]"
+            style={{ color: "var(--nt-text-2)" }}
+            disabled={busy === "csv"}
+            onClick={onCsvExport}
+          >
+            <Download size={13} /> Export CSV
+          </button>
+        </div>
         {entries === null ? (
           <p className="text-[12px]" style={{ color: "var(--nt-text-3)" }}>
             Checking…
@@ -213,6 +385,16 @@ export function PasswordsPanel() {
                       title="Copy password to clipboard (asks first)"
                     >
                       <Copy size={13} /> Copy
+                    </button>
+                    <button
+                      type="button"
+                      className="nt-r-sm flex items-center gap-1 px-2 py-1 text-[12px]"
+                      style={{ color: "var(--nt-text-2)" }}
+                      disabled={isBusy}
+                      onClick={() => startEdit(e)}
+                      title="Change the username or password for this site"
+                    >
+                      Edit
                     </button>
                     <button
                       type="button"

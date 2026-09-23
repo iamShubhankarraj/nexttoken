@@ -7,7 +7,7 @@
  * and exposes base URLs that the agent's LLM layer can call as an
  * OpenAI-compatible endpoint.
  */
-import { spawn, type ChildProcess } from 'node:child_process';
+import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
 import net from 'node:net';
@@ -18,10 +18,24 @@ import { mmprojPathFor } from './downloader';
 
 export type ServerSlot = 'chat' | 'vision';
 
+/** Resident-RAM priority when memory pressure forces unloads: chat outlives vision. */
+const PRESSURE_ORDER: ServerSlot[] = ['vision', 'chat'];
+
+/**
+ * Why a slot is currently down. A user pause is a sticky state — the model
+ * never auto-resumes (only the user, or an explicit turn-time prompt,
+ * re-arms it); idle/pressure unloads re-warm transparently on next use.
+ */
+export type SlotDownReason = 'never' | 'user-paused' | 'idle-unloaded' | 'memory-pressure';
+
 export interface LocalServerStatus {
   running: boolean;
   modelId: string | null;
   port: number | null;
+  /** Why the slot is down right now ('never' when up or untouched). */
+  downReason: SlotDownReason;
+  /** Wall-clock ms of the most recent spawn→ready model load. */
+  lastLoadMs: number;
 }
 
 interface SlotState {
@@ -45,8 +59,35 @@ const STOP_GRACE_MS = 3_000;
 const CTX_SIZE = 8192;
 /** A warmed server with no ensureWarm() call for this long is stopped to free RAM. */
 const IDLE_STOP_MS = 15 * 60_000;
+/** Swap-in pressure threshold: free percent of total RAM below which we force-unload. */
+const PRESSURE_FREE_PCT = 12;
+/** Pressure checks at most this often. */
+const PRESSURE_POLL_MS = 10_000;
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/**
+ * Best-effort available RAM on macOS. os.freemem() is misleading on Darwin
+ * (inactive pages count as used), so prefer the OS's own memory_pressure
+ * tool, which reports the system-wide free percentage; fall back to
+ * os.freemem() elsewhere or when the tool is unavailable.
+ */
+async function memFreeBytes(): Promise<number> {
+  if (process.platform === 'darwin') {
+    try {
+      const out = await new Promise<string>((resolve) => {
+        execFile('memory_pressure', ['-Q'], { timeout: 3000 }, (err, stdout) =>
+          resolve(err ? '' : String(stdout ?? '')),
+        );
+      });
+      const pct = /free percentage:\s*(\d+)/i.exec(out)?.[1];
+      if (pct !== undefined) return (os.totalmem() * parseInt(pct, 10)) / 100;
+    } catch {
+      /* fall through to freemem */
+    }
+  }
+  return os.freemem();
+}
 
 async function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -140,6 +181,13 @@ export class LlamaServer {
   private readonly slots = new Map<ServerSlot, SlotState>();
   /** Per-slot promise chain so concurrent start/stop calls serialize. */
   private readonly locks = new Map<ServerSlot, Promise<unknown>>();
+  /** Why each slot is down (survives while the slot has no live server). */
+  private readonly downReason = new Map<ServerSlot, SlotDownReason>();
+  /** Most recent spawn→ready load time per slot, for honest UI copy. */
+  private readonly lastLoadMs = new Map<ServerSlot, number>();
+  /** Models the user explicitly paused — sticky, never auto-resumed. */
+  private readonly userPaused = new Set<string>();
+  private pressureTimer: NodeJS.Timeout | null = null;
 
   constructor(opts: {
     binDir: string;
@@ -151,6 +199,41 @@ export class LlamaServer {
     this.ensureSidecarFn = opts.ensureSidecar;
     installExitHook();
     liveInstances.add(this);
+    this.startPressureWatcher();
+  }
+
+  /**
+   * Poll free RAM; when it drops under PRESSURE_FREE_PCT of total, force-
+   * unload lowest-priority slots (vision first, chat last) and log it. The
+   * goal is to unload BEFORE macOS starts compressing/swapping and the UI
+   * beachballs. Router/chat are never unloaded by pressure when they were
+   * the only thing left — the last slot standing keeps the machine useful.
+   */
+  private startPressureWatcher(): void {
+    if (this.pressureTimer || process.platform !== 'darwin') return;
+    this.pressureTimer = setInterval(() => {
+      void this.checkMemoryPressure().catch(() => {
+        /* watcher must never throw */
+      });
+    }, PRESSURE_POLL_MS);
+    this.pressureTimer.unref?.();
+  }
+
+  private async checkMemoryPressure(): Promise<void> {
+    const total = os.totalmem();
+    const free = await memFreeBytes();
+    if (free <= 0 || free / total > PRESSURE_FREE_PCT / 100) return;
+    for (const slot of PRESSURE_ORDER) {
+      if (free / total > PRESSURE_FREE_PCT / 100) break;
+      const st = this.slots.get(slot);
+      if (!st || !st.alive) continue;
+      console.warn(
+        `[local-model] memory pressure: unloading slot=${slot} model=${st.modelId} ` +
+          `(free ${(free / total * 100).toFixed(1)}% of ${(total / 2 ** 30).toFixed(1)} GB)`,
+      );
+      this.downReason.set(slot, 'memory-pressure');
+      await this.stop(slot).catch(() => {});
+    }
   }
 
   private withLock<T>(slot: ServerSlot, fn: () => Promise<T>): Promise<T> {
@@ -175,6 +258,8 @@ export class LlamaServer {
    * replaces the old one (each slot holds exactly one server), so the
    * single-server-per-slot invariant is unchanged; we just stop paying
    * spawn + model-load latency when the right model is already up.
+   *
+   * Returns the same shape as start(), plus `warm`.
    */
   async ensureWarm(entry: ModelEntry, slot: ServerSlot): Promise<{
     baseUrl: string;
@@ -190,6 +275,11 @@ export class LlamaServer {
       if (st && st.alive && st.proc.exitCode === null && st.modelId === entry.id) {
         st.lastUsedAt = Date.now();
         return { baseUrl: st.baseUrl, warm: true, spawnMs: 0, loadMs: 0 };
+      }
+      // A user-paused model must not silently come back: only an explicit
+      // resumeModel() or a start() call from the user's own action re-arms it.
+      if (this.downReason.get(slot) === 'user-paused') {
+        throw new Error(`Model "${entry.name}" is paused — resume it in Settings → Models to use it.`);
       }
       const r = await this.spawnLocked(entry, slot);
       return { ...r, warm: false };
@@ -277,7 +367,10 @@ export class LlamaServer {
       throw new Error(`Failed to start local model "${entry.name}" on slot "${slot}": ${msg}${detail}`);
     }
     const tReady = Date.now();
-    return { baseUrl, spawnMs: tSpawned - t0, loadMs: tReady - tSpawned };
+    const loadMs = tReady - tSpawned;
+    this.lastLoadMs.set(slot, loadMs);
+    this.downReason.delete(slot);
+    return { baseUrl, spawnMs: tSpawned - t0, loadMs };
   }
 
   private async waitReady(state: SlotState, entry: ModelEntry): Promise<void> {
@@ -302,6 +395,49 @@ export class LlamaServer {
   /** Stop the server on `slot`. No-op if the slot is empty. */
   async stop(slot: ServerSlot): Promise<void> {
     return this.withLock(slot, () => this.stopLocked(slot));
+  }
+
+  /**
+   * USER PAUSE: unload the model from RAM (frees everything, including the
+   * Metal buffers) but keep it downloaded. A user-paused model never
+   * auto-resumes — ensureWarm() refuses with an honest error and the UI
+   * shows a Paused pill until the user hits Resume.
+   */
+  async pauseModel(modelId: string): Promise<{ ok: boolean; freedMs?: number }> {
+    for (const slot of ['chat', 'vision'] as ServerSlot[]) {
+      const st = this.slots.get(slot);
+      if (st && st.alive && st.modelId === modelId) {
+        this.userPaused.add(modelId);
+        this.downReason.set(slot, 'user-paused');
+        const t0 = Date.now();
+        await this.stop(slot);
+        return { ok: true, freedMs: Date.now() - t0 };
+      }
+    }
+    // Not currently loaded: just mark it so the next ensureWarm refuses.
+    this.userPaused.add(modelId);
+    return { ok: true };
+  }
+
+  /**
+   * Resume a user-paused model by loading it back onto its natural slot.
+   * Returns the load time so the UI can show "resumed in 2.3 s".
+   */
+  async resumeModel(entry: ModelEntry, slot: ServerSlot): Promise<{ ok: boolean; loadMs: number }> {
+    this.userPaused.delete(entry.id);
+    this.downReason.delete(slot);
+    await this.withLock(slot, () => this.spawnLocked(entry, slot));
+    return { ok: true, loadMs: this.lastLoadMs.get(slot) ?? 0 };
+  }
+
+  /** True when the user explicitly paused this model id. */
+  isUserPaused(modelId: string): boolean {
+    return this.userPaused.has(modelId);
+  }
+
+  /** Model ids the user explicitly paused (sticky until resumed). */
+  listUserPaused(): string[] {
+    return [...this.userPaused];
   }
 
   private async stopLocked(slot: ServerSlot): Promise<void> {
@@ -332,6 +468,7 @@ export class LlamaServer {
     }
     for (const slot of idle) {
       console.log(`[local-model] idle-stop slot=${slot} after ${IDLE_STOP_MS / 60000}min without use`);
+      this.downReason.set(slot, 'idle-unloaded');
       await this.stop(slot).catch(() => {
         /* best effort */
       });
@@ -341,9 +478,21 @@ export class LlamaServer {
   status(slot: ServerSlot): LocalServerStatus {
     const state = this.slots.get(slot);
     if (!state || !state.alive || state.proc.exitCode !== null) {
-      return { running: false, modelId: null, port: null };
+      return {
+        running: false,
+        modelId: null,
+        port: null,
+        downReason: this.downReason.get(slot) ?? 'never',
+        lastLoadMs: this.lastLoadMs.get(slot) ?? 0,
+      };
     }
-    return { running: true, modelId: state.modelId, port: state.port };
+    return {
+      running: true,
+      modelId: state.modelId,
+      port: state.port,
+      downReason: 'never',
+      lastLoadMs: this.lastLoadMs.get(slot) ?? 0,
+    };
   }
 
   /** Base URL for a running slot, or null if it isn't serving. */

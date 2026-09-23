@@ -31,12 +31,15 @@ import { randomUUID } from 'node:crypto';
 import { promises as fsp } from 'node:fs';
 import path from 'node:path';
 import { guardedHandle } from './ipcGuard';
+import { confirmWithTouchId } from './touchid';
 import {
   deleteLogin,
   findLoginsForOrigin,
+  getAllLoginsWithPasswords,
   getLoginPassword,
   getStoredLogins,
   normalizeOrigin,
+  saveImportedLogins,
   upsertLogin,
 } from './import/logins';
 import type { TabManager } from './tabs';
@@ -83,6 +86,80 @@ async function addToBlocklist(origin: string): Promise<void> {
   const list = await readBlocklist();
   list.add(origin);
   await fsp.writeFile(blocklistPath(), JSON.stringify([...list]), { mode: 0o600 });
+}
+
+/* ------------------------------------------------------------------ *
+ * CSV helpers (import/export run entirely in main)
+ * ------------------------------------------------------------------ */
+
+/** Minimal RFC 4180 CSV row parser: quoted fields, "" escapes, CRLF. */
+function parseCsvRows(text: string): string[][] {
+  const rows: string[][] = [];
+  let field = '';
+  let row: string[] = [];
+  let inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (inQuotes) {
+      if (ch === '"') {
+        if (text[i + 1] === '"') {
+          field += '"';
+          i++;
+        } else {
+          inQuotes = false;
+        }
+      } else {
+        field += ch;
+      }
+    } else if (ch === '"' && field === '') {
+      inQuotes = true;
+    } else if (ch === ',') {
+      row.push(field);
+      field = '';
+    } else if (ch === '\n' || ch === '\r') {
+      if (ch === '\r' && text[i + 1] === '\n') i++;
+      row.push(field);
+      field = '';
+      if (row.some((f) => f !== '')) rows.push(row);
+      row = [];
+    } else {
+      field += ch;
+    }
+  }
+  if (field !== '' || row.some((f) => f !== '')) {
+    row.push(field);
+    rows.push(row);
+  }
+  return rows;
+}
+
+/** Quote a CSV field when it contains comma/quote/newline. */
+function csvField(v: string): string {
+  return /[",\r\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
+}
+
+/**
+ * Map CSV rows to logins. Accepts the common browser-export headers
+ * (Chrome: name,url,username,password; Firefox: url,username,password;
+ * plus login_uri/login_username/login_password variants). Skips rows
+ * without a parseable origin or an empty password.
+ */
+function csvToLogins(rows: string[][]): Array<{ origin: string; username: string; password: string }> {
+  if (rows.length === 0) return [];
+  const header = rows[0].map((h) => h.trim().toLowerCase());
+  const pick = (...names: string[]): number => header.findIndex((h) => names.includes(h));
+  const iUrl = pick('url', 'login_uri', 'web_site', 'hostname', 'site');
+  const iUser = pick('username', 'login_username', 'user', 'login', 'user name');
+  const iPass = pick('password', 'login_password', 'pass', 'pwd');
+  if (iUrl === -1 || iUser === -1 || iPass === -1) return [];
+  const out: Array<{ origin: string; username: string; password: string }> = [];
+  for (const r of rows.slice(1)) {
+    const origin = normalizeOrigin(r[iUrl] ?? '');
+    const username = String(r[iUser] ?? '').slice(0, 256);
+    const password = String(r[iPass] ?? '').slice(0, 1024);
+    if (origin && password) out.push({ origin, username, password });
+  }
+  return out;
 }
 
 /* ------------------------------------------------------------------ *
@@ -279,10 +356,15 @@ export function registerPasswordManager(deps: PasswordManagerDeps): void {
       const captured = await readCapture(wc);
       if (!captured) return { token: null };
       const user = captured.username || name;
-      // Already stored with the same password → nothing to ask.
+      // Chrome parity: an existing login with the SAME password → nothing to
+      // ask; an existing login with a CHANGED password → an update prompt.
+      let isUpdate = false;
       try {
         const existing = getLoginPassword(userDataDir(), live, user);
-        if (existing !== null && existing === captured.password) return { token: null };
+        if (existing !== null) {
+          if (existing === captured.password) return { token: null };
+          isUpdate = true;
+        }
       } catch {
         return { token: null };
       }
@@ -295,7 +377,7 @@ export function registerPasswordManager(deps: PasswordManagerDeps): void {
         expiresAt: Date.now() + PENDING_TTL_MS,
       });
       setTimeout(() => pending.delete(token), PENDING_TTL_MS).unref?.();
-      sendToShell('nt.passwords.save-prompt', { token, origin: live, username: user });
+      sendToShell('nt.passwords.save-prompt', { token, origin: live, username: user, update: isUpdate });
       return { token };
     },
   );
@@ -327,7 +409,9 @@ export function registerPasswordManager(deps: PasswordManagerDeps): void {
     },
   );
 
-  // -- reveal: native approval dialog, THEN the password crosses IPC ------
+  // -- reveal: Touch ID (when available) else the approval dialog, THEN the
+  //    password crosses IPC. Chrome parity: revealing a saved password
+  //    always requires device auth. ----------------------------------------
   guardedHandle(
     'nt.passwords.reveal',
     async (_e, origin: unknown, username: unknown): Promise<string | null> => {
@@ -335,23 +419,27 @@ export function registerPasswordManager(deps: PasswordManagerDeps): void {
       const norm = normalizeOrigin(origin);
       if (!norm) return null;
       const win = deps.getWin();
-      const options = {
-        type: 'question' as const,
-        title: 'Reveal saved password?',
-        message: `Reveal the saved password for ${norm} (${username.slice(0, 128)})?`,
-        detail: 'Make sure nobody is looking at your screen.',
-        buttons: ['Reveal password', 'Cancel'],
-        defaultId: 1,
-        cancelId: 1,
-        noLink: true,
-      };
-      // Two-arg overload requires a live window; fall back to the
-      // options-only overload when the shell is gone.
-      const { response } =
-        win && !win.isDestroyed()
-          ? await dialog.showMessageBox(win, options)
-          : await dialog.showMessageBox(options);
-      if (response !== 0) return null;
+      const touch = await confirmWithTouchId('reveal a saved password');
+      if (touch === 'denied') return null;
+      if (touch === 'unavailable') {
+        const options = {
+          type: 'question' as const,
+          title: 'Reveal saved password?',
+          message: `Reveal the saved password for ${norm} (${username.slice(0, 128)})?`,
+          detail: 'Make sure nobody is looking at your screen.',
+          buttons: ['Reveal password', 'Cancel'],
+          defaultId: 1,
+          cancelId: 1,
+          noLink: true,
+        };
+        // Two-arg overload requires a live window; fall back to the
+        // options-only overload when the shell is gone.
+        const { response } =
+          win && !win.isDestroyed()
+            ? await dialog.showMessageBox(win, options)
+            : await dialog.showMessageBox(options);
+        if (response !== 0) return null;
+      }
       try {
         return getLoginPassword(userDataDir(), norm, username.slice(0, 256));
       } catch {
@@ -368,21 +456,25 @@ export function registerPasswordManager(deps: PasswordManagerDeps): void {
       const norm = normalizeOrigin(origin);
       if (!norm) return { ok: false };
       const win = deps.getWin();
-      const options = {
-        type: 'question' as const,
-        title: 'Copy saved password?',
-        message: `Copy the saved password for ${norm} (${username.slice(0, 128)}) to the clipboard?`,
-        detail: 'It stays in your clipboard until you copy something else.',
-        buttons: ['Copy password', 'Cancel'],
-        defaultId: 1,
-        cancelId: 1,
-        noLink: true,
-      };
-      const { response } =
-        win && !win.isDestroyed()
-          ? await dialog.showMessageBox(win, options)
-          : await dialog.showMessageBox(options);
-      if (response !== 0) return { ok: false };
+      const touch = await confirmWithTouchId('copy a saved password');
+      if (touch === 'denied') return { ok: false };
+      if (touch === 'unavailable') {
+        const options = {
+          type: 'question' as const,
+          title: 'Copy saved password?',
+          message: `Copy the saved password for ${norm} (${username.slice(0, 128)}) to the clipboard?`,
+          detail: 'It stays in your clipboard until you copy something else.',
+          buttons: ['Copy password', 'Cancel'],
+          defaultId: 1,
+          cancelId: 1,
+          noLink: true,
+        };
+        const { response } =
+          win && !win.isDestroyed()
+            ? await dialog.showMessageBox(win, options)
+            : await dialog.showMessageBox(options);
+        if (response !== 0) return { ok: false };
+      }
       try {
         const pw = getLoginPassword(userDataDir(), norm, username.slice(0, 256));
         if (!pw) return { ok: false };
@@ -406,6 +498,113 @@ export function registerPasswordManager(deps: PasswordManagerDeps): void {
       } catch {
         return { ok: false };
       }
+    },
+  );
+
+  // -- manual add/edit: settings UI. Validated + encrypted in main. ------
+  guardedHandle(
+    'nt.passwords.add',
+    (
+      _e,
+      origin: unknown,
+      username: unknown,
+      password: unknown,
+      originalUsername: unknown,
+    ): { ok: boolean; error?: string } => {
+      if (typeof origin !== 'string' || typeof username !== 'string' || typeof password !== 'string') {
+        return { ok: false, error: 'A website, username, and password are required.' };
+      }
+      const norm = normalizeOrigin(origin);
+      if (!norm) return { ok: false, error: 'Enter a website like https://example.com.' };
+      const user = username.slice(0, 256);
+      if (!user) return { ok: false, error: 'Username cannot be empty.' };
+      if (password.length > 1024) {
+        return { ok: false, error: 'Password must be at most 1024 characters.' };
+      }
+      try {
+        if (!password) {
+          // Blank password = keep the stored one. Only meaningful when
+          // renaming an existing entry (matched by originalUsername).
+          const orig = typeof originalUsername === 'string' ? originalUsername.slice(0, 256) : '';
+          const existing = orig ? getLoginPassword(userDataDir(), norm, orig) : null;
+          if (!existing) return { ok: false, error: 'Enter a password for this login.' };
+          upsertLogin({ origin: norm, username: user, password: existing }, userDataDir());
+          if (orig && orig !== user) deleteLogin(userDataDir(), norm, orig);
+          return { ok: true };
+        }
+        upsertLogin({ origin: norm, username: user, password }, userDataDir());
+        if (typeof originalUsername === 'string' && originalUsername && originalUsername.slice(0, 256) !== user) {
+          deleteLogin(userDataDir(), norm, originalUsername.slice(0, 256));
+        }
+        return { ok: true };
+      } catch {
+        return { ok: false, error: 'OS keychain unavailable — cannot store passwords securely.' };
+      }
+    },
+  );
+
+  // -- CSV import: file dialog + parse + merge, entirely in main. --------
+  guardedHandle('nt.passwords.csv-import', async (): Promise<{ ok: boolean; added: number; error?: string }> => {
+    const win = deps.getWin();
+    const opts = {
+      title: 'Import passwords from CSV',
+      buttonLabel: 'Import',
+      filters: [{ name: 'CSV', extensions: ['csv', 'txt'] }],
+      properties: ['openFile'] as Array<'openFile'>,
+    };
+    const { canceled, filePaths } =
+      win && !win.isDestroyed() ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts);
+    if (canceled || filePaths.length === 0) return { ok: true, added: 0 };
+    let rows: string[][];
+    try {
+      rows = parseCsvRows(await fsp.readFile(filePaths[0], 'utf8'));
+    } catch {
+      return { ok: false, added: 0, error: 'Could not read that file.' };
+    }
+    const logins = csvToLogins(rows);
+    if (logins.length === 0) {
+      return { ok: false, added: 0, error: 'No usable rows found. Expected headers like url, username, password.' };
+    }
+    try {
+      const total = await saveImportedLogins(logins, userDataDir());
+      return { ok: true, added: logins.length };
+    } catch {
+      return { ok: false, added: 0, error: 'OS keychain unavailable — cannot store passwords securely.' };
+    }
+  });
+
+  // -- CSV export: decrypts in main, writes the user-chosen file, and the
+  //    password bytes never enter the renderer. -------------------------
+  guardedHandle(
+    'nt.passwords.csv-export',
+    async (): Promise<{ ok: boolean; path?: string; canceled?: boolean; error?: string }> => {
+      const win = deps.getWin();
+      const opts = {
+        title: 'Export passwords to CSV',
+        defaultPath: path.join(app.getPath('documents'), 'next-token-passwords.csv'),
+        filters: [{ name: 'CSV', extensions: ['csv'] }],
+      };
+      const { canceled, filePath } =
+        win && !win.isDestroyed() ? await dialog.showSaveDialog(win, opts) : await dialog.showSaveDialog(opts);
+      if (canceled || !filePath) return { ok: true, canceled: true };
+      // The vault getter is main-only; do NOT touch getStoredLogins (it strips
+      // passwords). Read the vault directly and map to CSV rows.
+      const all = getAllLoginsWithPasswords(userDataDir());
+      if (all.length === 0) return { ok: false, error: 'No saved passwords to export.' };
+      const lines = ['name,url,username,password'];
+      for (const l of all) {
+        lines.push(
+          [l.origin, l.origin, l.username, l.password]
+            .map(csvField)
+            .join(','),
+        );
+      }
+      try {
+        await fsp.writeFile(filePath, lines.join('\r\n') + '\r\n', { mode: 0o600, encoding: 'utf8' });
+      } catch {
+        return { ok: false, error: 'Could not write the file.' };
+      }
+      return { ok: true, path: filePath };
     },
   );
 

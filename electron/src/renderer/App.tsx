@@ -235,9 +235,18 @@ function Shell() {
           return;
         }
       }
-      if (!mod || typing) return;
-
+      if (!mod) return;
+      // ⌘L must work while typing (Chrome parity): focusing the omnibox
+      // from the new-tab hero or agent panel is exactly the point. Every
+      // other shortcut below stays typing-gated.
       const k = e.key.toLowerCase();
+      if (k === "l") {
+        e.preventDefault();
+        window.dispatchEvent(new CustomEvent("nt:focus-omnibox"));
+        return;
+      }
+      if (typing) return;
+
       if (k === "k") {
         e.preventDefault();
         setCommandOpen((o) => !o);
@@ -253,9 +262,6 @@ function Shell() {
       } else if (k === "w") {
         e.preventDefault();
         if (activeTab) void nt().tabsClose(activeTab.id);
-      } else if (k === "l") {
-        e.preventDefault();
-        window.dispatchEvent(new CustomEvent("nt:focus-omnibox"));
       } else if (k === "b") {
         // Sidebar toggle lives on ⌘B — ⌘S is deliberately unbound so the
         // page keeps its own save shortcut.

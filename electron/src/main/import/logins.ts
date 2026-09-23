@@ -205,6 +205,15 @@ export function findLoginsForOrigin(
 }
 
 /**
+ * MAIN-PROCESS ONLY: every stored login INCLUDING passwords. Used solely by
+ * the CSV-export path in main/passwords.ts, which writes the file directly —
+ * these values must never cross IPC or reach the renderer.
+ */
+export function getAllLoginsWithPasswords(userDataDir: string): StoredLogin[] {
+  return readVaultSync(userDataDir);
+}
+
+/**
  * MAIN-PROCESS ONLY: retrieve a stored password for autofill.
  * Must never be called from (or exposed to) the renderer — the fill path
  * in main/passwords.ts uses this and injects the value into the guest
