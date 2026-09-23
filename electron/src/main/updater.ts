@@ -155,22 +155,38 @@ function cmpVer(a: string, b: string): number {
   return 0;
 }
 
-function httpsGetFollow(url: string, maxRedirects = 5): Promise<import('node:http').IncomingMessage> {
+function httpsGetFollow(url: string, maxRedirects = 5, retries = 2): Promise<import('node:http').IncomingMessage> {
   return new Promise((resolve, reject) => {
-    const go = (u: string, left: number) => {
-      const req = httpsGet(u, (res) => {
+    const go = (u: string, leftRedirects: number, leftRetries: number) => {
+      const parsed = new URL(u);
+      const opts: RequestOptions = {
+        protocol: parsed.protocol,
+        hostname: parsed.hostname,
+        port: parsed.port || 443,
+        path: `${parsed.pathname}${parsed.search}`,
+        headers: {
+          'User-Agent': `NextToken/${app.getVersion()} (macOS; arm64)`,
+        },
+      };
+      const req = httpsGet(opts, (res) => {
         const loc = res.headers.location;
-        if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && loc && left > 0) {
+        if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && loc && leftRedirects > 0) {
           res.resume();
-          go(new URL(loc, u).toString(), left - 1);
+          go(new URL(loc, u).toString(), leftRedirects - 1, leftRetries);
         } else {
           resolve(res);
         }
       });
-      req.on('error', reject);
+      req.on('error', (err) => {
+        if (leftRetries > 0 && ((err as { code?: string }).code === 'ECONNRESET' || (err as { code?: string }).code === 'ETIMEDOUT')) {
+          setTimeout(() => go(u, leftRedirects, leftRetries - 1), 500);
+        } else {
+          reject(err);
+        }
+      });
       req.setTimeout(30_000, () => req.destroy(new Error('request timed out')));
     };
-    go(url, maxRedirects);
+    go(url, maxRedirects, retries);
   });
 }
 
